@@ -1,0 +1,22 @@
+{
+  "name": "divvy",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "test": "npm run test -w @divvy/domain && npm run test -w @divvy/api",
+    "dev": "concurrently -n api,web -c green,blue \"npm run dev -w @divvy/api\" \"npm run dev -w @divvy/web\"",
+    "dev:api": "npm run dev -w @divvy/api",
+    "dev:web": "npm run dev -w @divvy/web",
+    "typecheck": "npm run typecheck -w @divvy/domain && npm run typecheck -w @divvy/client && npm run typecheck -w @divvy/api && npm run typecheck -w @divvy/web"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "playwright": "^1.55.1"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true
+  }
+}

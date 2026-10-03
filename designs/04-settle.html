@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>04 · Settle sheet</title>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="shared.css" />
+  <style>
+    body { background: white; font-family: "Plus Jakarta Sans", sans-serif; color: #111827; }
+    .appbar { display: flex; justify-content: space-between; padding: 16px 22px; border-bottom: 1px solid #eceff3; font-weight: 800; }
+    .stage { width: min(680px, calc(100% - 32px)); margin: 28px auto 72px; }
+    h1 { font-size: 40px; letter-spacing: -0.05em; margin: 0 0 6px; }
+    .lead { color: #6b7280; margin: 0 0 22px; }
+    h2 { margin: 22px 0 8px; font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; color: #9ca3af; }
+    .line { display: grid; grid-template-columns: 1fr auto auto; gap: 14px; align-items: center; padding: 16px 0; border-top: 1px solid #f0f2f5; }
+    .who { font-weight: 750; }
+    .group { display: block; color: #6b7280; font-weight: 600; font-size: 13px; margin-top: 2px; }
+    .amt { font-variant-numeric: tabular-nums; font-weight: 750; }
+    .record { background: #111827; color: white; border: 0; border-radius: 999px; padding: 8px 14px; font-weight: 750; }
+    .owe .record { background: white; color: #111827; border: 1px solid #d1d5db; }
+  </style>
+</head>
+<body>
+  <div class="banner"><a href="index.html">All directions</a><b>04 · Settle sheet</b><span>Opening the app asks who should pay. The group is the label on that payment, not a folder you enter first.</span></div>
+  <header class="appbar"><span>Divvy</span><span style="font-weight:650;color:#6b7280">Alex</span></header>
+  <main class="stage">
+    <h1>Three payments would settle you.</h1>
+    <p class="lead">Recording one does not move money. It only updates that group.</p>
+    <h2>They pay you</h2>
+    <div class="line"><span><span class="who">Casey pays you</span><span class="group">Apartment</span></span><span class="amt">$695.47</span><button class="record" type="button">Record</button></div>
+    <div class="line"><span><span class="who">Jordan pays you</span><span class="group">Apartment</span></span><span class="amt">$770.29</span><button class="record" type="button">Record</button></div>
+    <div class="line"><span><span class="who">Jordan pays you</span><span class="group">Lisbon</span></span><span class="amt">€100.00</span><button class="record" type="button">Record</button></div>
+    <h2>You pay</h2>
+    <div class="line owe"><span><span class="who">You pay Jordan</span><span class="group">Weekend</span></span><span class="amt">$40.00</span><button class="record" type="button">Record</button></div>
+  </main>
+</body>
+</html>

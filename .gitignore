@@ -1,0 +1,10 @@
+node_modules
+dist
+data
+.expo
+*.tsbuildinfo
+.DS_Store
+apps/web/dist
+apps/mobile/.expo
+apps/mobile/ios
+apps/mobile/android

@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>02 · Always inside a group</title>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="shared.css" />
+  <style>
+    body { background: #f6f7f4; font-family: "Plus Jakarta Sans", sans-serif; color: #14221c; }
+    .appbar { display: flex; justify-content: space-between; padding: 14px 22px; background: white; border-bottom: 1px solid #e4e8e2; }
+    .brand { font-weight: 800; letter-spacing: -0.04em; }
+    .stage { width: min(720px, calc(100% - 28px)); margin: 22px auto 70px; display: grid; gap: 16px; }
+    .strip { display: flex; gap: 8px; }
+    .pill { border-radius: 999px; padding: 8px 14px; background: white; border: 1px solid #e4e8e2; font-weight: 700; color: #5d6b63; }
+    .pill.on { background: #0f766e; color: white; border-color: #0f766e; }
+    .sheet { background: white; border-radius: 24px; padding: 22px; border: 1px solid #e4e8e2; box-shadow: 0 16px 40px rgba(20,34,28,.05); display: grid; gap: 16px; }
+    .top { display: flex; justify-content: space-between; align-items: end; gap: 12px; }
+    h1 { margin: 0; font-size: 28px; letter-spacing: -0.04em; }
+    .owed { margin: 4px 0 0; color: #0f766e; font-size: 28px; font-weight: 800; letter-spacing: -0.04em; }
+    .add { background: #0f766e; color: white; border: 0; border-radius: 12px; padding: 11px 14px; font-weight: 750; }
+    h2 { margin: 0 0 8px; font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; color: #6b7a72; }
+    .pay, .expense { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 12px 0; border-top: 1px solid #eef2ee; }
+    .record { border: 1px solid #cfe3db; background: #f3faf7; color: #0f766e; border-radius: 999px; padding: 7px 12px; font-weight: 750; }
+    .muted { color: #6b7a72; font-size: 13px; }
+    .amt { font-weight: 750; }
+  </style>
+</head>
+<body>
+  <div class="banner"><a href="index.html">All directions</a><b>02 · Always inside a group</b><span>You never look at a directory. Other groups are a strip, and the open one is the whole page.</span></div>
+  <header class="appbar"><div class="brand">Divvy</div><div class="muted">Alex</div></header>
+  <main class="stage">
+    <div class="strip">
+      <span class="pill on">Apartment</span>
+      <span class="pill">Lisbon</span>
+      <span class="pill">Weekend</span>
+      <span class="pill">+ Group</span>
+    </div>
+    <section class="sheet">
+      <div class="top">
+        <div>
+          <h1>Apartment</h1>
+          <p class="owed">You are owed $1,465.76</p>
+        </div>
+        <button class="add" type="button">Add expense</button>
+      </div>
+      <div>
+        <h2>Who pays whom</h2>
+        <div class="pay"><span>Casey pays you</span><span><b class="amt">$695.47</b> <button class="record" type="button">Record</button></span></div>
+        <div class="pay"><span>Jordan pays you</span><span><b class="amt">$770.29</b> <button class="record" type="button">Record</button></span></div>
+      </div>
+      <div>
+        <h2>Latest</h2>
+        <div class="expense"><span><b>September rent</b><div class="muted">Sep 1 · Alex paid</div></span><span class="amt">$2,000.00</span></div>
+        <div class="expense"><span><b>Groceries</b><div class="muted">Sep 12 · Jordan paid</div></span><span class="amt">$86.40</span></div>
+        <div class="expense"><span><b>Dinner</b><div class="muted">Sep 20 · Alex paid</div></span><span class="amt">$90.00</span></div>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

@@ -1,0 +1,60 @@
+:root { color: #16181d; font-family: "Plus Jakarta Sans", "Segoe UI", sans-serif; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+a { color: inherit; }
+button, input { font: inherit; }
+
+.banner {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  gap: 14px;
+  align-items: baseline;
+  flex-wrap: wrap;
+  padding: 10px 18px;
+  background: #16181d;
+  color: #f4f5f7;
+  font-size: 13px;
+}
+.banner a { color: #c7c9ff; font-weight: 700; text-decoration: none; }
+.banner b { font-size: 14px; }
+.banner span { color: #c5c8d0; }
+
+.gallery {
+  min-height: 100vh;
+  background:
+    radial-gradient(700px 240px at 50% -40px, rgba(79, 70, 229, 0.14), transparent 70%),
+    #f4f6fb;
+  padding: 48px 20px 80px;
+}
+.gallery main { width: min(860px, 100%); margin: 0 auto; }
+.gallery h1 { font-size: 40px; letter-spacing: -0.045em; margin: 8px 0 8px; }
+.gallery .lead { color: #5c6578; max-width: 46rem; margin: 0 0 28px; }
+.eyebrow { text-transform: uppercase; letter-spacing: 0.08em; font-size: 12px; font-weight: 700; color: #6d7484; margin: 0; }
+.choices { display: grid; gap: 12px; }
+.choices a {
+  display: grid;
+  grid-template-columns: 72px 1fr;
+  gap: 16px;
+  align-items: center;
+  background: white;
+  border: 1px solid #e6e9f2;
+  border-radius: 18px;
+  padding: 16px 18px;
+  text-decoration: none;
+  box-shadow: 0 10px 28px rgba(18, 20, 28, 0.05);
+}
+.choices a:hover { border-color: #c9cde0; }
+.choices strong { display: block; font-size: 18px; letter-spacing: -0.03em; }
+.choices p { margin: 4px 0 0; color: #5c6578; }
+.swatch-num {
+  width: 72px;
+  height: 72px;
+  border-radius: 16px;
+  display: grid;
+  place-items: center;
+  color: white;
+  font-weight: 800;
+  font-size: 22px;
+}

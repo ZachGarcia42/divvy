@@ -1,0 +1,13 @@
+{
+  "expo": {
+    "name": "Divvy",
+    "slug": "divvy",
+    "scheme": "divvy",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "ios": { "supportsTablet": true, "bundleIdentifier": "app.divvy.ledger" },
+    "android": { "package": "app.divvy.ledger" },
+    "plugins": []
+  }
+}

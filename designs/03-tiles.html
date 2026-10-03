@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>03 · Big tiles</title>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="shared.css" />
+  <style>
+    body { background: #f7f5f8; font-family: "Plus Jakarta Sans", sans-serif; color: #1c1420; }
+    .appbar { padding: 16px 22px; font-weight: 800; letter-spacing: -0.04em; }
+    .stage { width: min(860px, calc(100% - 28px)); margin: 8px auto 64px; }
+    .kicker { margin: 0; color: #7a6b80; font-size: 13px; font-weight: 700; }
+    h1 { margin: 6px 0 18px; font-size: 36px; letter-spacing: -0.045em; }
+    h1 em { font-style: normal; color: #be185d; }
+    .grid { display: grid; grid-template-columns: 1.4fr 1fr; gap: 12px; }
+    .tile { border-radius: 28px; padding: 22px; min-height: 180px; display: flex; flex-direction: column; justify-content: space-between; }
+    .tile b { font-size: 22px; letter-spacing: -0.03em; }
+    .tile .amt { font-size: 28px; font-weight: 800; letter-spacing: -0.04em; }
+    .wide { grid-column: 1 / -1; min-height: 210px; background: #1c1420; color: white; }
+    .wide .amt { color: #fb7185; }
+    .sand { background: #ffe8c2; }
+    .sand .amt { color: #9a3412; }
+    .lilac { background: #efe7ff; }
+    .lilac .amt { color: #6d28d9; }
+    .people { color: #d6d3d1; font-size: 14px; }
+    .meta { color: #7c2d12; font-size: 14px; font-weight: 650; }
+    .meta.soft { color: #5b21b6; }
+  </style>
+</head>
+<body>
+  <div class="banner"><a href="index.html">All directions</a><b>03 · Big tiles</b><span>A group is a poster, not a row. You choose by the amount and the name, then fall into that group.</span></div>
+  <header class="appbar">Divvy</header>
+  <main class="stage">
+    <p class="kicker">Alex’s groups</p>
+    <h1>You are owed about <em>$1,539.79</em></h1>
+    <div class="grid">
+      <article class="tile wide">
+        <div><b>Apartment</b><div class="people">Alex, Jordan, Casey · USD</div></div>
+        <div class="amt">You are owed $1,465.76</div>
+      </article>
+      <article class="tile sand">
+        <b>Lisbon</b>
+        <div><div class="meta">Trip · EUR</div><div class="amt">Owed €100.00</div></div>
+      </article>
+      <article class="tile lilac">
+        <b>Weekend</b>
+        <div><div class="meta soft">You owe</div><div class="amt">$40.00</div></div>
+      </article>
+    </div>
+  </main>
+</body>
+</html>
