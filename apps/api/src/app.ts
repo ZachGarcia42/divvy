@@ -110,6 +110,7 @@ export function createApp(sql: Sql, options?: {
     return c.json({ ok: true })
   })
   app.post('/api/groups/:id/people', async (c) => c.json(await repo.addPerson(await actor(c), c.req.param('id'), await c.req.json())))
+  app.post('/api/groups/:id/invite-link', async (c) => c.json(await repo.groupInviteLink(await actor(c), c.req.param('id'))))
   app.post('/api/groups/:id/defaults', async (c) => {
     const body = await c.req.json<{ weights: { participantId: string; weight: number | null }[] }>()
     await repo.setDefaults(await actor(c), c.req.param('id'), body.weights)

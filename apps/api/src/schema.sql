@@ -151,12 +151,14 @@ create table if not exists notifications (
 create table if not exists invites (
   id text primary key,
   group_id text not null,
-  email text not null,
+  email text,
+  token text,
   token_hash text not null unique,
   expires_at timestamptz not null,
   accepted_at timestamptz,
   created_by_user_id text not null,
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  kind text not null default 'email'
 );
 
 create table if not exists blocks (
@@ -223,6 +225,11 @@ create table if not exists fx_rates (
   rate text not null,
   primary key (base, quote, rate_date)
 );
+
+alter table invites alter column email drop not null;
+alter table invites add column if not exists token text;
+alter table invites add column if not exists kind text not null default 'email';
+create unique index if not exists invites_share_token on invites (token);
 
 create index if not exists memberships_participant on memberships(participant_id);
 create index if not exists expenses_group on expenses(group_id);

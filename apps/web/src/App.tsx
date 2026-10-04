@@ -176,7 +176,7 @@ function GroupCard({ group }: { group: HomeGroup }) {
       <span className="group-copy">
         <span className="group-name">{group.name}</span>
         <span className="group-sub">{peopleLine(group.members ?? [])}</span>
-        {group.latest && <span className="group-latest">{shortDate(group.latest.date)} · {group.latest.description}</span>}
+        {group.latest && <span className="group-latest">{shortDate(group.latest.date)}{group.latest.description ? ` · ${group.latest.description}` : ''}</span>}
       </span>
       <span className={`group-balance ${tone(group.yourNetMinor)}`}>
         <span>{balance.label}</span>
@@ -294,7 +294,12 @@ function GroupPage() {
           <div className="row" key={expense.id}>
             <div className="expense-title">
               <span className="swatch" style={{ background: categoryColor(expense.categoryId) }} />
-              <div><strong>{expense.description}</strong><div className="muted">{expense.date} · {labelOf(detail, expense.categoryId)} · {expense.payers.map((payer) => payer.name).join(', ')} paid</div></div>
+              <div>
+                {expense.description
+                  ? <strong>{expense.description}</strong>
+                  : <strong>{expense.payers.filter((payer) => payer.minor > 0).map((payer) => payer.name).join(', ') || 'Someone'} paid</strong>}
+                <div className="muted">{expense.date}{expense.description ? ` · ${labelOf(detail, expense.categoryId)} · ${expense.payers.map((payer) => payer.name).join(', ')} paid` : ''}</div>
+              </div>
             </div>
             <span className="actions">
               <span className="money">

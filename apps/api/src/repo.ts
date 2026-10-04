@@ -379,7 +379,7 @@ export class Repo {
         const membership = await this.membership(groupId, participant.id)
         if (membership && !membership.removed_at) throw new LedgerError('BAD_INVITE', 'They are already in this group')
         const token = await this.insertInvite(groupId, email, actor.userId)
-        await this.sendEmail(email, `Join ${group.name} on Divvy`, `${actor.displayName} invited you to ${group.name}.\n${this.deps.webOrigin}/invite/${token}`)
+        await this.sendEmail(email, `Join ${group.name} on Divvy`, `${actor.displayName} invited you to ${group.name}.\n${this.inviteUrl(token)}`)
         await this.sql.query(
           `insert into notifications (id, user_id, kind, title, body, group_id) values ($1,$2,'invite',$3,$4,$5)`,
           [newId(), existing.id, `Invite to ${group.name}`, `${actor.displayName} invited you`, groupId],
@@ -402,9 +402,30 @@ export class Repo {
     return { status: 'added' as const, participantId, suggestDefault: true }
   }
 
+  async groupInviteLink(actor: Actor, groupId: string) {
+    await this.requireMember(actor, groupId)
+    const existing = await this.one<{ token: string }>(
+      `select token from invites
+       where group_id = $1 and kind = 'group' and token is not null and accepted_at is null and expires_at > $2
+       order by created_at desc
+       limit 1`,
+      [groupId, this.deps.now().toISOString()],
+    )
+    if (existing?.token) return { token: existing.token, url: this.inviteUrl(existing.token) }
+    await this.assertInviteCap(actor.userId)
+    const token = newToken()
+    const expires = new Date(this.deps.now().getTime() + 14 * 24 * 60 * 60 * 1000)
+    await this.sql.query(
+      `insert into invites (id, group_id, email, token, token_hash, expires_at, created_by_user_id, kind)
+       values ($1,$2,null,$3,$4,$5,$6,'group')`,
+      [newId(), groupId, token, hashToken(token), expires.toISOString(), actor.userId],
+    )
+    return { token, url: this.inviteUrl(token) }
+  }
+
   async previewInvite(actor: Actor, token: string) {
     const invite = await this.mustInvite(token)
-    if (invite.email !== actor.email) throw new LedgerError('FORBIDDEN', 'This invite was sent to a different email')
+    if (!isGroupInvite(invite) && invite.email !== actor.email) throw new LedgerError('FORBIDDEN', 'This invite was sent to a different email')
     const members = await this.memberRows(invite.group_id)
     const blockedIds = new Set(
       (await this.sql.query<{ user_id: string }>(
@@ -421,29 +442,38 @@ export class Repo {
         name: member.display_name,
         blocked: member.user_id ? blockedIds.has(member.user_id) : false,
       })),
+      kind: isGroupInvite(invite) ? 'group' as const : 'email' as const,
     }
   }
 
   async acceptInvite(actor: Actor, token: string) {
     const invite = await this.mustInvite(token)
-    if (invite.email !== actor.email) throw new LedgerError('FORBIDDEN', 'This invite was sent to a different email')
-    const ghost = await this.one<{ id: string }>(
-      `select p.id from participants p
-       join memberships m on m.participant_id = p.id
-       where m.group_id = $1 and lower(p.email) = $2 and p.user_id is null`,
-      [invite.group_id, actor.email],
-    )
-    if (ghost) {
-      await this.sql.tx((sql) => this.merge(sql, ghost.id, actor.participantId))
+    const groupLink = isGroupInvite(invite)
+    if (!groupLink && invite.email !== actor.email) throw new LedgerError('FORBIDDEN', 'This invite was sent to a different email')
+    if (!groupLink && invite.email) {
+      const ghost = await this.one<{ id: string }>(
+        `select p.id from participants p
+         join memberships m on m.participant_id = p.id
+         where m.group_id = $1 and lower(p.email) = $2 and p.user_id is null`,
+        [invite.group_id, invite.email],
+      )
+      if (ghost) {
+        await this.sql.tx((sql) => this.merge(sql, ghost.id, actor.participantId))
+      }
     }
     const membership = await this.membership(invite.group_id, actor.participantId)
+    const alreadyIn = Boolean(membership && !membership.removed_at)
     if (!membership) {
       await this.sql.query(`insert into memberships (group_id, participant_id) values ($1,$2)`, [invite.group_id, actor.participantId])
     } else if (membership.removed_at) {
       await this.sql.query(`update memberships set removed_at = null where group_id = $1 and participant_id = $2`, [invite.group_id, actor.participantId])
     }
-    await this.sql.query(`update invites set accepted_at = now() where id = $1`, [invite.id])
-    await this.activity(this.sql, invite.group_id, actor.participantId, 'member.joined', `${actor.displayName} joined`, {})
+    if (!groupLink) {
+      await this.sql.query(`update invites set accepted_at = now() where id = $1`, [invite.id])
+    }
+    if (!alreadyIn) {
+      await this.activity(this.sql, invite.group_id, actor.participantId, 'member.joined', `${actor.displayName} joined`, {})
+    }
     return this.groupDetail(actor, invite.group_id)
   }
 
@@ -519,12 +549,12 @@ export class Repo {
     const id = newId()
     await this.sql.tx(async (sql) => {
       await this.insertExpense(sql, id, groupId, prepared, null)
-      await this.activity(sql, groupId, actor.participantId, 'expense.created', `${actor.displayName} added ${prepared.description}`, {
+      await this.activity(sql, groupId, actor.participantId, 'expense.created', `${actor.displayName} added ${expenseLabel(prepared.description)}`, {
         expenseId: id,
         settlementMinor: prepared.settlementMinor,
       })
     })
-    await this.notifyGroup(groupId, actor.participantId, prepared.description, `${actor.displayName} added an expense for ${formatMoney(prepared.settlementMinor, prepared.groupCurrency)}`)
+    await this.notifyGroup(groupId, actor.participantId, prepared.description || `${actor.displayName} added an expense`, `${actor.displayName} added an expense for ${formatMoney(prepared.settlementMinor, prepared.groupCurrency)}`)
     return { id }
   }
 
@@ -556,31 +586,31 @@ export class Repo {
         ],
       )
       await this.insertLines(sql, expenseId, prepared)
-      await this.activity(sql, groupId, actor.participantId, 'expense.updated', `${actor.displayName} edited ${prepared.description}`, {
+      await this.activity(sql, groupId, actor.participantId, 'expense.updated', `${actor.displayName} edited ${expenseLabel(prepared.description)}`, {
         expenseId,
         previous: { settlementMinor: current.settlement_minor, description: current.description },
       })
     })
-    await this.notifyGroup(groupId, actor.participantId, prepared.description, `${actor.displayName} edited an expense`)
+    await this.notifyGroup(groupId, actor.participantId, prepared.description || `${actor.displayName} edited an expense`, `${actor.displayName} edited an expense`)
   }
 
   async deleteExpense(actor: Actor, groupId: string, expenseId: string) {
     await this.requireMember(actor, groupId)
     const current = await this.mustExpense(groupId, expenseId)
     await this.sql.query(`update expenses set deleted_at = now(), version = version + 1 where id = $1`, [expenseId])
-    await this.activity(this.sql, groupId, actor.participantId, 'expense.deleted', `${actor.displayName} deleted ${current.description}`, {
+    await this.activity(this.sql, groupId, actor.participantId, 'expense.deleted', `${actor.displayName} deleted ${expenseLabel(current.description)}`, {
       expenseId,
       settlementMinor: current.settlement_minor,
       description: current.description,
     })
-    await this.notifyGroup(groupId, actor.participantId, current.description, `${actor.displayName} deleted an expense`)
+    await this.notifyGroup(groupId, actor.participantId, current.description || `${actor.displayName} deleted an expense`, `${actor.displayName} deleted an expense`)
   }
 
   async restoreExpense(actor: Actor, groupId: string, expenseId: string) {
     await this.requireMember(actor, groupId)
     const current = await this.mustExpense(groupId, expenseId)
     await this.sql.query(`update expenses set deleted_at = null, version = version + 1 where id = $1`, [expenseId])
-    await this.activity(this.sql, groupId, actor.participantId, 'expense.restored', `${actor.displayName} restored ${current.description}`, { expenseId })
+    await this.activity(this.sql, groupId, actor.participantId, 'expense.restored', `${actor.displayName} restored ${expenseLabel(current.description)}`, { expenseId })
   }
 
   async moveExpense(actor: Actor, groupId: string, expenseId: string, destinationGroupId: string) {
@@ -602,8 +632,8 @@ export class Repo {
       throw new LedgerError('MIXED_CURRENCY', 'Move this into a group that uses the same currency, or enter it again there')
     }
     await this.sql.query(`update expenses set group_id = $1, version = version + 1 where id = $2`, [destinationGroupId, expenseId])
-    await this.activity(this.sql, groupId, actor.participantId, 'expense.moved', `${actor.displayName} moved ${expense.description} out`, { expenseId })
-    await this.activity(this.sql, destinationGroupId, actor.participantId, 'expense.moved', `${actor.displayName} moved ${expense.description} in`, { expenseId })
+    await this.activity(this.sql, groupId, actor.participantId, 'expense.moved', `${actor.displayName} moved ${expenseLabel(expense.description)} out`, { expenseId })
+    await this.activity(this.sql, destinationGroupId, actor.participantId, 'expense.moved', `${actor.displayName} moved ${expenseLabel(expense.description)} in`, { expenseId })
   }
 
   async createSettlement(actor: Actor, groupId: string, input: { fromId: string; toId: string; minor: number; date?: string; note?: string }) {
@@ -1502,7 +1532,7 @@ export class Repo {
   private async prepareExpense(actor: Actor, groupId: string, input: ExpenseInput, current: ExpenseRecord | null) {
     const { group } = await this.requireMember(actor, groupId)
     const today = calendarDateInTimeZone(group.timezone, this.deps.now())
-    const description = cleanName(input.description ?? current?.description ?? '')
+    const description = cleanExpenseDescription(input.description === undefined ? current?.description ?? '' : input.description)
     const date = input.date ?? current?.expense_date ?? today
     assertNotFuture(date, today)
     const kind = input.kind ?? current?.kind ?? 'expense'
@@ -1897,9 +1927,13 @@ export class Repo {
     return token
   }
 
+  private inviteUrl(token: string) {
+    return `${this.deps.webOrigin}/invite/${token}`
+  }
+
   private async mustInvite(token: string) {
-    const invite = await this.one<{ id: string; group_id: string; email: string; expires_at: string; accepted_at: string | null }>(
-      `select id, group_id, email, expires_at, accepted_at from invites where token_hash = $1`,
+    const invite = await this.one<{ id: string; group_id: string; email: string | null; kind: string | null; expires_at: string; accepted_at: string | null }>(
+      `select id, group_id, email, kind, expires_at, accepted_at from invites where token_hash = $1`,
       [hashToken(token)],
     )
     if (!invite || invite.accepted_at || new Date(invite.expires_at).getTime() < this.deps.now().getTime()) {
@@ -2088,6 +2122,22 @@ function cleanName(value: string) {
   const name = value.trim()
   if (!name || name.length > 80) throw new LedgerError('BAD_NAME', 'Use a name under 80 characters')
   return name
+}
+
+function cleanExpenseDescription(value: unknown) {
+  if (value == null) return ''
+  if (typeof value !== 'string') throw new LedgerError('BAD_NAME', 'Use a name under 80 characters')
+  const name = value.trim()
+  if (name.length > 80) throw new LedgerError('BAD_NAME', 'Use a name under 80 characters')
+  return name
+}
+
+function expenseLabel(description: string) {
+  return description.trim() || 'an expense'
+}
+
+function isGroupInvite(invite: { kind: string | null }) {
+  return invite.kind === 'group'
 }
 
 function csv(value: string) {

@@ -321,4 +321,276 @@ describe('ledger API', () => {
       expect.objectContaining({ month: '2026-09', categoryId: 'cat_dining', label: 'Dining', shareMinor: 1000, paidMinor: 2000 }),
     ])
   })
+
+  it('stores a blank expense description and still requires other names', async () => {
+    const sql = await createMemorySql()
+    const { app } = createApp(sql, { now: () => new Date('2026-09-26T15:00:00Z'), dev: true, rateFor: async () => '1' })
+    const alex = await sessionFor(app, 'alex@example.com')
+    const auth = { authorization: `Bearer ${alex.token}`, 'content-type': 'application/json' }
+    const created = await (await app.request('/api/groups', {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({ name: 'Apartment', currency: 'USD', timezone: 'UTC' }),
+    })).json() as { group: { id: string }; members: { id: string }[] }
+    const groupId = created.group.id
+    const alexId = created.members[0]!.id
+    const bobId = ((await (await app.request(`/api/groups/${groupId}/people`, {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({ displayName: 'Bob' }),
+    })).json()) as { participantId: string }).participantId
+
+    const blankGroup = await app.request('/api/groups', {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({ name: '   ', currency: 'USD', timezone: 'UTC' }),
+    })
+    expect(blankGroup.status).toBe(400)
+    expect(await blankGroup.json()).toMatchObject({ error: { code: 'BAD_NAME' } })
+    const blankPerson = await app.request(`/api/groups/${groupId}/people`, {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({ displayName: ' ' }),
+    })
+    expect(blankPerson.status).toBe(400)
+    expect(await blankPerson.json()).toMatchObject({ error: { code: 'BAD_NAME' } })
+
+    const save = (description: string) => app.request(`/api/groups/${groupId}/expenses`, {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({
+        description,
+        originalMinor: 1000,
+        originalCurrency: 'USD',
+        payers: [{ participantId: alexId, minor: 1000 }],
+        split: { type: 'equal', participantIds: [alexId, bobId] },
+      }),
+    })
+    expect((await save('')).status).toBe(200)
+    expect((await save('   ')).status).toBe(200)
+    expect((await save('Dinner')).status).toBe(200)
+    const detail = await (await app.request(`/api/groups/${groupId}`, { headers: auth })).json() as {
+      expenses: { description: string }[]
+    }
+    expect(detail.expenses.map((expense) => expense.description).sort()).toEqual(['', '', 'Dinner'])
+    const activity = await (await app.request(`/api/groups/${groupId}/activity`, { headers: auth })).json() as { summary: string }[]
+    expect(activity.some((row) => row.summary === 'Alex added an expense')).toBe(true)
+    expect(activity.some((row) => /\bExpense\b/.test(row.summary))).toBe(false)
+  })
+
+  it('rejects exact shares that do not add up to the total', async () => {
+    const sql = await createMemorySql()
+    const { app } = createApp(sql, { now: () => new Date('2026-09-26T15:00:00Z'), dev: true, rateFor: async () => '1' })
+    const alex = await sessionFor(app, 'alex@example.com')
+    const auth = { authorization: `Bearer ${alex.token}`, 'content-type': 'application/json' }
+    const created = await (await app.request('/api/groups', {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({ name: 'Apartment', currency: 'USD', timezone: 'UTC' }),
+    })).json() as { group: { id: string }; members: { id: string }[] }
+    const groupId = created.group.id
+    const alexId = created.members[0]!.id
+    const bobId = ((await (await app.request(`/api/groups/${groupId}/people`, {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({ displayName: 'Bob' }),
+    })).json()) as { participantId: string }).participantId
+    const saved = await app.request(`/api/groups/${groupId}/expenses`, {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({
+        description: 'Uneven',
+        originalMinor: 1000,
+        originalCurrency: 'USD',
+        payers: [{ participantId: alexId, minor: 1000 }],
+        split: { type: 'exact', amounts: [
+          { participantId: alexId, minor: 600 },
+          { participantId: bobId, minor: 300 },
+        ] },
+      }),
+    })
+    expect(saved.status).toBe(400)
+    expect(await saved.json()).toMatchObject({ error: { code: 'UNBALANCED' } })
+    const detail = await (await app.request(`/api/groups/${groupId}`, { headers: auth })).json() as { expenses: unknown[] }
+    expect(detail.expenses).toHaveLength(0)
+  })
+
+  it('splits $10 three ways as 334, 333, and 333 cents with the extra cent on the lowest id', async () => {
+    const sql = await createMemorySql()
+    const { app } = createApp(sql, { now: () => new Date('2026-09-26T15:00:00Z'), dev: true, rateFor: async () => '1' })
+    const alex = await sessionFor(app, 'alex@example.com')
+    const auth = { authorization: `Bearer ${alex.token}`, 'content-type': 'application/json' }
+    const created = await (await app.request('/api/groups', {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({ name: 'Apartment', currency: 'USD', timezone: 'UTC' }),
+    })).json() as { group: { id: string }; members: { id: string }[] }
+    const groupId = created.group.id
+    const alexId = created.members[0]!.id
+    const bobId = ((await (await app.request(`/api/groups/${groupId}/people`, {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({ displayName: 'Bob' }),
+    })).json()) as { participantId: string }).participantId
+    const charlieId = ((await (await app.request(`/api/groups/${groupId}/people`, {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({ displayName: 'Charlie' }),
+    })).json()) as { participantId: string }).participantId
+    const saved = await app.request(`/api/groups/${groupId}/expenses`, {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({
+        description: 'Ten dollars',
+        originalMinor: 1000,
+        originalCurrency: 'USD',
+        payers: [{ participantId: alexId, minor: 1000 }],
+        split: { type: 'equal', participantIds: [charlieId, alexId, bobId] },
+      }),
+    })
+    expect(saved.status).toBe(200)
+    const detail = await (await app.request(`/api/groups/${groupId}`, { headers: auth })).json() as {
+      expenses: { shares: { participantId: string; minor: number }[] }[]
+    }
+    const shares = detail.expenses[0]!.shares
+    expect(shares.map((share) => share.minor).sort((a, b) => a - b)).toEqual([333, 333, 334])
+    expect(shares.reduce((sum, share) => sum + share.minor, 0)).toBe(1000)
+    const lowest = shares.reduce((best, share) => share.participantId < best.participantId ? share : best)
+    expect(lowest.minor).toBe(334)
+  })
+
+  it('restores the balance when a recorded settlement is undone', async () => {
+    const sql = await createMemorySql()
+    const { app } = createApp(sql, { now: () => new Date('2026-09-26T15:00:00Z'), dev: true, rateFor: async () => '1' })
+    const alex = await sessionFor(app, 'alex@example.com')
+    const auth = { authorization: `Bearer ${alex.token}`, 'content-type': 'application/json' }
+    const created = await (await app.request('/api/groups', {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({ name: 'Apartment', currency: 'USD', timezone: 'UTC' }),
+    })).json() as { group: { id: string }; members: { id: string }[] }
+    const groupId = created.group.id
+    const alexId = created.members[0]!.id
+    const bobId = ((await (await app.request(`/api/groups/${groupId}/people`, {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({ displayName: 'Bob' }),
+    })).json()) as { participantId: string }).participantId
+    expect((await app.request(`/api/groups/${groupId}/expenses`, {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({
+        description: 'Groceries',
+        originalMinor: 2000,
+        originalCurrency: 'USD',
+        payers: [{ participantId: alexId, minor: 2000 }],
+        split: { type: 'equal', participantIds: [alexId, bobId] },
+      }),
+    })).status).toBe(200)
+
+    const before = await (await app.request(`/api/groups/${groupId}`, { headers: auth })).json() as {
+      nets: { participantId: string; netMinor: number }[]
+      payments: { fromId: string; toId: string; minor: number }[]
+    }
+    expect(before.payments).toEqual([{ fromId: bobId, toId: alexId, minor: 1000 }])
+    expect(before.nets.find((row) => row.participantId === alexId)?.netMinor).toBe(1000)
+    expect(before.nets.find((row) => row.participantId === bobId)?.netMinor).toBe(-1000)
+
+    const recorded = await app.request(`/api/groups/${groupId}/settlements`, {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({ fromId: bobId, toId: alexId, minor: 1000 }),
+    })
+    expect(recorded.status).toBe(200)
+    const settled = await (await app.request(`/api/groups/${groupId}`, { headers: auth })).json() as {
+      nets: { participantId: string; netMinor: number }[]
+      payments: { fromId: string; toId: string; minor: number }[]
+      settlements: { id: string }[]
+    }
+    expect(settled.payments).toEqual([])
+    expect(settled.nets.find((row) => row.participantId === alexId)?.netMinor ?? 0).toBe(0)
+    expect(settled.nets.find((row) => row.participantId === bobId)?.netMinor ?? 0).toBe(0)
+    const settlementId = settled.settlements[0]!.id
+
+    const undone = await app.request(`/api/groups/${groupId}/settlements/${settlementId}`, { method: 'DELETE', headers: auth })
+    expect(undone.status).toBe(200)
+    const restored = await (await app.request(`/api/groups/${groupId}`, { headers: auth })).json() as {
+      nets: { participantId: string; netMinor: number }[]
+      payments: { fromId: string; toId: string; minor: number }[]
+      settlements: { id: string }[]
+    }
+    expect(restored.payments).toEqual([{ fromId: bobId, toId: alexId, minor: 1000 }])
+    expect(restored.nets.find((row) => row.participantId === alexId)?.netMinor).toBe(1000)
+    expect(restored.nets.find((row) => row.participantId === bobId)?.netMinor).toBe(-1000)
+    expect(restored.settlements).toEqual([])
+  })
+
+  it('lets a different signed-in person accept a group link and keeps email invites locked', async () => {
+    const sql = await createMemorySql()
+    const { app } = createApp(sql, { now: () => new Date('2026-09-26T15:00:00Z'), dev: true, rateFor: async () => '1' })
+    const alex = await sessionFor(app, 'alex@example.com')
+    const jordan = await sessionFor(app, 'jordan@example.com')
+    const casey = await sessionFor(app, 'casey@example.com')
+    const sam = await sessionFor(app, 'sam@example.com')
+    const auth = { authorization: `Bearer ${alex.token}`, 'content-type': 'application/json' }
+    const created = await (await app.request('/api/groups', {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({ name: 'Apartment', currency: 'USD', timezone: 'UTC' }),
+    })).json() as { group: { id: string }; members: { id: string; name: string }[] }
+    const groupId = created.group.id
+    const linkResponse = await app.request(`/api/groups/${groupId}/invite-link`, { method: 'POST', headers: auth })
+    expect(linkResponse.status).toBe(200)
+    const link = await linkResponse.json() as { token: string; url: string }
+    expect(link.url).toContain(`/invite/${link.token}`)
+    const again = await (await app.request(`/api/groups/${groupId}/invite-link`, { method: 'POST', headers: auth })).json() as { token: string }
+    expect(again.token).toBe(link.token)
+
+    const anon = await app.request(`/api/invites/${link.token}/accept`, { method: 'POST' })
+    expect(anon.status).toBe(401)
+
+    const preview = await app.request(`/api/invites/${link.token}`, { headers: { authorization: `Bearer ${jordan.token}` } })
+    expect(preview.status).toBe(200)
+    expect(await preview.json()).toMatchObject({ group: { name: 'Apartment' }, kind: 'group' })
+    const joined = await app.request(`/api/invites/${link.token}/accept`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${jordan.token}` },
+    })
+    expect(joined.status).toBe(200)
+    expect((await joined.json() as { members: { name: string }[] }).members.map((member) => member.name).sort()).toEqual(['Alex', 'Jordan'])
+
+    const second = await app.request(`/api/invites/${link.token}/accept`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${casey.token}` },
+    })
+    expect(second.status).toBe(200)
+    const names = ((await second.json()) as { members: { name: string }[] }).members.map((member) => member.name).sort()
+    expect(names).toEqual(['Alex', 'Casey', 'Jordan'])
+
+    const invited = await app.request(`/api/groups/${groupId}/people`, {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({ email: 'sam@example.com', displayName: 'Sam' }),
+    })
+    expect(await invited.json()).toMatchObject({ status: 'invited' })
+    const outbox = await (await app.request('/api/dev/outbox')).json() as { to_email: string; body: string }[]
+    const mail = outbox.find((row) => row.to_email === 'sam@example.com' && row.body.includes('/invite/'))
+    const emailToken = mail?.body.split('/invite/').at(-1)?.trim()
+    expect(emailToken).toBeTruthy()
+    const wrong = await app.request(`/api/invites/${emailToken}/accept`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${jordan.token}` },
+    })
+    expect(wrong.status).toBe(403)
+    expect(await wrong.json()).toMatchObject({ error: { code: 'FORBIDDEN' } })
+    const right = await app.request(`/api/invites/${emailToken}/accept`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${sam.token}` },
+    })
+    expect(right.status).toBe(200)
+    const detail = await (await app.request(`/api/groups/${groupId}`, { headers: { authorization: `Bearer ${sam.token}` } })).json() as {
+      members: { name: string }[]
+    }
+    expect(detail.members.map((member) => member.name)).toContain('Sam')
+  })
 })
