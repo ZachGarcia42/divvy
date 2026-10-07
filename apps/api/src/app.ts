@@ -16,15 +16,20 @@ export function createApp(sql: Sql, options?: {
   adminToken?: string | null
 }) {
   const dev = options?.dev ?? process.env.NODE_ENV !== 'production'
+  // Lockdown is on whenever an allowlist is supplied at all: the createApp option (even an empty
+  // array or string) or the DEV_SIGNIN_EMAILS env var being present (even empty or whitespace).
+  // Locked means only listed emails get a devToken (an empty list means no one does) and
+  // /api/dev/* returns 404. Only an absent env var with no option keeps the old open dev behavior;
+  // passing devSigninEmails: null explicitly opts out (tests only).
   const allowRaw = options?.devSigninEmails !== undefined ? options.devSigninEmails : process.env.DEV_SIGNIN_EMAILS
-  const allowList = allowRaw == null ? null
-    : (Array.isArray(allowRaw) ? allowRaw : allowRaw.split(',')).map((email) => email.trim().toLowerCase()).filter(Boolean)
-  // An allowlist (even an empty one) locks the API down to tester emails and hides /api/dev/*.
-  const restricted = allowList !== null && (allowRaw !== '' || options?.devSigninEmails !== undefined)
+  const restricted = allowRaw != null
+  const allowList = restricted
+    ? (Array.isArray(allowRaw) ? allowRaw : allowRaw.split(',')).map((email) => String(email).trim().toLowerCase()).filter(Boolean)
+    : []
   const devTokenFor = (email: unknown) => {
     if (!dev) return false
     if (!restricted) return true
-    return typeof email === 'string' && allowList!.includes(email.trim().toLowerCase())
+    return typeof email === 'string' && allowList.includes(email.trim().toLowerCase())
   }
   const devRoutes = dev && !restricted
   const adminToken = (options?.adminToken !== undefined ? options.adminToken : process.env.ADMIN_TOKEN) || ''
@@ -70,15 +75,24 @@ export function createApp(sql: Sql, options?: {
 
   app.get('/api/health', (c) => c.json({ ok: true }))
 
+  const emailFromBody = async (c: { req: { json: () => Promise<unknown> } }) => {
+    const body = await c.req.json().catch(() => null) as { email?: unknown } | null
+    const email = body && typeof body === 'object' && !Array.isArray(body) ? body.email : undefined
+    if (typeof email !== 'string') throw new LedgerError('BAD_EMAIL', 'Enter a valid email')
+    return email
+  }
+
   app.post('/api/auth/magic-link', async (c) => {
-    const body = await c.req.json<{ email: string }>()
+    const body = { email: await emailFromBody(c) }
     const issued = await repo.requestMagicLink(body.email)
     return c.json({ ok: true, devToken: devTokenFor(body.email) ? issued.token : undefined })
   })
 
   app.post('/api/auth/verify', async (c) => {
-    const body = await c.req.json<{ token: string }>()
-    const result = await repo.verifyMagicLink(body.token)
+    const body = await c.req.json().catch(() => null) as { token?: unknown } | null
+    const token = body && typeof body === 'object' ? body.token : undefined
+    if (typeof token !== 'string' || !token) throw new LedgerError('BAD_TOKEN', 'That sign-in link is no longer valid')
+    const result = await repo.verifyMagicLink(token)
     setCookie(c, COOKIE, result.token, { httpOnly: true, sameSite: 'Lax', path: '/', maxAge: 60 * 60 * 24 * 30 })
     return c.json(result)
   })
@@ -97,7 +111,7 @@ export function createApp(sql: Sql, options?: {
   app.patch('/api/me', async (c) => c.json(await repo.updateMe(await actor(c), await c.req.json())))
   app.post('/api/me/email', async (c) => {
     const current = await actor(c)
-    const body = await c.req.json<{ email: string }>()
+    const body = { email: await emailFromBody(c) }
     const issued = await repo.requestMagicLink(body.email, 'email_change', current.userId)
     return c.json({ ok: true, devToken: devTokenFor(body.email) ? issued.token : undefined })
   })

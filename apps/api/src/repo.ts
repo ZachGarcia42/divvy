@@ -2112,7 +2112,8 @@ function publicUser(user: { id: string; email: string; display_name: string; hom
   return { id: user.id, email: user.email, displayName: user.display_name, homeCurrency: user.home_currency }
 }
 
-function normalizeEmail(email: string) {
+function normalizeEmail(email: unknown) {
+  if (typeof email !== 'string') throw new LedgerError('BAD_EMAIL', 'Enter a valid email')
   const normalized = email.trim().toLowerCase()
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) throw new LedgerError('BAD_EMAIL', 'Enter a valid email')
   return normalized

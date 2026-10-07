@@ -608,7 +608,7 @@ describe('ledger API', () => {
     const verify = await app.request('/api/auth/verify', {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ token: stranger.devToken }),
     })
-    expect(verify.status).not.toBe(200)
+    expect(verify.status).toBe(401)
     expect((await app.request('/api/dev/outbox')).status).toBe(404)
     expect((await app.request('/api/dev/seed', { method: 'POST' })).status).toBe(404)
   })
@@ -624,5 +624,38 @@ describe('ledger API', () => {
     const me = await (await on.request('/api/me', { headers: { authorization: `Bearer ${user.token}` } })).json() as { userId: string }
     const ok = await on.request(`/api/admin/users/${me.userId}/suspend`, { method: 'POST', headers: { 'x-admin-token': 'secret' } })
     expect(ok.status).toBe(200)
+  })
+
+  it('fails closed when DEV_SIGNIN_EMAILS is present but empty', async () => {
+    const sql = await createMemorySql()
+    const saved = process.env.DEV_SIGNIN_EMAILS
+    const ask = async (app: ReturnType<typeof createApp>['app']) => (await app.request('/api/auth/magic-link', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'alex@example.com' }),
+    })).json() as Promise<{ ok: boolean; devToken?: string }>
+    try {
+      for (const value of ['', '   ', ' , ']) {
+        process.env.DEV_SIGNIN_EMAILS = value
+        const { app } = createApp(sql, { dev: true, rateFor: async () => '1' })
+        expect(await ask(app)).toEqual({ ok: true })
+        expect((await app.request('/api/dev/outbox')).status).toBe(404)
+        expect((await app.request('/api/dev/seed', { method: 'POST' })).status).toBe(404)
+      }
+    } finally {
+      if (saved === undefined) delete process.env.DEV_SIGNIN_EMAILS
+      else process.env.DEV_SIGNIN_EMAILS = saved
+    }
+    const locked = createApp(sql, { dev: true, rateFor: async () => '1', devSigninEmails: [] }).app
+    expect(await ask(locked)).toEqual({ ok: true })
+    expect((await locked.request('/api/dev/outbox')).status).toBe(404)
+  })
+
+  it('rejects malformed magic-link bodies with 400', async () => {
+    const sql = await createMemorySql()
+    const { app } = createApp(sql, { dev: true, rateFor: async () => '1' })
+    for (const body of ['{"email":null}', '{}', '[]', '{"email":["a@b.co"]}', '{"email":42}', '{"email":{}}', 'null', 'not json']) {
+      const response = await app.request('/api/auth/magic-link', { method: 'POST', headers: { 'content-type': 'application/json' }, body })
+      expect(response.status, body).toBe(400)
+      expect(await response.json()).toMatchObject({ error: { code: 'BAD_EMAIL' } })
+    }
   })
 })
