@@ -12,8 +12,22 @@ export function createApp(sql: Sql, options?: {
   rateFor?: (from: string, to: string, date: string) => Promise<string>
   webOrigin?: string
   dev?: boolean
+  devSigninEmails?: string[] | string | null
+  adminToken?: string | null
 }) {
   const dev = options?.dev ?? process.env.NODE_ENV !== 'production'
+  const allowRaw = options?.devSigninEmails !== undefined ? options.devSigninEmails : process.env.DEV_SIGNIN_EMAILS
+  const allowList = allowRaw == null ? null
+    : (Array.isArray(allowRaw) ? allowRaw : allowRaw.split(',')).map((email) => email.trim().toLowerCase()).filter(Boolean)
+  // An allowlist (even an empty one) locks the API down to tester emails and hides /api/dev/*.
+  const restricted = allowList !== null && (allowRaw !== '' || options?.devSigninEmails !== undefined)
+  const devTokenFor = (email: unknown) => {
+    if (!dev) return false
+    if (!restricted) return true
+    return typeof email === 'string' && allowList!.includes(email.trim().toLowerCase())
+  }
+  const devRoutes = dev && !restricted
+  const adminToken = (options?.adminToken !== undefined ? options.adminToken : process.env.ADMIN_TOKEN) || ''
   const repo = new Repo(sql, {
     now: options?.now ?? (() => new Date()),
     rateFor: options?.rateFor ?? ((from, to, date) => defaultRate(sql, from, to, date)),
@@ -59,7 +73,7 @@ export function createApp(sql: Sql, options?: {
   app.post('/api/auth/magic-link', async (c) => {
     const body = await c.req.json<{ email: string }>()
     const issued = await repo.requestMagicLink(body.email)
-    return c.json({ ok: true, devToken: dev ? issued.token : undefined })
+    return c.json({ ok: true, devToken: devTokenFor(body.email) ? issued.token : undefined })
   })
 
   app.post('/api/auth/verify', async (c) => {
@@ -85,7 +99,7 @@ export function createApp(sql: Sql, options?: {
     const current = await actor(c)
     const body = await c.req.json<{ email: string }>()
     const issued = await repo.requestMagicLink(body.email, 'email_change', current.userId)
-    return c.json({ ok: true, devToken: dev ? issued.token : undefined })
+    return c.json({ ok: true, devToken: devTokenFor(body.email) ? issued.token : undefined })
   })
   app.get('/api/claims', async (c) => c.json(await repo.claims(await actor(c))))
   app.post('/api/claims/:id', async (c) => {
@@ -212,18 +226,17 @@ export function createApp(sql: Sql, options?: {
   })
 
   app.post('/api/dev/seed', async (c) => {
-    if (!dev) return c.json({ error: { code: 'NOT_FOUND', message: 'Not found' } }, 404)
+    if (!devRoutes) return c.json({ error: { code: 'NOT_FOUND', message: 'Not found' } }, 404)
     const result = await repo.seed()
     setCookie(c, COOKIE, result.token, { httpOnly: true, sameSite: 'Lax', path: '/', maxAge: 60 * 60 * 24 * 30 })
     return c.json(result)
   })
   app.get('/api/dev/outbox', async (c) => {
-    if (!dev) return c.json({ error: { code: 'NOT_FOUND', message: 'Not found' } }, 404)
+    if (!devRoutes) return c.json({ error: { code: 'NOT_FOUND', message: 'Not found' } }, 404)
     return c.json(await repo.outbox())
   })
   app.post('/api/admin/users/:id/suspend', async (c) => {
-    const expected = process.env.ADMIN_TOKEN ?? (dev ? 'dev-admin' : '')
-    if (!expected || c.req.header('x-admin-token') !== expected) {
+    if (!adminToken || c.req.header('x-admin-token') !== adminToken) {
       return c.json({ error: { code: 'FORBIDDEN', message: 'Admin token required' } }, 403)
     }
     await repo.suspend(c.req.param('id'))

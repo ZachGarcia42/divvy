@@ -593,4 +593,36 @@ describe('ledger API', () => {
     }
     expect(detail.members.map((member) => member.name)).toContain('Sam')
   })
+
+  it('only hands dev sign-in tokens to allowlisted testers and hides dev routes', async () => {
+    const sql = await createMemorySql()
+    const { app } = createApp(sql, { dev: true, rateFor: async () => '1', devSigninEmails: ' Alex@Example.com , sam@example.com' })
+    const ask = async (email: string) => (await app.request('/api/auth/magic-link', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email }),
+    })).json() as Promise<{ ok: boolean; devToken?: string }>
+    const allowed = await ask('alex@example.com')
+    expect(allowed.devToken).toBeTruthy()
+    expect((await sessionFor(app, 'SAM@example.com')).token).toBeTruthy()
+    const stranger = await ask('zach@example.com')
+    expect(stranger).toEqual({ ok: true })
+    const verify = await app.request('/api/auth/verify', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ token: stranger.devToken }),
+    })
+    expect(verify.status).not.toBe(200)
+    expect((await app.request('/api/dev/outbox')).status).toBe(404)
+    expect((await app.request('/api/dev/seed', { method: 'POST' })).status).toBe(404)
+  })
+
+  it('refuses admin routes without a configured ADMIN_TOKEN', async () => {
+    const sql = await createMemorySql()
+    const off = createApp(sql, { dev: true, rateFor: async () => '1', adminToken: null }).app
+    const refused = await off.request('/api/admin/users/x/suspend', { method: 'POST', headers: { 'x-admin-token': 'dev-admin' } })
+    expect(refused.status).toBe(403)
+    const on = createApp(sql, { dev: true, rateFor: async () => '1', adminToken: 'secret' }).app
+    const user = await sessionFor(on, 'alex@example.com')
+    expect((await on.request('/api/admin/users/x/suspend', { method: 'POST', headers: { 'x-admin-token': 'dev-admin' } })).status).toBe(403)
+    const me = await (await on.request('/api/me', { headers: { authorization: `Bearer ${user.token}` } })).json() as { userId: string }
+    const ok = await on.request(`/api/admin/users/${me.userId}/suspend`, { method: 'POST', headers: { 'x-admin-token': 'secret' } })
+    expect(ok.status).toBe(200)
+  })
 })

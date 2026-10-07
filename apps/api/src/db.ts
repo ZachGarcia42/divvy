@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { mkdirSync, readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { FIXED_CATEGORIES } from '@divvy/domain'
@@ -41,6 +41,7 @@ export async function createSql(): Promise<Sql> {
   }
   const { PGlite } = await import('@electric-sql/pglite')
   const dataDir = resolve(dirname(fileURLToPath(import.meta.url)), '../../../data/pglite')
+  mkdirSync(dataDir, { recursive: true })
   const db = new PGlite(dataDir)
   await db.exec(schema)
   const sql = wrapPglite(db)
