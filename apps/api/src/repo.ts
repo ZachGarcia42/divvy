@@ -72,22 +72,23 @@ export class Repo {
     return rows[0] ?? null
   }
 
-  async requestMagicLink(email: string, purpose: 'login' | 'email_change' = 'login', userId?: string) {
+  async requestMagicLink(email: string, purpose: 'login' | 'email_change' = 'login', userId?: string, next?: string | null) {
     const normalized = normalizeEmail(email)
+    const nextPath = next == null ? null : cleanNextPath(next)
     const token = newToken()
     const expires = new Date(this.deps.now().getTime() + 15 * 60 * 1000)
     await this.sql.query(
-      `insert into magic_links (token_hash, email, purpose, user_id, expires_at) values ($1,$2,$3,$4,$5)`,
-      [hashToken(token), normalized, purpose, userId ?? null, expires.toISOString()],
+      `insert into magic_links (token_hash, email, purpose, user_id, expires_at, next_path) values ($1,$2,$3,$4,$5,$6)`,
+      [hashToken(token), normalized, purpose, userId ?? null, expires.toISOString(), nextPath],
     )
-    const url = `${this.deps.webOrigin}/login?token=${encodeURIComponent(token)}`
+    const url = `${this.deps.webOrigin}/login?token=${encodeURIComponent(token)}${nextPath ? `&next=${encodeURIComponent(nextPath)}` : ''}`
     await this.sendEmail(normalized, 'Your Divvy sign-in link', `Open this link to sign in. It expires in 15 minutes.\n${url}`)
     return { token, url }
   }
 
   async verifyMagicLink(token: string) {
-    const link = await this.one<{ email: string; purpose: string; user_id: string | null; expires_at: string; used_at: string | null }>(
-      `select email, purpose, user_id, expires_at, used_at from magic_links where token_hash = $1`,
+    const link = await this.one<{ email: string; purpose: string; user_id: string | null; expires_at: string; used_at: string | null; next_path: string | null }>(
+      `select email, purpose, user_id, expires_at, used_at, next_path from magic_links where token_hash = $1`,
       [hashToken(token)],
     )
     if (!link || link.used_at || new Date(link.expires_at).getTime() < this.deps.now().getTime()) {
@@ -103,7 +104,7 @@ export class Repo {
     const user = await this.ensureUser(link.purpose === 'email_change' ? link.email : link.email, undefined, link.purpose === 'email_change' ? link.user_id! : undefined)
     const session = await this.createSession(user.id)
     const claims = await this.claimRows(user.email)
-    return { token: session, user: publicUser(user), claims }
+    return { token: session, user: publicUser(user), claims, next: link.next_path ?? null }
   }
 
   async logout(token: string) {
@@ -421,6 +422,22 @@ export class Repo {
       [newId(), groupId, token, hashToken(token), expires.toISOString(), actor.userId],
     )
     return { token, url: this.inviteUrl(token) }
+  }
+
+  /** Unauthenticated preview: only the group name, inviter name, and status. Never members or emails. */
+  async publicInvitePreview(token: string) {
+    const invite = await this.one<{ group_id: string; expires_at: string; accepted_at: string | null; created_by_user_id: string }>(
+      `select group_id, expires_at, accepted_at, created_by_user_id from invites where token_hash = $1`,
+      [hashToken(token)],
+    )
+    if (!invite) throw new LedgerError('NOT_FOUND', 'That invite does not exist')
+    const group = await this.one<{ name: string }>(`select name from groups where id = $1`, [invite.group_id])
+    if (!group) throw new LedgerError('NOT_FOUND', 'That invite does not exist')
+    const inviter = await this.one<{ display_name: string }>(`select display_name from users where id = $1`, [invite.created_by_user_id])
+    const status = invite.accepted_at ? 'used' as const
+      : new Date(invite.expires_at).getTime() < this.deps.now().getTime() ? 'expired' as const
+      : 'valid' as const
+    return { groupName: group.name, inviterName: inviter?.display_name ?? null, status }
   }
 
   async previewInvite(actor: Actor, token: string) {
@@ -2112,16 +2129,27 @@ function publicUser(user: { id: string; email: string; display_name: string; hom
   return { id: user.id, email: user.email, displayName: user.display_name, homeCurrency: user.home_currency }
 }
 
-function normalizeEmail(email: unknown) {
+export function normalizeEmail(email: unknown) {
   if (typeof email !== 'string') throw new LedgerError('BAD_EMAIL', 'Enter a valid email')
   const normalized = email.trim().toLowerCase()
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) throw new LedgerError('BAD_EMAIL', 'Enter a valid email')
   return normalized
 }
 
-function cleanName(value: string) {
+export function cleanNextPath(value: unknown) {
+  // Relative in-app paths only: one leading slash, no scheme, no protocol-relative or backslash tricks.
+  if (typeof value !== 'string' || value.length > 512 || !value.startsWith('/') || value.startsWith('//')
+    || /[\\\s\u0000-\u001f]/.test(value) || /^\/*[a-z][a-z0-9+.-]*:/i.test(value)) {
+    throw new LedgerError('BAD_NEXT', 'next must be a relative path like /invite/<token>')
+  }
+  return value
+}
+
+function cleanName(value: unknown) {
+  if (typeof value !== 'string') throw new LedgerError('BAD_NAME', 'Name must be text')
   const name = value.trim()
-  if (!name || name.length > 80) throw new LedgerError('BAD_NAME', 'Use a name under 80 characters')
+  if (!name) throw new LedgerError('BAD_NAME', "Name can't be blank")
+  if (name.length > 80) throw new LedgerError('BAD_NAME', 'Use a name under 80 characters')
   return name
 }
 

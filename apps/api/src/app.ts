@@ -3,7 +3,7 @@ import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie'
 import type { Sql } from './db.ts'
-import { Repo } from './repo.ts'
+import { cleanNextPath, normalizeEmail, Repo } from './repo.ts'
 
 const COOKIE = 'divvy_session'
 
@@ -14,6 +14,10 @@ export function createApp(sql: Sql, options?: {
   dev?: boolean
   devSigninEmails?: string[] | string | null
   adminToken?: string | null
+  /** Per-email and per-IP limit on sign-in/email-change links. false disables (tests only). */
+  rateLimit?: { max: number; windowMs: number } | false
+  /** Trust the first X-Forwarded-For entry as the client IP (only behind a proxy you control). */
+  trustProxy?: boolean
 }) {
   const dev = options?.dev ?? process.env.NODE_ENV !== 'production'
   // Lockdown is on whenever an allowlist is supplied at all: the createApp option (even an empty
@@ -33,6 +37,33 @@ export function createApp(sql: Sql, options?: {
   }
   const devRoutes = dev && !restricted
   const adminToken = (options?.adminToken !== undefined ? options.adminToken : process.env.ADMIN_TOKEN) || ''
+  const limit = options?.rateLimit === undefined ? { max: 5, windowMs: 15 * 60 * 1000 } : options.rateLimit
+  const trustProxy = options?.trustProxy ?? process.env.TRUST_PROXY === '1'
+  const clock = () => (options?.now ?? (() => new Date()))().getTime()
+  const hits = new Map<string, number[]>()
+  const clientIp = (c: { req: { header: (name: string) => string | undefined }; env?: unknown }) => {
+    if (trustProxy) {
+      const forwarded = c.req.header('x-forwarded-for')?.split(',')[0]?.trim()
+      if (forwarded) return forwarded
+    }
+    const env = c.env as { incoming?: { socket?: { remoteAddress?: string } } } | undefined
+    return env?.incoming?.socket?.remoteAddress ?? null
+  }
+  /** Throws RATE_LIMITED (429) if this email or IP already used its quota in the window; otherwise records the hit. */
+  const throttle = (email: string, ip: string | null) => {
+    if (!limit) return
+    const now = clock()
+    const keys = [`email:${email.trim().toLowerCase()}`, ...(ip ? [`ip:${ip}`] : [])]
+    const recent = keys.map((key) => (hits.get(key) ?? []).filter((at) => now - at < limit.windowMs))
+    keys.forEach((key, index) => hits.set(key, recent[index]!))
+    if (recent.some((list) => list.length >= limit.max)) {
+      throw new LedgerError('RATE_LIMITED', 'Too many sign-in links. Wait a few minutes and try again.')
+    }
+    keys.forEach((key, index) => recent[index]!.push(now))
+    if (hits.size > 10_000) {
+      for (const [key, list] of hits) if (!list.some((at) => now - at < limit.windowMs)) hits.delete(key)
+    }
+  }
   const repo = new Repo(sql, {
     now: options?.now ?? (() => new Date()),
     rateFor: options?.rateFor ?? ((from, to, date) => defaultRate(sql, from, to, date)),
@@ -50,6 +81,7 @@ export function createApp(sql: Sql, options?: {
         : error.code === 'FORBIDDEN' || error.code === 'SUSPENDED' || error.code === 'BLOCKED' ? 403
         : error.code === 'NOT_FOUND' ? 404
         : error.code === 'STALE' ? 409
+        : error.code === 'RATE_LIMITED' ? 429
         : 400
       return c.json({ error: { code: error.code, message: error.message } }, status)
     }
@@ -75,16 +107,27 @@ export function createApp(sql: Sql, options?: {
 
   app.get('/api/health', (c) => c.json({ ok: true }))
 
-  const emailFromBody = async (c: { req: { json: () => Promise<unknown> } }) => {
-    const body = await c.req.json().catch(() => null) as { email?: unknown } | null
-    const email = body && typeof body === 'object' && !Array.isArray(body) ? body.email : undefined
+  const readBody = async (c: { req: { json: () => Promise<unknown> } }) => {
+    const body = await c.req.json().catch(() => null)
+    return body && typeof body === 'object' && !Array.isArray(body) ? body as Record<string, unknown> : null
+  }
+  const emailFromBody = (body: Record<string, unknown> | null) => {
+    const email = body?.email
     if (typeof email !== 'string') throw new LedgerError('BAD_EMAIL', 'Enter a valid email')
+    normalizeEmail(email) // validate before the request counts against the rate limit
     return email
+  }
+  const nextFromBody = (body: Record<string, unknown> | null) => {
+    const next = body?.next
+    if (next === undefined || next === null || next === '') return null
+    return cleanNextPath(next)
   }
 
   app.post('/api/auth/magic-link', async (c) => {
-    const body = { email: await emailFromBody(c) }
-    const issued = await repo.requestMagicLink(body.email)
+    const raw = await readBody(c)
+    const body = { email: emailFromBody(raw), next: nextFromBody(raw) }
+    throttle(body.email, clientIp(c))
+    const issued = await repo.requestMagicLink(body.email, 'login', undefined, body.next)
     return c.json({ ok: true, devToken: devTokenFor(body.email) ? issued.token : undefined })
   })
 
@@ -108,10 +151,17 @@ export function createApp(sql: Sql, options?: {
     const found = await repo.actorFromToken(tokenOf(c))
     return c.json(found)
   })
-  app.patch('/api/me', async (c) => c.json(await repo.updateMe(await actor(c), await c.req.json())))
+  app.patch('/api/me', async (c) => {
+    const current = await actor(c)
+    const body = await readBody(c)
+    if (!body) throw new LedgerError('BAD_REQUEST', 'Send a JSON object')
+    if (body.homeCurrency !== undefined && typeof body.homeCurrency !== 'string') throw new LedgerError('BAD_CURRENCY', 'Currency must be text')
+    return c.json(await repo.updateMe(current, body as { displayName?: string; homeCurrency?: string }))
+  })
   app.post('/api/me/email', async (c) => {
     const current = await actor(c)
-    const body = { email: await emailFromBody(c) }
+    const body = { email: emailFromBody(await readBody(c)) }
+    throttle(body.email, clientIp(c))
     const issued = await repo.requestMagicLink(body.email, 'email_change', current.userId)
     return c.json({ ok: true, devToken: devTokenFor(body.email) ? issued.token : undefined })
   })
@@ -214,6 +264,7 @@ export function createApp(sql: Sql, options?: {
     return c.text(csv, 200, { 'content-type': 'text/csv; charset=utf-8', 'content-disposition': 'attachment; filename="divvy.csv"' })
   })
 
+  app.get('/api/invites/:token/preview', async (c) => c.json(await repo.publicInvitePreview(c.req.param('token'))))
   app.get('/api/invites/:token', async (c) => c.json(await repo.previewInvite(await actor(c), c.req.param('token'))))
   app.post('/api/invites/:token/accept', async (c) => c.json(await repo.acceptInvite(await actor(c), c.req.param('token'))))
   app.get('/api/people/:id', async (c) => c.json(await repo.person(await actor(c), c.req.param('id'))))

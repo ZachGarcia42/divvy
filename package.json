@@ -6,7 +6,7 @@
     "apps/*"
   ],
   "scripts": {
-    "test": "npm run test -w @divvy/domain && npm run test -w @divvy/api",
+    "test": "npm run test -w @divvy/domain && npm run test -w @divvy/api && npm run test -w @divvy/mobile",
     "dev": "concurrently -n api,web -c green,blue \"npm run dev -w @divvy/api\" \"npm run dev -w @divvy/web\"",
     "dev:api": "npm run dev -w @divvy/api",
     "dev:web": "npm run dev -w @divvy/web",

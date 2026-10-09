@@ -230,6 +230,7 @@ alter table invites alter column email drop not null;
 alter table invites add column if not exists token text;
 alter table invites add column if not exists kind text not null default 'email';
 create unique index if not exists invites_share_token on invites (token);
+alter table magic_links add column if not exists next_path text;
 
 create index if not exists memberships_participant on memberships(participant_id);
 create index if not exists expenses_group on expenses(group_id);

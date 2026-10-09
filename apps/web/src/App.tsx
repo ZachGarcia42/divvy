@@ -59,8 +59,8 @@ function LoginPage() {
 
   useEffect(() => {
     if (!token) return
-    api('/api/auth/verify', { method: 'POST', body: JSON.stringify({ token }) })
-      .then(() => navigate('/'))
+    api<{ next?: string | null }>('/api/auth/verify', { method: 'POST', body: JSON.stringify({ token }) })
+      .then((result) => navigate(result.next && result.next.startsWith('/') && !result.next.startsWith('//') ? result.next : '/'))
       .catch((reason: Error) => setError(reason.message))
   }, [token, navigate])
 

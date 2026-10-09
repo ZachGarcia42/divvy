@@ -1,4 +1,5 @@
 import { computeShares, exponentOf, formatMoney, parseMajor } from '@divvy/domain'
+import AsyncStorage from '@react-native-async-storage/async-storage'
 import { useEffect, useRef, useState } from 'react'
 import {
   KeyboardAvoidingView,
@@ -13,6 +14,7 @@ import {
   TextInput,
   View,
 } from 'react-native'
+import { inviteFromNext, parseDeepLink, PENDING_INVITE_KEY } from './links'
 
 const API = process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:8787'
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
@@ -133,31 +135,62 @@ function firstGroup(groups: HomeGroup[]) {
 export function App() {
   const [token, setToken] = useState<string | null>(null)
   const [inviteToken, setInviteToken] = useState<string | null>(null)
+  const [linkError, setLinkError] = useState<string | null>(null)
+
+  // A pending invite survives the app being killed: it is persisted until it is accepted or dismissed.
+  const rememberInvite = (next: string) => {
+    setInviteToken(next)
+    AsyncStorage.setItem(PENDING_INVITE_KEY, next).catch(() => undefined)
+  }
+  const forgetInvite = () => {
+    setInviteToken(null)
+    AsyncStorage.removeItem(PENDING_INVITE_KEY).catch(() => undefined)
+  }
 
   useEffect(() => {
-    const take = (url: string | null) => {
-      const next = tokenFromInput(url)
-      if (next) setInviteToken(next)
+    AsyncStorage.getItem(PENDING_INVITE_KEY)
+      .then((saved) => { if (saved) setInviteToken((current) => current ?? saved) })
+      .catch(() => undefined)
+    const take = async (url: string | null) => {
+      const link = parseDeepLink(url)
+      if (!link) return
+      if (link.kind === 'invite') {
+        rememberInvite(link.token)
+        return
+      }
+      try {
+        const session = await call<{ token: string; next?: string | null }>(null, '/api/auth/verify', {
+          method: 'POST',
+          body: JSON.stringify({ token: link.token }),
+        })
+        const pending = inviteFromNext(session.next ?? link.next)
+        if (pending) rememberInvite(pending)
+        setLinkError(null)
+        setToken(session.token)
+      } catch (reason) {
+        setLinkError(reason instanceof Error ? reason.message : 'That sign-in link is no longer valid')
+      }
     }
     Linking.getInitialURL().then(take).catch(() => undefined)
-    const subscription = Linking.addEventListener('url', (event) => take(event.url))
+    const subscription = Linking.addEventListener('url', (event) => { void take(event.url) })
     return () => subscription.remove()
   }, [])
 
-  if (!token) return <SignIn onToken={setToken} />
+  if (!token) return <SignIn onToken={setToken} pendingInvite={inviteToken} linkError={linkError} />
   return (
     <Ledger
       token={token}
       inviteToken={inviteToken}
-      onInviteHandled={() => setInviteToken(null)}
+      onInviteHandled={forgetInvite}
       onSignedOut={() => setToken(null)}
     />
   )
 }
 
-function SignIn({ onToken }: { onToken: (token: string) => void }) {
+function SignIn({ onToken, pendingInvite, linkError }: { onToken: (token: string) => void; pendingInvite: string | null; linkError: string | null }) {
   const [email, setEmail] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const shownError = error ?? linkError
 
   return (
     <SafeAreaView style={styles.screen}>
@@ -175,7 +208,7 @@ function SignIn({ onToken }: { onToken: (token: string) => void }) {
           placeholderTextColor="#6b7a72"
           testID="sign-in-email"
         />
-        {error && <Text style={styles.error}>{error}</Text>}
+        {shownError && <Text style={styles.error}>{shownError}</Text>}
         <Pressable style={styles.primary} onPress={async () => {
           try {
             const session = await call<{ token: string }>(null, '/api/dev/seed', { method: 'POST' })
@@ -190,7 +223,7 @@ function SignIn({ onToken }: { onToken: (token: string) => void }) {
           try {
             const issued = await call<{ devToken?: string }>(null, '/api/auth/magic-link', {
               method: 'POST',
-              body: JSON.stringify({ email }),
+              body: JSON.stringify(pendingInvite ? { email, next: `/invite/${pendingInvite}` } : { email }),
             })
             if (!issued.devToken) {
               setError('Check your email for the sign-in link.')

@@ -658,4 +658,81 @@ describe('ledger API', () => {
       expect(await response.json()).toMatchObject({ error: { code: 'BAD_EMAIL' } })
     }
   })
+
+  it('previews an invite publicly with only group, inviter, and status', async () => {
+    const sql = await createMemorySql()
+    const opts = { dev: true, rateFor: async () => '1', devSigninEmails: null }
+    const { app } = createApp(sql, { ...opts, now: () => new Date('2026-09-26T15:00:00Z') })
+    const alex = await sessionFor(app, 'alex@example.com')
+    const sam = await sessionFor(app, 'sam@example.com')
+    const auth = { authorization: `Bearer ${alex.token}`, 'content-type': 'application/json' }
+    const created = await (await app.request('/api/groups', { method: 'POST', headers: auth, body: JSON.stringify({ name: 'Apartment', currency: 'USD', timezone: 'UTC' }) })).json() as { group: { id: string } }
+    const link = await (await app.request(`/api/groups/${created.group.id}/invite-link`, { method: 'POST', headers: auth })).json() as { token: string }
+    const preview = await app.request(`/api/invites/${link.token}/preview`)
+    expect(preview.status).toBe(200)
+    const body = await preview.json()
+    expect(body).toEqual({ groupName: 'Apartment', inviterName: 'Alex', status: 'valid' })
+    expect(JSON.stringify(body)).not.toContain('@')
+    expect((await app.request('/api/invites/nope-not-a-token/preview')).status).toBe(404)
+
+    await app.request(`/api/groups/${created.group.id}/people`, { method: 'POST', headers: auth, body: JSON.stringify({ email: 'sam@example.com', displayName: 'Sam' }) })
+    const outbox = await (await app.request('/api/dev/outbox')).json() as { to_email: string; body: string }[]
+    const emailToken = outbox.find((row) => row.to_email === 'sam@example.com' && row.body.includes('/invite/'))!.body.split('/invite/').at(-1)!.trim()
+    await app.request(`/api/invites/${emailToken}/accept`, { method: 'POST', headers: { authorization: `Bearer ${sam.token}` } })
+    expect(await (await app.request(`/api/invites/${emailToken}/preview`)).json()).toMatchObject({ status: 'used' })
+
+    const later = createApp(sql, { ...opts, now: () => new Date('2026-10-20T15:00:00Z') }).app
+    expect(await (await later.request(`/api/invites/${link.token}/preview`)).json()).toMatchObject({ status: 'expired' })
+  })
+
+  it('carries a relative next path through the email link and verify, and rejects absolute ones', async () => {
+    const sql = await createMemorySql()
+    const { app } = createApp(sql, { dev: true, rateFor: async () => '1', devSigninEmails: null })
+    const send = (body: unknown) => app.request('/api/auth/magic-link', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+    const issued = await (await send({ email: 'alex@example.com', next: '/invite/abc123' })).json() as { devToken: string }
+    const outbox = await (await app.request('/api/dev/outbox')).json() as { to_email: string; body: string }[]
+    expect(outbox.at(-1)!.body).toContain('&next=%2Finvite%2Fabc123')
+    const verified = await (await app.request('/api/auth/verify', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ token: issued.devToken }) })).json()
+    expect(verified).toMatchObject({ next: '/invite/abc123' })
+    const plain = await (await send({ email: 'sam@example.com' })).json() as { devToken: string }
+    expect(await (await app.request('/api/auth/verify', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ token: plain.devToken }) })).json()).toMatchObject({ next: null })
+    for (const next of ['https://evil.example/x', '//evil.example', 'javascript:alert(1)', 'invite/abc', '/\\evil.example', '/a b', 42]) {
+      const response = await send({ email: 'jo@example.com', next })
+      expect(response.status, String(next)).toBe(400)
+      expect(await response.json()).toMatchObject({ error: { code: 'BAD_NEXT' } })
+    }
+  })
+
+  it('rejects blank and non-string display names with 400', async () => {
+    const sql = await createMemorySql()
+    const { app } = createApp(sql, { dev: true, rateFor: async () => '1', devSigninEmails: null })
+    const alex = await sessionFor(app, 'alex@example.com')
+    const patch = (body: string) => app.request('/api/me', { method: 'PATCH', headers: { authorization: `Bearer ${alex.token}`, 'content-type': 'application/json' }, body })
+    const blank = await patch(JSON.stringify({ displayName: '   ' }))
+    expect(blank.status).toBe(400)
+    expect(await blank.json()).toMatchObject({ error: { code: 'BAD_NAME', message: "Name can't be blank" } })
+    for (const body of [{ displayName: 42 }, { displayName: null }, { displayName: ['Al'] }, { homeCurrency: 5 }]) {
+      expect((await patch(JSON.stringify(body))).status, JSON.stringify(body)).toBe(400)
+    }
+    expect((await patch('[]')).status).toBe(400)
+    expect(await (await patch(JSON.stringify({ displayName: ' Alexandra ' }))).json()).toMatchObject({ displayName: 'Alexandra' })
+  })
+
+  it('rate-limits sign-in links per email and per IP', async () => {
+    const sql = await createMemorySql()
+    let now = new Date('2026-09-26T15:00:00Z').getTime()
+    const { app } = createApp(sql, { dev: true, rateFor: async () => '1', devSigninEmails: null, trustProxy: true, now: () => new Date(now) })
+    const send = (email: string, ip: string) => app.request('/api/auth/magic-link', {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-forwarded-for': ip }, body: JSON.stringify({ email }),
+    })
+    for (let i = 0; i < 5; i += 1) expect((await send('Alex@example.com', `10.0.0.${i}`)).status).toBe(200)
+    const limited = await send('alex@example.com ', '10.0.1.1')
+    expect(limited.status).toBe(429)
+    expect(await limited.json()).toMatchObject({ error: { code: 'RATE_LIMITED' } })
+    for (let i = 0; i < 5; i += 1) expect((await send(`p${i}@example.com`, '10.9.9.9')).status).toBe(200)
+    expect((await send('fresh@example.com', '10.9.9.9')).status).toBe(429)
+    expect((await send('fresh@example.com', '10.9.9.8')).status).toBe(200)
+    now += 15 * 60 * 1000
+    expect((await send('alex@example.com', '10.9.9.9')).status).toBe(200)
+  })
 })
