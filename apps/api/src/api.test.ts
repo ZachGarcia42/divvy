@@ -735,4 +735,58 @@ describe('ledger API', () => {
     now += 15 * 60 * 1000
     expect((await send('alex@example.com', '10.9.9.9')).status).toBe(200)
   })
+
+  it('rejects next paths with "//" anywhere or dot segments, raw or encoded', async () => {
+    const sql = await createMemorySql()
+    const { app } = createApp(sql, { dev: true, rateFor: async () => '1', devSigninEmails: null, rateLimit: false })
+    const send = (next: string) => app.request('/api/auth/magic-link', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'n@example.com', next }) })
+    for (const next of ['/..//evil.com', '/.//evil.com', '/a//b', '/a/../b', '/..', '/./x', '/%2F%2Fevil.com', '/..%2F..%2Fevil.com', '/%5Cevil.com', '/%E0%A4%A', '/javascript:alert(1)', '/%6Aavascript:x']) {
+      expect((await send(next)).status, next).toBe(400)
+    }
+    for (const next of ['/invite/abc_DEF-123', '/groups/x?tab=1#y', '/', '/a/b/c', '/a..b/c']) {
+      expect((await send(next)).status, next).toBe(200)
+    }
+  })
+
+  it('takes the last X-Forwarded-For entry when trusting a proxy', async () => {
+    const sql = await createMemorySql()
+    const { app } = createApp(sql, { dev: true, rateFor: async () => '1', devSigninEmails: null, trustProxy: true })
+    const send = (email: string, xff: string) => app.request('/api/auth/magic-link', {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-forwarded-for': xff }, body: JSON.stringify({ email }),
+    })
+    for (let i = 0; i < 5; i += 1) expect((await send(`x${i}@example.com`, `6.6.6.${i}, 203.0.113.7`)).status).toBe(200)
+    expect((await send('x9@example.com', '6.6.6.99, 203.0.113.7')).status).toBe(429)
+  })
+
+  it('refuses blank or non-string group names on update', async () => {
+    const sql = await createMemorySql()
+    const { app } = createApp(sql, { dev: true, rateFor: async () => '1', devSigninEmails: null })
+    const alex = await sessionFor(app, 'alex@example.com')
+    const auth = { authorization: `Bearer ${alex.token}`, 'content-type': 'application/json' }
+    const created = await (await app.request('/api/groups', { method: 'POST', headers: auth, body: JSON.stringify({ name: 'Apartment', currency: 'USD', timezone: 'UTC' }) })).json() as { group: { id: string } }
+    for (const name of ['', '   ', null, 42, ['x']]) {
+      const response = await app.request(`/api/groups/${created.group.id}`, { method: 'PATCH', headers: auth, body: JSON.stringify({ name }) })
+      expect(response.status, JSON.stringify(name)).toBe(400)
+      expect(await response.json()).toMatchObject({ error: { code: 'BAD_NAME' } })
+    }
+    expect((await app.request(`/api/groups/${created.group.id}`, { method: 'PATCH', headers: auth, body: JSON.stringify({ name: ' Flat ' }) })).status).toBe(200)
+    expect(await (await app.request(`/api/groups/${created.group.id}`, { headers: auth })).json()).toMatchObject({ group: { name: 'Flat' } })
+  })
+
+  it('shows archived groups as archived in the preview and refuses to join them', async () => {
+    const sql = await createMemorySql()
+    const { app } = createApp(sql, { dev: true, rateFor: async () => '1', devSigninEmails: null })
+    const alex = await sessionFor(app, 'alex@example.com')
+    const jordan = await sessionFor(app, 'jordan@example.com')
+    const auth = { authorization: `Bearer ${alex.token}`, 'content-type': 'application/json' }
+    const created = await (await app.request('/api/groups', { method: 'POST', headers: auth, body: JSON.stringify({ name: 'Old', currency: 'USD', timezone: 'UTC' }) })).json() as { group: { id: string } }
+    const link = await (await app.request(`/api/groups/${created.group.id}/invite-link`, { method: 'POST', headers: auth })).json() as { token: string }
+    await app.request(`/api/groups/${created.group.id}/archive`, { method: 'POST', headers: auth })
+    expect(await (await app.request(`/api/invites/${link.token}/preview`)).json()).toEqual({ groupName: 'Old', inviterName: 'Alex', status: 'archived' })
+    const accept = await app.request(`/api/invites/${link.token}/accept`, { method: 'POST', headers: { authorization: `Bearer ${jordan.token}` } })
+    expect(accept.status).toBe(410)
+    expect(await accept.json()).toMatchObject({ error: { code: 'ARCHIVED' } })
+    await app.request(`/api/groups/${created.group.id}/unarchive`, { method: 'POST', headers: auth })
+    expect(await (await app.request(`/api/invites/${link.token}/preview`)).json()).toMatchObject({ status: 'valid' })
+  })
 })

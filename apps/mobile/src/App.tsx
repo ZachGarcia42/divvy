@@ -2,6 +2,7 @@ import { computeShares, exponentOf, formatMoney, parseMajor } from '@divvy/domai
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { useEffect, useRef, useState } from 'react'
 import {
+  Alert,
   KeyboardAvoidingView,
   Linking,
   Platform,
@@ -14,7 +15,7 @@ import {
   TextInput,
   View,
 } from 'react-native'
-import { inviteFromNext, parseDeepLink, PENDING_INVITE_KEY } from './links'
+import { inviteFromNext, invitePath, isToken, parseDeepLink, parseInvitePreview, PENDING_INVITE_KEY, tokenFromInput, type InvitePreview } from './links'
 
 const API = process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:8787'
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
@@ -41,7 +42,6 @@ type GroupDetail = {
   settlements: Settlement[]
   currency: string
 }
-type InvitePreview = { group: { id: string; name: string }; members: { id: string; name: string }[] }
 
 async function call<T>(token: string | null, path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API}${path}`, {
@@ -52,19 +52,11 @@ async function call<T>(token: string | null, path: string, init?: RequestInit): 
       ...(init?.headers ?? {}),
     },
   })
-  const body = await response.json().catch(() => ({})) as { error?: { message?: string } }
-  if (!response.ok) throw new Error(body.error?.message ?? 'Request failed')
+  const body = await response.json().catch(() => ({})) as { error?: { code?: string; message?: string } }
+  if (!response.ok) throw Object.assign(new Error(body.error?.message ?? 'Request failed'), { code: body.error?.code })
   return body as T
 }
 
-function tokenFromInput(value: string | null | undefined) {
-  if (!value) return null
-  const trimmed = value.trim()
-  const match = trimmed.match(/\/invite\/([^/?#\s]+)/)
-  if (match?.[1]) return decodeURIComponent(match[1])
-  if (/^[A-Za-z0-9_-]{20,}$/.test(trimmed)) return trimmed
-  return null
-}
 
 function majorString(minor: number, currency: string) {
   const exp = exponentOf(currency)
@@ -136,9 +128,12 @@ export function App() {
   const [token, setToken] = useState<string | null>(null)
   const [inviteToken, setInviteToken] = useState<string | null>(null)
   const [linkError, setLinkError] = useState<string | null>(null)
+  const tokenRef = useRef<string | null>(null)
+  tokenRef.current = token
 
   // A pending invite survives the app being killed: it is persisted until it is accepted or dismissed.
   const rememberInvite = (next: string) => {
+    if (!isToken(next)) return
     setInviteToken(next)
     AsyncStorage.setItem(PENDING_INVITE_KEY, next).catch(() => undefined)
   }
@@ -149,7 +144,12 @@ export function App() {
 
   useEffect(() => {
     AsyncStorage.getItem(PENDING_INVITE_KEY)
-      .then((saved) => { if (saved) setInviteToken((current) => current ?? saved) })
+      .then((saved) => {
+        if (!saved) return
+        // A stored value that is not a well-formed token is dropped, never fetched.
+        if (isToken(saved)) setInviteToken((current) => current ?? saved)
+        else AsyncStorage.removeItem(PENDING_INVITE_KEY).catch(() => undefined)
+      })
       .catch(() => undefined)
     const take = async (url: string | null) => {
       const link = parseDeepLink(url)
@@ -157,6 +157,16 @@ export function App() {
       if (link.kind === 'invite') {
         rememberInvite(link.token)
         return
+      }
+      if (tokenRef.current) {
+        // Already signed in: don't silently swap accounts. Cancel keeps the current session.
+        const proceed = await new Promise<boolean>((resolve) => {
+          Alert.alert('Sign in as a different account?', 'This link signs you in with another email. You will leave the current session.', [
+            { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+            { text: 'Sign in', style: 'destructive', onPress: () => resolve(true) },
+          ], { cancelable: true, onDismiss: () => resolve(false) })
+        })
+        if (!proceed) return
       }
       try {
         const session = await call<{ token: string; next?: string | null }>(null, '/api/auth/verify', {
@@ -176,18 +186,23 @@ export function App() {
     return () => subscription.remove()
   }, [])
 
-  if (!token) return <SignIn onToken={setToken} pendingInvite={inviteToken} linkError={linkError} />
+  if (!token) return <SignIn onToken={setToken} pendingInvite={inviteToken} onDismissInvite={forgetInvite} linkError={linkError} />
   return (
     <Ledger
       token={token}
       inviteToken={inviteToken}
       onInviteHandled={forgetInvite}
-      onSignedOut={() => setToken(null)}
+      onSignedOut={() => { forgetInvite(); setToken(null) }}
     />
   )
 }
 
-function SignIn({ onToken, pendingInvite, linkError }: { onToken: (token: string) => void; pendingInvite: string | null; linkError: string | null }) {
+function SignIn({ onToken, pendingInvite, onDismissInvite, linkError }: {
+  onToken: (token: string) => void
+  pendingInvite: string | null
+  onDismissInvite: () => void
+  linkError: string | null
+}) {
   const [email, setEmail] = useState('')
   const [error, setError] = useState<string | null>(null)
   const shownError = error ?? linkError
@@ -208,6 +223,14 @@ function SignIn({ onToken, pendingInvite, linkError }: { onToken: (token: string
           placeholderTextColor="#6b7a72"
           testID="sign-in-email"
         />
+        {pendingInvite && (
+          <View style={styles.rowActions} testID="pending-invite">
+            <Text style={styles.copy}>You have a group invite waiting. Sign in to open it.</Text>
+            <Pressable style={styles.secondary} testID="pending-invite-dismiss" onPress={onDismissInvite}>
+              <Text style={styles.secondaryText}>Dismiss</Text>
+            </Pressable>
+          </View>
+        )}
         {shownError && <Text style={styles.error}>{shownError}</Text>}
         <Pressable style={styles.primary} onPress={async () => {
           try {
@@ -221,10 +244,19 @@ function SignIn({ onToken, pendingInvite, linkError }: { onToken: (token: string
         </Pressable>
         <Pressable style={styles.secondary} onPress={async () => {
           try {
-            const issued = await call<{ devToken?: string }>(null, '/api/auth/magic-link', {
+            const send = (next: string | null) => call<{ devToken?: string }>(null, '/api/auth/magic-link', {
               method: 'POST',
-              body: JSON.stringify(pendingInvite ? { email, next: `/invite/${pendingInvite}` } : { email }),
+              body: JSON.stringify(next ? { email, next } : { email }),
             })
+            let issued: { devToken?: string }
+            try {
+              issued = await send(pendingInvite ? `/invite/${pendingInvite}` : null)
+            } catch (reason) {
+              // The server refused the return path: drop the bad pending invite and sign in without it.
+              if (!pendingInvite || (reason as { code?: string }).code !== 'BAD_NEXT') throw reason
+              onDismissInvite()
+              issued = await send(null)
+            }
             if (!issued.devToken) {
               setError('Check your email for the sign-in link.')
               return
@@ -328,8 +360,21 @@ function Ledger({
       return
     }
     let cancelled = false
-    call<InvitePreview>(token, `/api/invites/${joinToken}`)
-      .then((preview) => { if (!cancelled) { setJoinPreview(preview); setJoinError(null) } })
+    call<unknown>(token, invitePath(joinToken))
+      .then((raw) => {
+        if (cancelled) return
+        const preview = parseInvitePreview(raw)
+        if (preview) {
+          setJoinPreview(preview)
+          setJoinError(null)
+          return
+        }
+        // Not an invite: forget it so it can't break the next launch.
+        setJoinPreview(null)
+        setJoinToken(null)
+        setJoinError('That invite link is not valid')
+        onInviteHandled()
+      })
       .catch((reason: Error) => { if (!cancelled) { setJoinPreview(null); setJoinError(reason.message) } })
     return () => { cancelled = true }
   }, [token, joinToken])
@@ -454,7 +499,7 @@ function Ledger({
     if (!joinToken) return
     setJoinError(null)
     try {
-      const joined = await call<GroupDetail>(token, `/api/invites/${joinToken}/accept`, { method: 'POST' })
+      const joined = await call<GroupDetail>(token, invitePath(joinToken, '/accept'), { method: 'POST' })
       setJoinToken(null)
       setJoinPreview(null)
       setPaste('')

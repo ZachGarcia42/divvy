@@ -16,7 +16,7 @@ export function createApp(sql: Sql, options?: {
   adminToken?: string | null
   /** Per-email and per-IP limit on sign-in/email-change links. false disables (tests only). */
   rateLimit?: { max: number; windowMs: number } | false
-  /** Trust the first X-Forwarded-For entry as the client IP (only behind a proxy you control). */
+  /** Trust the last X-Forwarded-For entry as the client IP (only behind a proxy you control). */
   trustProxy?: boolean
 }) {
   const dev = options?.dev ?? process.env.NODE_ENV !== 'production'
@@ -43,7 +43,8 @@ export function createApp(sql: Sql, options?: {
   const hits = new Map<string, number[]>()
   const clientIp = (c: { req: { header: (name: string) => string | undefined }; env?: unknown }) => {
     if (trustProxy) {
-      const forwarded = c.req.header('x-forwarded-for')?.split(',')[0]?.trim()
+      // The last entry is the one our own proxy appended; earlier entries are client-controlled.
+      const forwarded = c.req.header('x-forwarded-for')?.split(',').at(-1)?.trim()
       if (forwarded) return forwarded
     }
     const env = c.env as { incoming?: { socket?: { remoteAddress?: string } } } | undefined
@@ -82,6 +83,7 @@ export function createApp(sql: Sql, options?: {
         : error.code === 'NOT_FOUND' ? 404
         : error.code === 'STALE' ? 409
         : error.code === 'RATE_LIMITED' ? 429
+        : error.code === 'ARCHIVED' ? 410
         : 400
       return c.json({ error: { code: error.code, message: error.message } }, status)
     }

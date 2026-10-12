@@ -302,7 +302,7 @@ export class Repo {
   }) {
     await this.requireMember(actor, groupId)
     const group = await this.mustGroup(groupId)
-    if (patch.name) {
+    if (patch.name !== undefined) {
       await this.sql.query(`update groups set name = $1 where id = $2`, [cleanName(patch.name), groupId])
     }
     if (patch.timezone) {
@@ -431,10 +431,11 @@ export class Repo {
       [hashToken(token)],
     )
     if (!invite) throw new LedgerError('NOT_FOUND', 'That invite does not exist')
-    const group = await this.one<{ name: string }>(`select name from groups where id = $1`, [invite.group_id])
+    const group = await this.one<{ name: string; archived_at: string | null }>(`select name, archived_at from groups where id = $1`, [invite.group_id])
     if (!group) throw new LedgerError('NOT_FOUND', 'That invite does not exist')
     const inviter = await this.one<{ display_name: string }>(`select display_name from users where id = $1`, [invite.created_by_user_id])
-    const status = invite.accepted_at ? 'used' as const
+    const status = group.archived_at ? 'archived' as const
+      : invite.accepted_at ? 'used' as const
       : new Date(invite.expires_at).getTime() < this.deps.now().getTime() ? 'expired' as const
       : 'valid' as const
     return { groupName: group.name, inviterName: inviter?.display_name ?? null, status }
@@ -465,6 +466,8 @@ export class Repo {
 
   async acceptInvite(actor: Actor, token: string) {
     const invite = await this.mustInvite(token)
+    const target = await this.one<{ archived_at: string | null }>(`select archived_at from groups where id = $1`, [invite.group_id])
+    if (target?.archived_at) throw new LedgerError('ARCHIVED', 'This group is archived and is not taking new members')
     const groupLink = isGroupInvite(invite)
     if (!groupLink && invite.email !== actor.email) throw new LedgerError('FORBIDDEN', 'This invite was sent to a different email')
     if (!groupLink && invite.email) {
@@ -2137,10 +2140,22 @@ export function normalizeEmail(email: unknown) {
 }
 
 export function cleanNextPath(value: unknown) {
-  // Relative in-app paths only: one leading slash, no scheme, no protocol-relative or backslash tricks.
-  if (typeof value !== 'string' || value.length > 512 || !value.startsWith('/') || value.startsWith('//')
-    || /[\\\s\u0000-\u001f]/.test(value) || /^\/*[a-z][a-z0-9+.-]*:/i.test(value)) {
-    throw new LedgerError('BAD_NEXT', 'next must be a relative path like /invite/<token>')
+  // Relative in-app paths only. Checked on the raw value and once percent-decoded: one leading slash,
+  // no "//" anywhere, no "." or ".." path segments, no backslash, whitespace, or control characters.
+  const bad = () => new LedgerError('BAD_NEXT', 'next must be a relative path like /invite/<token>')
+  if (typeof value !== 'string' || value.length > 512) throw bad()
+  let decoded: string
+  try {
+    decoded = decodeURIComponent(value)
+  } catch {
+    throw bad()
+  }
+  for (const candidate of [value, decoded]) {
+    const path = candidate.split(/[?#]/)[0]!
+    if (!candidate.startsWith('/') || candidate.includes('//') || /^\/[^/?#]*:/.test(candidate) || /[\\\s\u0000-\u001f\u007f]/.test(candidate)
+      || path.split('/').some((segment) => segment === '.' || segment === '..')) {
+      throw bad()
+    }
   }
   return value
 }
