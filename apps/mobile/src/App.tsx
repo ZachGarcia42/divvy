@@ -16,6 +16,10 @@ import {
   View,
 } from 'react-native'
 import { inviteFromNext, invitePath, isToken, parseDeepLink, parseInvitePreview, PENDING_INVITE_KEY, tokenFromInput, type InvitePreview } from './links'
+import { CheckEmail, ExpiredLink, JoinCard, NamePrompt, NameSheet, Toast } from './November'
+import { decideJoin, joinFailure, joinedWasAlreadyMember, parsePublicPreview, type JoinView } from './flows/join'
+import { nameAskedKey, shouldAskName } from './flows/names'
+import { emailError, LAST_EMAIL_KEY, normalizeEmail, sendErrorMessage, verifyFailure } from './flows/signin'
 
 const API = process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:8787'
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
@@ -44,16 +48,26 @@ type GroupDetail = {
 }
 
 async function call<T>(token: string | null, path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API}${path}`, {
-    ...init,
-    headers: {
-      ...(init?.body ? { 'content-type': 'application/json' } : {}),
-      ...(token ? { authorization: `Bearer ${token}` } : {}),
-      ...(init?.headers ?? {}),
-    },
-  })
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 10_000)
+  let response: Response
+  try {
+    response = await fetch(`${API}${path}`, {
+      ...init,
+      signal: controller.signal,
+      headers: {
+        ...(init?.body ? { 'content-type': 'application/json' } : {}),
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+        ...(init?.headers ?? {}),
+      },
+    })
+  } catch {
+    throw Object.assign(new Error('Couldn’t reach Divvy'), { code: 'NETWORK' })
+  } finally {
+    clearTimeout(timer)
+  }
   const body = await response.json().catch(() => ({})) as { error?: { code?: string; message?: string } }
-  if (!response.ok) throw Object.assign(new Error(body.error?.message ?? 'Request failed'), { code: body.error?.code })
+  if (!response.ok) throw Object.assign(new Error(body.error?.message ?? 'Request failed'), { code: body.error?.code ?? `HTTP_${response.status}`, status: response.status })
   return body as T
 }
 
@@ -127,7 +141,8 @@ function firstGroup(groups: HomeGroup[]) {
 export function App() {
   const [token, setToken] = useState<string | null>(null)
   const [inviteToken, setInviteToken] = useState<string | null>(null)
-  const [linkError, setLinkError] = useState<string | null>(null)
+  const [linkFailure, setLinkFailure] = useState<ReturnType<typeof verifyFailure> | null>(null)
+  const [verifying, setVerifying] = useState(false)
   const tokenRef = useRef<string | null>(null)
   tokenRef.current = token
 
@@ -168,6 +183,7 @@ export function App() {
         })
         if (!proceed) return
       }
+      setVerifying(true)
       try {
         const session = await call<{ token: string; next?: string | null }>(null, '/api/auth/verify', {
           method: 'POST',
@@ -175,10 +191,12 @@ export function App() {
         })
         const pending = inviteFromNext(session.next ?? link.next)
         if (pending) rememberInvite(pending)
-        setLinkError(null)
+        setLinkFailure(null)
         setToken(session.token)
       } catch (reason) {
-        setLinkError(reason instanceof Error ? reason.message : 'That sign-in link is no longer valid')
+        setLinkFailure(verifyFailure(reason))
+      } finally {
+        setVerifying(false)
       }
     }
     Linking.getInitialURL().then(take).catch(() => undefined)
@@ -186,9 +204,21 @@ export function App() {
     return () => subscription.remove()
   }, [])
 
-  if (!token) return <SignIn onToken={setToken} pendingInvite={inviteToken} onDismissInvite={forgetInvite} linkError={linkError} />
+  if (!token) {
+    return (
+      <SignIn
+        onToken={(next) => { setLinkFailure(null); setToken(next) }}
+        pendingInvite={inviteToken}
+        onDismissInvite={forgetInvite}
+        linkFailure={linkFailure}
+        onClearLinkFailure={() => setLinkFailure(null)}
+        verifying={verifying}
+      />
+    )
+  }
   return (
-    <Ledger
+    <SignedIn
+      key={token}
       token={token}
       inviteToken={inviteToken}
       onInviteHandled={forgetInvite}
@@ -197,42 +227,176 @@ export function App() {
   )
 }
 
-function SignIn({ onToken, pendingInvite, onDismissInvite, linkError }: {
+type Me = { userId: string; email: string; participantId: string; displayName: string }
+
+/** After sign-in: the one-time name prompt (2e) comes first, then the group (and any pending join). */
+function SignedIn(props: { token: string; inviteToken: string | null; onInviteHandled: () => void; onSignedOut: () => void }) {
+  const [me, setMe] = useState<Me | null>(null)
+  const [ask, setAsk] = useState<boolean | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    call<Me | null>(props.token, '/api/me')
+      .then(async (found) => {
+        if (cancelled) return
+        setMe(found)
+        const asked = found ? await AsyncStorage.getItem(nameAskedKey(found.userId)).catch(() => '1') : '1'
+        if (!cancelled) setAsk(shouldAskName(found, !!asked))
+      })
+      .catch(() => { if (!cancelled) setAsk(false) })
+    return () => { cancelled = true }
+  }, [props.token])
+
+  if (ask === null) {
+    return <SafeAreaView style={styles.screen}><View style={styles.signIn}><Text style={styles.copy}>Signing you in…</Text></View></SafeAreaView>
+  }
+  if (ask && me) {
+    const finish = () => {
+      AsyncStorage.setItem(nameAskedKey(me.userId), '1').catch(() => undefined)
+      setAsk(false)
+    }
+    return (
+      <NamePrompt
+        current={me.displayName}
+        onSave={async (name) => { await call(props.token, '/api/me', { method: 'PATCH', body: JSON.stringify({ displayName: name }) }) }}
+        onDone={finish}
+      />
+    )
+  }
+  return <Ledger {...props} participantId={me?.participantId ?? null} />
+}
+
+function SignIn({ onToken, pendingInvite, onDismissInvite, linkFailure, onClearLinkFailure, verifying }: {
   onToken: (token: string) => void
   pendingInvite: string | null
   onDismissInvite: () => void
-  linkError: string | null
+  linkFailure: ReturnType<typeof verifyFailure> | null
+  onClearLinkFailure: () => void
+  verifying: boolean
 }) {
   const [email, setEmail] = useState('')
+  const [savedEmail, setSavedEmail] = useState<string | null>(null)
+  const [sentTo, setSentTo] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const shownError = error ?? linkError
+  const [sending, setSending] = useState(false)
 
+  useEffect(() => {
+    AsyncStorage.getItem(LAST_EMAIL_KEY).then((saved) => { if (saved) setSavedEmail(saved) }).catch(() => undefined)
+  }, [])
+
+  // Sends the link (with the pending invite as `next`). Throws on failure so callers can show their copy.
+  const request = async (address: string) => {
+    const send = (next: string | null) => call<{ devToken?: string }>(null, '/api/auth/magic-link', {
+      method: 'POST',
+      body: JSON.stringify(next ? { email: address, next } : { email: address }),
+    })
+    let issued: { devToken?: string }
+    try {
+      issued = await send(pendingInvite ? `/invite/${pendingInvite}` : null)
+    } catch (reason) {
+      // The server refused the return path: drop the bad pending invite and sign in without it.
+      if (!pendingInvite || (reason as { code?: string }).code !== 'BAD_NEXT') throw reason
+      onDismissInvite()
+      issued = await send(null)
+    }
+    setSavedEmail(address)
+    AsyncStorage.setItem(LAST_EMAIL_KEY, address).catch(() => undefined)
+    if (issued.devToken) {
+      // Tester builds: an allowlisted email gets a devToken, so verify right away and skip Check your email.
+      const session = await call<{ token: string }>(null, '/api/auth/verify', { method: 'POST', body: JSON.stringify({ token: issued.devToken }) })
+      onToken(session.token)
+      return false
+    }
+    return true
+  }
+
+  const sendLink = async () => {
+    const problem = emailError(email)
+    if (problem) {
+      setError(problem)
+      return
+    }
+    const address = normalizeEmail(email)
+    setSending(true)
+    setError(null)
+    try {
+      if (await request(address)) setSentTo(address)
+    } catch (reason) {
+      setError(sendErrorMessage(reason))
+    } finally {
+      setSending(false)
+    }
+  }
+
+  const backToEntry = () => {
+    setSentTo(null)
+    setEmail('')
+    setError(null)
+    onClearLinkFailure()
+  }
+
+  if (verifying) {
+    return (
+      <SafeAreaView style={styles.screen}>
+        <View style={styles.signIn} testID="verifying">
+          <Text style={styles.groupName}>Signing you in…</Text>
+          {savedEmail && <Text style={styles.muted}>{savedEmail}</Text>}
+        </View>
+      </SafeAreaView>
+    )
+  }
+  if (sentTo) {
+    return <CheckEmail email={sentTo} pendingInvite={!!pendingInvite} onResend={async () => { await request(sentTo) }} onBack={backToEntry} />
+  }
+  if (linkFailure?.kind === 'expired') {
+    return (
+      <ExpiredLink
+        hasEmail={!!savedEmail}
+        onSendNew={async () => {
+          if (!savedEmail) return
+          if (await request(savedEmail)) { onClearLinkFailure(); setSentTo(savedEmail) }
+        }}
+        onBack={backToEntry}
+      />
+    )
+  }
+
+  const shownError = error ?? (linkFailure?.kind === 'error' ? linkFailure.message : null)
+  const offline = !!error && error.startsWith('Couldn’t send')
   return (
     <SafeAreaView style={styles.screen}>
       <View style={styles.signIn}>
         <Text style={styles.brand}>Divvy</Text>
-        <Text style={styles.copy}>Sign in with your own email. Each person keeps their own ledger.</Text>
+        {pendingInvite ? (
+          <View style={styles.inviteNote} testID="pending-invite">
+            <Text style={styles.copy}>🔗  <Text style={styles.strong}>You opened a group link.</Text> Sign in and we’ll take you right to it.</Text>
+            <Pressable testID="pending-invite-dismiss" onPress={onDismissInvite}>
+              <Text style={styles.signOut}>Dismiss</Text>
+            </Pressable>
+          </View>
+        ) : (
+          <Text style={styles.copy}>Split trips and bills with friends. We’ll email you a link to sign in.</Text>
+        )}
         <TextInput
-          style={styles.input}
+          style={[styles.input, !!error && !offline && styles.inputBad]}
           autoCapitalize="none"
           autoCorrect={false}
+          autoFocus
           keyboardType="email-address"
+          returnKeyType="send"
+          onSubmitEditing={sendLink}
           value={email}
-          onChangeText={setEmail}
-          placeholder="Email"
+          onChangeText={(text) => { setEmail(text); setError(null) }}
+          placeholder="you@example.com"
           placeholderTextColor="#6b7a72"
           testID="sign-in-email"
         />
-        {pendingInvite && (
-          <View style={styles.rowActions} testID="pending-invite">
-            <Text style={styles.copy}>You have a group invite waiting. Sign in to open it.</Text>
-            <Pressable style={styles.secondary} testID="pending-invite-dismiss" onPress={onDismissInvite}>
-              <Text style={styles.secondaryText}>Dismiss</Text>
-            </Pressable>
-          </View>
-        )}
-        {shownError && <Text style={styles.error}>{shownError}</Text>}
-        <Pressable style={styles.primary} onPress={async () => {
+        {shownError && <Text style={styles.error} testID="sign-in-error">{offline ? '! ' : ''}{shownError}</Text>}
+        <Pressable style={[styles.primary, sending && styles.disabled]} disabled={sending} onPress={sendLink} testID="send-link">
+          <Text style={styles.primaryText}>{sending ? 'Sending…' : offline ? 'Try again' : 'Send link'}</Text>
+        </Pressable>
+        <Text style={[styles.muted, styles.centerText]}>No password. The link works for 15 minutes.</Text>
+        <Pressable style={styles.secondary} onPress={async () => {
           try {
             const session = await call<{ token: string }>(null, '/api/dev/seed', { method: 'POST' })
             onToken(session.token)
@@ -240,37 +404,7 @@ function SignIn({ onToken, pendingInvite, onDismissInvite, linkError }: {
             setError(reason instanceof Error ? reason.message : 'Could not open the sample')
           }
         }}>
-          <Text style={styles.primaryText}>Open the sample apartment</Text>
-        </Pressable>
-        <Pressable style={styles.secondary} onPress={async () => {
-          try {
-            const send = (next: string | null) => call<{ devToken?: string }>(null, '/api/auth/magic-link', {
-              method: 'POST',
-              body: JSON.stringify(next ? { email, next } : { email }),
-            })
-            let issued: { devToken?: string }
-            try {
-              issued = await send(pendingInvite ? `/invite/${pendingInvite}` : null)
-            } catch (reason) {
-              // The server refused the return path: drop the bad pending invite and sign in without it.
-              if (!pendingInvite || (reason as { code?: string }).code !== 'BAD_NEXT') throw reason
-              onDismissInvite()
-              issued = await send(null)
-            }
-            if (!issued.devToken) {
-              setError('Check your email for the sign-in link.')
-              return
-            }
-            const session = await call<{ token: string }>(null, '/api/auth/verify', {
-              method: 'POST',
-              body: JSON.stringify({ token: issued.devToken }),
-            })
-            onToken(session.token)
-          } catch (reason) {
-            setError(reason instanceof Error ? reason.message : 'Could not sign in')
-          }
-        }}>
-          <Text style={styles.secondaryText}>Continue with email</Text>
+          <Text style={styles.secondaryText}>Open the sample apartment</Text>
         </Pressable>
       </View>
     </SafeAreaView>
@@ -282,11 +416,13 @@ function Ledger({
   inviteToken,
   onInviteHandled,
   onSignedOut,
+  participantId,
 }: {
   token: string
   inviteToken: string | null
   onInviteHandled: () => void
   onSignedOut: () => void
+  participantId: string | null
 }) {
   const [home, setHome] = useState<Home | null>(null)
   const [groupId, setGroupId] = useState<string | null>(null)
@@ -305,8 +441,18 @@ function Ledger({
   const [paste, setPaste] = useState('')
   const [showPaste, setShowPaste] = useState(false)
   const [joinToken, setJoinToken] = useState<string | null>(inviteToken)
-  const [joinPreview, setJoinPreview] = useState<InvitePreview | null>(null)
+  const [join, setJoin] = useState<JoinView | null>(null)
   const [joinError, setJoinError] = useState<string | null>(null)
+  const [joinAttempt, setJoinAttempt] = useState(0)
+  const [editingName, setEditingName] = useState(false)
+  const [toast, setToast] = useState<string | null>(null)
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const showToast = (text: string) => {
+    if (toastTimer.current) clearTimeout(toastTimer.current)
+    setToast(text)
+    toastTimer.current = setTimeout(() => setToast(null), 3000)
+  }
+  useEffect(() => () => { if (toastTimer.current) clearTimeout(toastTimer.current) }, [])
 
   useEffect(() => {
     if (inviteToken) setJoinToken(inviteToken)
@@ -354,30 +500,59 @@ function Ledger({
     return () => { cancelled = true }
   }, [token, groupId])
 
+  // Join from a link: public status first (tells expired/used/archived apart), then the signed-in
+  // preview for members, then your groups to spot "already a member". Decisions live in flows/join.
   useEffect(() => {
     if (!joinToken) {
-      setJoinPreview(null)
+      setJoin(null)
       return
     }
     let cancelled = false
-    call<unknown>(token, invitePath(joinToken))
-      .then((raw) => {
-        if (cancelled) return
-        const preview = parseInvitePreview(raw)
-        if (preview) {
-          setJoinPreview(preview)
-          setJoinError(null)
+    setJoin({ kind: 'loading' })
+    ;(async () => {
+      let publicPreview: ReturnType<typeof parsePublicPreview> | 'missing' = null
+      try {
+        publicPreview = parsePublicPreview(await call<unknown>(null, invitePath(joinToken, '/preview'))) ?? 'missing'
+      } catch (reason) {
+        if ((reason as { status?: number }).status === 404) publicPreview = 'missing'
+        else if ((reason as { code?: string }).code === 'NETWORK') { if (!cancelled) setJoin({ kind: 'offline' }); return }
+        else publicPreview = 'missing'
+      }
+      let authed: InvitePreview | null = null
+      try {
+        authed = parseInvitePreview(await call<unknown>(token, invitePath(joinToken)))
+      } catch (reason) {
+        const failure = joinFailure(reason)
+        if ('dead' in failure && publicPreview !== 'missing' && publicPreview?.status === 'valid') {
+          if (!cancelled) setJoin({ kind: 'dead', reason: failure.dead })
           return
         }
-        // Not an invite: forget it so it can't break the next launch.
-        setJoinPreview(null)
+        if ((reason as { code?: string }).code === 'NETWORK') { if (!cancelled) setJoin({ kind: 'offline' }); return }
+      }
+      const groups = await call<Home>(token, '/api/home').then((found) => found.groups.map((group) => group.id)).catch(() => [] as string[])
+      if (cancelled) return
+      let view = decideJoin({ publicPreview, authed, yourGroupIds: groups, yourParticipantId: participantId })
+      // A valid link whose signed-in preview didn't parse is not something we can render: treat it as dead.
+      if (view.kind === 'loading') view = { kind: 'dead', reason: 'missing' }
+      if (view.kind === 'already') {
+        setGroupId(view.groupId)
+        showToast(`You’re already in ${view.groupName}.`)
         setJoinToken(null)
-        setJoinError('That invite link is not valid')
         onInviteHandled()
-      })
-      .catch((reason: Error) => { if (!cancelled) { setJoinPreview(null); setJoinError(reason.message) } })
+        return
+      }
+      if (view.kind === 'dead') onInviteHandled()
+      setJoin(view)
+    })()
     return () => { cancelled = true }
-  }, [token, joinToken])
+  }, [token, joinToken, joinAttempt])
+
+  const closeJoin = () => {
+    setJoinToken(null)
+    setJoin(null)
+    setJoinError(null)
+    onInviteHandled()
+  }
 
   const active = (detail?.members ?? []).filter((member) => !member.removed)
 
@@ -496,20 +671,28 @@ function Ledger({
   }
 
   async function acceptJoin() {
-    if (!joinToken) return
-    setJoinError(null)
+    if (!joinToken || join?.kind !== 'preview' || join.joining) return
+    setJoin({ ...join, joining: true, error: null })
+    const before = (home?.groups ?? []).map((group) => group.id)
     try {
       const joined = await call<GroupDetail>(token, invitePath(joinToken, '/accept'), { method: 'POST' })
       setJoinToken(null)
-      setJoinPreview(null)
+      setJoin(null)
       setPaste('')
       setShowPaste(false)
       onInviteHandled()
       setGroupId(joined.group.id)
       setDetail(joined)
+      showToast(joinedWasAlreadyMember(joined.group.id, before) ? `You’re already in ${joined.group.name}.` : `You joined ${joined.group.name}`)
       setHome(await call<Home>(token, '/api/home'))
     } catch (reason) {
-      setJoinError(reason instanceof Error ? reason.message : 'Could not join')
+      const failure = joinFailure(reason)
+      if ('dead' in failure) {
+        onInviteHandled()
+        setJoin({ kind: 'dead', reason: failure.dead })
+      } else {
+        setJoin({ ...join, joining: false, error: failure.error })
+      }
     }
   }
 
@@ -522,7 +705,14 @@ function Ledger({
         <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.scroll}>
           <View style={styles.header}>
             <Text style={styles.wordmark}>Divvy</Text>
-            <Text style={styles.you}>{home?.you.name ?? ''}</Text>
+            <View style={styles.spacer} />
+            {home && (
+              <Pressable style={styles.chip} onPress={() => setEditingName(true)} testID="name-chip" accessibilityLabel="Edit your name">
+                <View style={styles.chipAvatar}><Text style={styles.chipAvatarText}>{home.you.name.charAt(0).toUpperCase()}</Text></View>
+                <Text style={styles.chipText} numberOfLines={1}>{home.you.name}</Text>
+                <Text style={styles.muted}>✎</Text>
+              </Pressable>
+            )}
             <Pressable onPress={async () => {
               try { await call(token, '/api/auth/logout', { method: 'POST' }) } catch { /* The local session is what switches person. */ }
               onSignedOut()
@@ -531,7 +721,7 @@ function Ledger({
             </Pressable>
           </View>
 
-          {home && home.groups.length > 0 && (
+          {!join && home && home.groups.length > 0 && (
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.strip}>
               {home.groups.map((group) => {
                 const on = group.id === groupId
@@ -544,33 +734,19 @@ function Ledger({
             </ScrollView>
           )}
 
-          {(joinPreview || joinError) && (
-            <View style={styles.card} testID="join-card">
-              <Text style={styles.groupName}>Join {joinPreview?.group.name ?? 'this group'}</Text>
-              {joinPreview?.members.map((member) => <Text key={member.id} style={styles.copy}>{member.name}</Text>)}
-              <Text style={styles.muted}>Joining shows the group’s whole history.</Text>
-              {joinError && <Text style={styles.error}>{joinError}</Text>}
-              <View style={styles.rowActions}>
-                {joinPreview && (
-                  <Pressable style={styles.primary} testID="join-accept" onPress={acceptJoin}>
-                    <Text style={styles.primaryText}>Accept</Text>
-                  </Pressable>
-                )}
-                <Pressable style={styles.secondary} onPress={() => { setJoinToken(null); setJoinPreview(null); setJoinError(null); onInviteHandled() }}>
-                  <Text style={styles.secondaryText}>Close</Text>
-                </Pressable>
-              </View>
-            </View>
+          {join && (
+            <JoinCard view={join} onJoin={acceptJoin} onNotNow={closeJoin} onOk={closeJoin} onRetry={() => setJoinAttempt((n) => n + 1)} />
           )}
+          {joinError && !join && <Text style={styles.error}>{joinError}</Text>}
 
-          {!detail && (
+          {!join && !detail && (
             <View style={styles.card}>
               <Text style={styles.groupName}>{home ? 'No group open' : 'Loading…'}</Text>
               {error ? <Text style={styles.error}>{error}</Text> : <Text style={styles.copy}>Open a group link from a friend, or use the sample apartment from the sign-in screen.</Text>}
             </View>
           )}
 
-          {detail && (
+          {!join && detail && (
             <View style={styles.card}>
               <Text style={styles.groupName}>{detail.group.name}</Text>
               <Text style={styles.balance} testID="group-balance">
@@ -725,6 +901,20 @@ function Ledger({
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
+      {editingName && home && (
+        <NameSheet
+          initial={home.you.name}
+          onSave={async (name) => { await call(token, '/api/me', { method: 'PATCH', body: JSON.stringify({ displayName: name }) }) }}
+          onSaved={(name) => {
+            setEditingName(false)
+            setHome((current) => current ? { ...current, you: { ...current.you, name } } : current)
+            if (groupId) refresh(groupId).catch(() => undefined)
+            showToast(`Saved. Friends now see you as ${name}.`)
+          }}
+          onClose={() => setEditingName(false)}
+        />
+      )}
+      <Toast text={toast} />
     </SafeAreaView>
   )
 }
@@ -772,4 +962,14 @@ const styles = StyleSheet.create({
   shareInput: { width: 110, fontSize: 18, fontWeight: '700', color: '#14221c', textAlign: 'right' },
   link: { color: '#14221c', fontSize: 14 },
   rowActions: { flexDirection: 'row', gap: 8 },
+  strong: { fontWeight: '800', color: '#14221c' },
+  inviteNote: { borderRadius: 12, borderWidth: 1, borderColor: '#cfe3db', backgroundColor: '#f3faf7', padding: 12, gap: 4 },
+  inputBad: { borderWidth: 1.5, borderColor: '#8d2f39', backgroundColor: '#fbeef0' },
+  disabled: { opacity: 0.5 },
+  centerText: { textAlign: 'center' },
+  chip: { flexDirection: 'row', alignItems: 'center', gap: 6, borderRadius: 999, borderWidth: 1, borderColor: '#e4e8e2', backgroundColor: 'white', paddingVertical: 4, paddingLeft: 4, paddingRight: 10 },
+  chipAvatar: { width: 22, height: 22, borderRadius: 11, backgroundColor: '#0f766e', alignItems: 'center', justifyContent: 'center' },
+  chipAvatarText: { color: 'white', fontWeight: '800', fontSize: 12 },
+  chipText: { color: '#14221c', fontWeight: '700' },
+  spacer: { flex: 1 },
 })
