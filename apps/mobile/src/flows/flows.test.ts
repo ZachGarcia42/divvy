@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { createOnce, decideJoin, deadCopy, deadReasonFromError, joinFailure, joinedWasAlreadyMember, loadJoinView, parsePublicPreview } from './join'
-import { checkStoredSession, loadSession, saveSession, SESSION_KEY, type KeyStore } from './session'
+import { checkStoredSession, createSessionExpiry, isSessionExpiry, loadSession, saveSession, SESSION_KEY, type KeyStore } from './session'
 import { checkName, derivedName, looksDerived, saveNameError, shouldAskName } from './names'
 import { cooldownAnnouncement, cooldownLeftMs, createCooldowns, emailError, resendButton, sendErrorMessage, verifyFailure } from './signin'
 
@@ -150,9 +150,12 @@ describe('QA round 344', () => {
   })
 
   it('maps 5xx and name errors on sign-in to retry copy', () => {
-    for (const e of [err('HTTP_502', 'Request failed', 502), err('INTERNAL', 'Something went wrong', 500), err('BAD_NAME', 'Use a name of 80 characters or fewer', 400), err(undefined, 'Request failed')]) {
+    for (const e of [err('HTTP_502', 'Request failed', 502), err('INTERNAL', 'Something went wrong', 500), err(undefined, 'Request failed'), err('HTTP_404', 'Request failed', 404)]) {
       expect(sendErrorMessage(e)).toBe('Couldn’t send the link. Check your signal and try again.')
     }
+    expect(sendErrorMessage(err('BAD_NAME', 'Use a name of 80 characters or fewer', 400))).toBe('Use a name of 80 characters or fewer')
+    expect(sendErrorMessage(err('BAD_NEXT', 'next must be a relative path like /invite/<token>', 400))).toBe('next must be a relative path like /invite/<token>')
+    expect(sendErrorMessage(err('SUSPENDED', 'This account is suspended', 403))).toBe('This account is suspended')
     expect(verifyFailure(err('BAD_NAME', 'Use a name of 80 characters or fewer'))).toMatchObject({ kind: 'error', message: expect.stringMatching(/tap the link again/) })
     expect(verifyFailure(err('HTTP_502', 'Request failed', 502))).toMatchObject({ message: expect.not.stringMatching(/Request failed/) })
   })
@@ -186,6 +189,25 @@ describe('QA round 344', () => {
     expect(await loadSession(store)).toBeNull()
     map.set(SESSION_KEY, '../bad token')
     expect(await loadSession(store)).toBeNull()
+    expect(map.has(SESSION_KEY)).toBe(false)
     await saveSession(store, null)
+  })
+
+describe('session expiry after startup', () => {
+  it('fires for authenticated 401s that are not BAD_TOKEN', () => {
+    const expiry = createSessionExpiry()
+    let fired = 0
+    expiry.set(() => { fired += 1 })
+    expiry.report(err('UNAUTHENTICATED', 'Sign in', 401), true)
+    expiry.report(err('HTTP_401', 'Request failed', 401), true)
+    expiry.report(err('BAD_TOKEN', 'That invite is no longer valid', 401), true)
+    expiry.report(err('UNAUTHENTICATED', 'Sign in', 401), false)
+    expiry.report(err('FORBIDDEN', 'x', 403), true)
+    expiry.report(err('NETWORK'), true)
+    expect(fired).toBe(2)
+    expiry.set(null)
+    expiry.report(err('UNAUTHENTICATED', 'Sign in', 401), true)
+    expect(fired).toBe(2)
+    expect(isSessionExpiry(err('BAD_TOKEN', 'x', 401), true)).toBe(false)
   })
 })

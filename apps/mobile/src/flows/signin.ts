@@ -22,7 +22,11 @@ export function sendErrorMessage(reason: unknown) {
   const code = codeOf(reason)
   if (code === 'RATE_LIMITED') return 'That’s a lot of links. Wait a few minutes, then try again.'
   if (code === 'BAD_EMAIL') return 'Enter a valid email'
-  if (isTransient(reason) || !code || code.startsWith('HTTP_') || code === 'BAD_NAME') return OFFLINE
+  const message = reason instanceof Error && reason.message && reason.message !== 'Request failed' ? reason.message : null
+  // A 4xx with a real server message (BAD_NAME included) shows that message, not the signal copy.
+  const status = (reason as { status?: number } | null)?.status
+  if (message && !isTransient(reason) && (code === 'BAD_NAME' || (status !== undefined && status >= 400 && status < 500))) return message
+  if (isTransient(reason) || !code || code.startsWith('HTTP_')) return OFFLINE
   return reason instanceof Error && reason.message !== 'Request failed' ? reason.message : OFFLINE
 }
 

@@ -19,7 +19,7 @@ import {
 import { inviteFromNext, invitePath, isToken, parseDeepLink, parseInvitePreview, PENDING_INVITE_KEY, tokenFromInput, type InvitePreview } from './links'
 import { CheckEmail, ExpiredLink, JoinCard, NamePrompt, NameSheet, Toast } from './November'
 import { createOnce, joinFailure, joinedWasAlreadyMember, loadJoinView, type JoinView } from './flows/join'
-import { checkStoredSession, loadSession, saveSession, type KeyStore } from './flows/session'
+import { checkStoredSession, createSessionExpiry, loadSession, saveSession, type KeyStore } from './flows/session'
 import { nameAskedKey, shouldAskName } from './flows/names'
 import { createCooldowns, emailError, LAST_EMAIL_KEY, monotonicNow, normalizeEmail, sendErrorMessage, verifyFailure } from './flows/signin'
 
@@ -28,6 +28,8 @@ const secureStore: KeyStore = {
   set: (key, value) => SecureStore.setItemAsync(key, value),
   remove: (key) => SecureStore.deleteItemAsync(key),
 }
+// Every authenticated 401 (other than a dead-link BAD_TOKEN) ends the session through here.
+const sessionExpiry = createSessionExpiry()
 // Resend cooldowns survive going back to the email field (keyed by normalized email), for this app run.
 const cooldowns = createCooldowns()
 
@@ -78,11 +80,13 @@ async function call<T>(token: string | null, path: string, init?: RequestInit): 
   }
   const body = await response.json().catch(() => ({})) as { error?: { code?: string; message?: string; attemptsLeft?: number } }
   if (!response.ok) {
-    throw Object.assign(new Error(body.error?.message ?? 'Request failed'), {
+    const failure = Object.assign(new Error(body.error?.message ?? 'Request failed'), {
       code: body.error?.code ?? `HTTP_${response.status}`,
       status: response.status,
       attemptsLeft: body.error?.attemptsLeft,
     })
+    sessionExpiry.report(failure, !!token)
+    throw failure
   }
   return body as T
 }
@@ -177,6 +181,12 @@ export function App() {
     setInviteToken(null)
     AsyncStorage.removeItem(PENDING_INVITE_KEY).catch(() => undefined)
   }
+
+  useEffect(() => {
+    // After startup, an expired session clears secure storage and returns to sign-in; the pending invite stays.
+    sessionExpiry.set(() => setToken(null))
+    return () => sessionExpiry.set(null)
+  }, [])
 
   useEffect(() => {
     // Stay signed in across restarts: a stored session that the API no longer knows is cleared.
@@ -285,7 +295,11 @@ function SignedIn({ onSessionExpired, ...props }: { token: string; inviteToken: 
         const asked = found ? await AsyncStorage.getItem(nameAskedKey(found.userId)).catch(() => '1') : '1'
         if (!cancelled) setAsk(shouldAskName(found, !!asked))
       })
-      .catch(() => { if (!cancelled) setAsk(false) })
+      .catch((reason) => {
+        if (cancelled) return
+        if ((reason as { status?: number; code?: string }).status === 401 && (reason as { code?: string }).code !== 'BAD_TOKEN') onSessionExpired()
+        else setAsk(false)
+      })
     return () => { cancelled = true }
   }, [props.token])
 
@@ -436,7 +450,7 @@ function SignIn({ onToken, pendingInvite, onDismissInvite, linkFailure, onClearL
         {pendingInvite ? (
           <View style={styles.inviteNote} testID="pending-invite">
             <Text style={styles.copy}>🔗  <Text style={styles.strong}>You opened a group link.</Text> Sign in and we’ll take you right to it.</Text>
-            <Pressable testID="pending-invite-dismiss" onPress={onDismissInvite}>
+            <Pressable testID="pending-invite-dismiss" onPress={onDismissInvite} accessibilityRole="button" accessibilityLabel="Dismiss the group invite" accessibilityState={{ disabled: false }}>
               <Text style={styles.signOut}>Dismiss</Text>
             </Pressable>
           </View>
@@ -458,12 +472,12 @@ function SignIn({ onToken, pendingInvite, onDismissInvite, linkFailure, onClearL
           testID="sign-in-email"
         />
         {shownError && <Text style={styles.error} testID="sign-in-error">{offline ? '! ' : ''}{shownError}</Text>}
-        <Pressable style={[styles.primary, sending && styles.disabled]} disabled={sending} onPress={sendLink} testID="send-link">
+        <Pressable style={[styles.primary, sending && styles.disabled]} disabled={sending} onPress={sendLink} testID="send-link" accessibilityRole="button" accessibilityState={{ disabled: sending, busy: sending }}>
           <Text style={styles.primaryText}>{sending ? 'Sending…' : offline ? 'Try again' : 'Send link'}</Text>
         </Pressable>
         <Text style={[styles.muted, styles.centerText]}>No password. The link works for 15 minutes.</Text>
         {sampleAvailable && (
-          <Pressable style={styles.secondary} accessibilityRole="button" onPress={async () => {
+          <Pressable style={styles.secondary} accessibilityRole="button" accessibilityState={{ disabled: false }} onPress={async () => {
             try {
               const session = await call<{ token: string }>(null, '/api/dev/seed', { method: 'POST' })
               onToken(session.token)
@@ -766,13 +780,13 @@ function Ledger({
             <Text style={styles.wordmark}>Divvy</Text>
             <View style={styles.spacer} />
             {home && (
-              <Pressable style={styles.chip} onPress={() => setEditingName(true)} testID="name-chip" accessibilityLabel="Edit your name">
+              <Pressable style={styles.chip} onPress={() => setEditingName(true)} testID="name-chip" accessibilityRole="button" accessibilityLabel={`Your name, ${home.you.name}. Edit`} accessibilityState={{ disabled: false }}>
                 <View style={styles.chipAvatar}><Text style={styles.chipAvatarText}>{home.you.name.charAt(0).toUpperCase()}</Text></View>
                 <Text style={styles.chipText} numberOfLines={1}>{home.you.name}</Text>
                 <Text style={styles.muted}>✎</Text>
               </Pressable>
             )}
-            <Pressable onPress={async () => {
+            <Pressable accessibilityRole="button" accessibilityState={{ disabled: false }} testID="sign-out" onPress={async () => {
               try { await call(token, '/api/auth/logout', { method: 'POST' }) } catch { /* The local session is what switches person. */ }
               onSignedOut()
             }}>
@@ -785,7 +799,7 @@ function Ledger({
               {home.groups.map((group) => {
                 const on = group.id === groupId
                 return (
-                  <Pressable key={group.id} onPress={() => setGroupId(group.id)} style={[styles.pill, on && styles.pillOn]}>
+                  <Pressable key={group.id} onPress={() => setGroupId(group.id)} style={[styles.pill, on && styles.pillOn]} accessibilityRole="button" accessibilityLabel={`${group.name} group`} accessibilityState={{ selected: on }}>
                     <Text style={[styles.pillText, on && styles.pillTextOn]}>{group.name}</Text>
                   </Pressable>
                 )
@@ -823,7 +837,7 @@ function Ledger({
                   inputMode="decimal"
                   style={styles.amount}
                 />
-                <Pressable style={styles.primary} testID="add-expense" onPress={addExpense}>
+                <Pressable style={styles.primary} testID="add-expense" onPress={addExpense} accessibilityRole="button" accessibilityLabel="Add expense" accessibilityState={{ disabled: saving, busy: saving }}>
                   <Text style={styles.primaryText}>{saving ? 'Adding' : 'Add'}</Text>
                 </Pressable>
               </View>
@@ -838,6 +852,8 @@ function Ledger({
                 style={styles.description}
               />
               <Pressable
+                accessibilityRole="button"
+                accessibilityState={{ checked: custom }}
                 testID="custom-split"
                 style={styles.secondary}
                 onPress={() => {
@@ -880,7 +896,7 @@ function Ledger({
                   <Text style={styles.lineLabel}>{paymentLabel(detail, payment)}</Text>
                   <View style={styles.lineEnd}>
                     <Text style={styles.money}>{formatMoney(payment.minor, detail.currency)}</Text>
-                    <Pressable testID={`record-${payment.fromId}-${payment.toId}`} style={styles.record} onPress={() => record(payment)}>
+                    <Pressable testID={`record-${payment.fromId}-${payment.toId}`} style={styles.record} onPress={() => record(payment)} accessibilityRole="button" accessibilityLabel={`Record: ${paymentLabel(detail, payment)}`} accessibilityState={{ busy: busyId === `${payment.fromId}:${payment.toId}`, disabled: busyId !== null }}>
                       <Text style={styles.recordText}>{busyId === `${payment.fromId}:${payment.toId}` ? 'Recording' : 'Record'}</Text>
                     </Pressable>
                   </View>
@@ -891,7 +907,7 @@ function Ledger({
                   <Text style={styles.lineLabel}>{settlementLabel(detail, settlement)}</Text>
                   <View style={styles.lineEnd}>
                     <Text style={styles.money}>{formatMoney(settlement.minor, detail.currency)}</Text>
-                    <Pressable testID={`undo-${settlement.id}`} style={styles.record} onPress={() => undo(settlement.id)}>
+                    <Pressable testID={`undo-${settlement.id}`} style={styles.record} onPress={() => undo(settlement.id)} accessibilityRole="button" accessibilityLabel={`Undo: ${settlementLabel(detail, settlement)}`} accessibilityState={{ busy: busyId === settlement.id, disabled: busyId !== null }}>
                       <Text style={styles.recordText}>{busyId === settlement.id ? 'Undoing' : 'Undo'}</Text>
                     </Pressable>
                   </View>
@@ -914,7 +930,7 @@ function Ledger({
               <Text selectable style={styles.link} testID="group-link">{inviteUrl ?? 'Preparing a link…'}</Text>
               <Text style={styles.muted}>Anyone already signed in can open this.</Text>
               {inviteUrl && (
-                <Pressable style={styles.secondary} onPress={() => { Share.share({ message: inviteUrl }).catch(() => undefined) }}>
+                <Pressable style={styles.secondary} onPress={() => { Share.share({ message: inviteUrl }).catch(() => undefined) }} accessibilityRole="button" accessibilityState={{ disabled: false }}>
                   <Text style={styles.secondaryText}>Share</Text>
                 </Pressable>
               )}
@@ -936,7 +952,7 @@ function Ledger({
                   style={styles.input}
                 />
                 <View style={styles.rowActions}>
-                  <Pressable testID="invite-open" style={styles.primary} onPress={() => {
+                  <Pressable testID="invite-open" style={styles.primary} accessibilityRole="button" accessibilityState={{ disabled: false }} onPress={() => {
                     const next = tokenFromInput(paste)
                     if (!next) {
                       setJoinError('That is not a group link')
@@ -947,13 +963,13 @@ function Ledger({
                   }}>
                     <Text style={styles.primaryText}>Open</Text>
                   </Pressable>
-                  <Pressable style={styles.secondary} onPress={() => setShowPaste(false)}>
+                  <Pressable style={styles.secondary} onPress={() => setShowPaste(false)} accessibilityRole="button" accessibilityState={{ disabled: false }}>
                     <Text style={styles.secondaryText}>Close</Text>
                   </Pressable>
                 </View>
               </>
             ) : (
-              <Pressable onPress={() => setShowPaste(true)}>
+              <Pressable onPress={() => setShowPaste(true)} accessibilityRole="button" accessibilityState={{ disabled: false }}>
                 <Text style={styles.signOut}>Open a group link</Text>
               </Pressable>
             )}

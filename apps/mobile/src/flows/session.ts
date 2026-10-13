@@ -12,9 +12,32 @@ export type KeyStore = {
 export async function loadSession(store: KeyStore) {
   try {
     const token = await store.get(SESSION_KEY)
-    return token && /^[A-Za-z0-9_-]{16,256}$/.test(token) ? token : null
+    if (!token) return null
+    if (/^[A-Za-z0-9_-]{16,256}$/.test(token)) return token
+    // Malformed: delete it so it isn't read again on every launch.
+    await store.remove(SESSION_KEY).catch(() => undefined)
+    return null
   } catch {
     return null
+  }
+}
+
+/** A 401 on an authenticated request that isn't a dead-link BAD_TOKEN means the session is gone. */
+export function isSessionExpiry(reason: unknown, authenticated: boolean) {
+  return authenticated && isUnauthenticated(reason)
+}
+
+/**
+ * One app-wide hook for "the session expired": every authenticated call reports here, and the app
+ * clears secure storage and returns to sign-in (keeping any pending invite).
+ */
+export function createSessionExpiry() {
+  let handler: (() => void) | null = null
+  return {
+    set(next: (() => void) | null) { handler = next },
+    report(reason: unknown, authenticated: boolean) {
+      if (isSessionExpiry(reason, authenticated)) handler?.()
+    },
   }
 }
 
