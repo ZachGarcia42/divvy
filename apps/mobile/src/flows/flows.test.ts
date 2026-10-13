@@ -192,6 +192,7 @@ describe('QA round 344', () => {
     expect(map.has(SESSION_KEY)).toBe(false)
     await saveSession(store, null)
   })
+})
 
 describe('session expiry after startup', () => {
   it('fires for authenticated 401s that are not BAD_TOKEN', () => {
