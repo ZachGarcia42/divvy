@@ -789,4 +789,39 @@ describe('ledger API', () => {
     await app.request(`/api/groups/${created.group.id}/unarchive`, { method: 'POST', headers: auth })
     expect(await (await app.request(`/api/invites/${link.token}/preview`)).json()).toMatchObject({ status: 'valid' })
   })
+
+  it('signs in an email whose local part is over 80 characters with a truncated name', async () => {
+    const sql = await createMemorySql()
+    const { app } = createApp(sql, { dev: true, rateFor: async () => '1', devSigninEmails: null })
+    const session = await sessionFor(app, `${'l'.repeat(120)}@example.com`)
+    expect(session.token).toBeTruthy()
+    expect(session.user.displayName).toBe('L' + 'l'.repeat(79))
+    const long = await app.request('/api/me', { method: 'PATCH', headers: { authorization: `Bearer ${session.token}`, 'content-type': 'application/json' }, body: JSON.stringify({ displayName: 'x'.repeat(81) }) })
+    expect(await long.json()).toMatchObject({ error: { code: 'BAD_NAME', message: 'Use a name of 80 characters or fewer' } })
+  })
+
+  it('tells a member reopening their used invite that they are already in, and exposes /api/config', async () => {
+    const sql = await createMemorySql()
+    const { app } = createApp(sql, { dev: true, rateFor: async () => '1', devSigninEmails: null })
+    expect(await (await app.request('/api/config')).json()).toEqual({ devSeed: true })
+    const locked = createApp(sql, { dev: true, rateFor: async () => '1', devSigninEmails: [] }).app
+    expect(await (await locked.request('/api/config')).json()).toEqual({ devSeed: false })
+    const alex = await sessionFor(app, 'alex@example.com')
+    const sam = await sessionFor(app, 'sam@example.com')
+    const jo = await sessionFor(app, 'jo@example.com')
+    const auth = { authorization: `Bearer ${alex.token}`, 'content-type': 'application/json' }
+    const created = await (await app.request('/api/groups', { method: 'POST', headers: auth, body: JSON.stringify({ name: 'Apartment', currency: 'USD', timezone: 'UTC' }) })).json() as { group: { id: string } }
+    await app.request(`/api/groups/${created.group.id}/people`, { method: 'POST', headers: auth, body: JSON.stringify({ email: 'sam@example.com', displayName: 'Sam' }) })
+    const outbox = await (await app.request('/api/dev/outbox')).json() as { to_email: string; body: string }[]
+    const tok = outbox.find((row) => row.to_email === 'sam@example.com' && row.body.includes('/invite/'))!.body.split('/invite/').at(-1)!.trim()
+    const before = await (await app.request(`/api/invites/${tok}`, { headers: { authorization: `Bearer ${sam.token}` } })).json()
+    expect(before).toMatchObject({ youAreMember: false })
+    await app.request(`/api/invites/${tok}/accept`, { method: 'POST', headers: { authorization: `Bearer ${sam.token}` } })
+    const again = await app.request(`/api/invites/${tok}`, { headers: { authorization: `Bearer ${sam.token}` } })
+    expect(again.status).toBe(200)
+    expect(await again.json()).toMatchObject({ group: { name: 'Apartment' }, youAreMember: true })
+    const other = await app.request(`/api/invites/${tok}`, { headers: { authorization: `Bearer ${jo.token}` } })
+    expect(other.status).toBe(403)
+    expect(await other.json()).toMatchObject({ error: { code: 'FORBIDDEN' } })
+  })
 })

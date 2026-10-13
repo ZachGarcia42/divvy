@@ -108,6 +108,8 @@ export function createApp(sql: Sql, options?: {
   }
 
   app.get('/api/health', (c) => c.json({ ok: true }))
+  // Lets clients hide tester-only affordances (the sample apartment) without probing /api/dev/*.
+  app.get('/api/config', (c) => c.json({ devSeed: devRoutes }))
 
   const readBody = async (c: { req: { json: () => Promise<unknown> } }) => {
     const body = await c.req.json().catch(() => null)

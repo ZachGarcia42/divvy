@@ -442,8 +442,18 @@ export class Repo {
   }
 
   async previewInvite(actor: Actor, token: string) {
-    const invite = await this.mustInvite(token)
-    if (!isGroupInvite(invite) && invite.email !== actor.email) throw new LedgerError('FORBIDDEN', 'This invite was sent to a different email')
+    // A current member reopening a link (even a used or expired one) gets the preview with youAreMember,
+    // so the app can say "You're already in X" instead of "this link doesn't work".
+    // An email invite stays private to its addressee, member or not.
+    const raw = await this.one<{ group_id: string; kind: string | null; email: string | null }>(
+      `select group_id, kind, email from invites where token_hash = $1`,
+      [hashToken(token)],
+    )
+    if (raw && !isGroupInvite(raw) && raw.email !== actor.email) throw new LedgerError('FORBIDDEN', 'This invite was sent to a different email')
+    const mine = raw ? await this.membership(raw.group_id, actor.participantId) : null
+    const youAreMember = !!mine && !mine.removed_at
+    const invite = youAreMember ? raw! : await this.mustInvite(token)
+    if (!youAreMember && !isGroupInvite(invite) && invite.email !== actor.email) throw new LedgerError('FORBIDDEN', 'This invite was sent to a different email')
     const members = await this.memberRows(invite.group_id)
     const blockedIds = new Set(
       (await this.sql.query<{ user_id: string }>(
@@ -461,6 +471,7 @@ export class Repo {
         blocked: member.user_id ? blockedIds.has(member.user_id) : false,
       })),
       kind: isGroupInvite(invite) ? 'group' as const : 'email' as const,
+      youAreMember,
     }
   }
 
@@ -1821,7 +1832,7 @@ export class Repo {
     if (found) return found
     const id = newId()
     const local = email.split('@')[0] ?? 'friend'
-    const name = cleanName(displayName || local.charAt(0).toUpperCase() + local.slice(1))
+    const name = cleanName(displayName || derivedDisplayName(local))
     await this.sql.query(`insert into users (id, email, display_name) values ($1,$2,$3)`, [id, email, name])
     await this.sql.query(`insert into participants (id, display_name, email, user_id) values ($1,$2,$3,$4)`, [newId(), name, email, id])
     return (await this.mustUser(id))
@@ -2139,6 +2150,13 @@ export function normalizeEmail(email: unknown) {
   return normalized
 }
 
+/** What a new account is called: the email local part, first letter capitalized, trimmed to 80 characters. */
+function derivedDisplayName(local: string) {
+  let name = (local.charAt(0).toUpperCase() + local.slice(1)).slice(0, 80)
+  if (/[\uD800-\uDBFF]$/.test(name)) name = name.slice(0, -1)
+  return name.trim() || 'Friend'
+}
+
 export function cleanNextPath(value: unknown) {
   // Relative in-app paths only. Checked on the raw value and once percent-decoded: one leading slash,
   // no "//" anywhere, no "." or ".." path segments, no backslash, whitespace, or control characters.
@@ -2164,15 +2182,15 @@ function cleanName(value: unknown) {
   if (typeof value !== 'string') throw new LedgerError('BAD_NAME', 'Name must be text')
   const name = value.trim()
   if (!name) throw new LedgerError('BAD_NAME', "Name can't be blank")
-  if (name.length > 80) throw new LedgerError('BAD_NAME', 'Use a name under 80 characters')
+  if (name.length > 80) throw new LedgerError('BAD_NAME', 'Use a name of 80 characters or fewer')
   return name
 }
 
 function cleanExpenseDescription(value: unknown) {
   if (value == null) return ''
-  if (typeof value !== 'string') throw new LedgerError('BAD_NAME', 'Use a name under 80 characters')
+  if (typeof value !== 'string') throw new LedgerError('BAD_NAME', 'Use a name of 80 characters or fewer')
   const name = value.trim()
-  if (name.length > 80) throw new LedgerError('BAD_NAME', 'Use a name under 80 characters')
+  if (name.length > 80) throw new LedgerError('BAD_NAME', 'Use a name of 80 characters or fewer')
   return name
 }
 

@@ -6,8 +6,16 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
-    "ios": { "supportsTablet": true, "bundleIdentifier": "app.divvy.ledger" },
-    "android": { "package": "app.divvy.ledger", "softwareKeyboardLayoutMode": "resize" },
-    "plugins": []
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "app.divvy.ledger"
+    },
+    "android": {
+      "package": "app.divvy.ledger",
+      "softwareKeyboardLayoutMode": "resize"
+    },
+    "plugins": [
+      "expo-secure-store"
+    ]
   }
 }

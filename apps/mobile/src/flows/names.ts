@@ -7,7 +7,10 @@ export const nameAskedKey = (userId: string) => `divvy.nameAsked.${userId}`
 /** What the API's ensureUser names a new account: the email local part, first letter capitalized. */
 export function derivedName(email: string) {
   const local = email.split('@')[0] ?? 'friend'
-  return (local.charAt(0).toUpperCase() + local.slice(1)).trim()
+  // Same as the server: capitalize, cut to 80 (never mid-surrogate), trim.
+  let name = (local.charAt(0).toUpperCase() + local.slice(1)).slice(0, NAME_MAX)
+  if (/[\uD800-\uDBFF]$/.test(name)) name = name.slice(0, -1)
+  return name.trim() || 'Friend'
 }
 
 export function looksDerived(displayName: string, email: string) {
@@ -23,7 +26,7 @@ export function checkName(text: string) {
   const length = text.trim().length
   const counter = length >= COUNTER_FROM ? `${length}/${NAME_MAX}` : null
   if (length === 0) return { error: 'Enter a name', canSave: false, counter }
-  if (length > NAME_MAX) return { error: 'Use a name under 80 characters', canSave: false, counter }
+  if (length > NAME_MAX) return { error: 'Use a name of 80 characters or fewer', canSave: false, counter }
   return { error: null, canSave: true, counter }
 }
 

@@ -1,5 +1,6 @@
 import { computeShares, exponentOf, formatMoney, parseMajor } from '@divvy/domain'
 import AsyncStorage from '@react-native-async-storage/async-storage'
+import * as SecureStore from 'expo-secure-store'
 import { useEffect, useRef, useState } from 'react'
 import {
   Alert,
@@ -17,9 +18,18 @@ import {
 } from 'react-native'
 import { inviteFromNext, invitePath, isToken, parseDeepLink, parseInvitePreview, PENDING_INVITE_KEY, tokenFromInput, type InvitePreview } from './links'
 import { CheckEmail, ExpiredLink, JoinCard, NamePrompt, NameSheet, Toast } from './November'
-import { decideJoin, joinFailure, joinedWasAlreadyMember, parsePublicPreview, type JoinView } from './flows/join'
+import { createOnce, joinFailure, joinedWasAlreadyMember, loadJoinView, type JoinView } from './flows/join'
+import { checkStoredSession, loadSession, saveSession, type KeyStore } from './flows/session'
 import { nameAskedKey, shouldAskName } from './flows/names'
-import { emailError, LAST_EMAIL_KEY, normalizeEmail, sendErrorMessage, verifyFailure } from './flows/signin'
+import { createCooldowns, emailError, LAST_EMAIL_KEY, monotonicNow, normalizeEmail, sendErrorMessage, verifyFailure } from './flows/signin'
+
+const secureStore: KeyStore = {
+  get: (key) => SecureStore.getItemAsync(key),
+  set: (key, value) => SecureStore.setItemAsync(key, value),
+  remove: (key) => SecureStore.deleteItemAsync(key),
+}
+// Resend cooldowns survive going back to the email field (keyed by normalized email), for this app run.
+const cooldowns = createCooldowns()
 
 const API = process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:8787'
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
@@ -139,7 +149,12 @@ function firstGroup(groups: HomeGroup[]) {
 }
 
 export function App() {
-  const [token, setToken] = useState<string | null>(null)
+  const [token, setTokenState] = useState<string | null>(null)
+  const [booting, setBooting] = useState(true)
+  const setToken = (next: string | null) => {
+    setTokenState(next)
+    void saveSession(secureStore, next)
+  }
   const [inviteToken, setInviteToken] = useState<string | null>(null)
   const [linkFailure, setLinkFailure] = useState<ReturnType<typeof verifyFailure> | null>(null)
   const [verifying, setVerifying] = useState(false)
@@ -156,6 +171,18 @@ export function App() {
     setInviteToken(null)
     AsyncStorage.removeItem(PENDING_INVITE_KEY).catch(() => undefined)
   }
+
+  useEffect(() => {
+    // Stay signed in across restarts: a stored session that the API no longer knows is cleared.
+    ;(async () => {
+      const stored = await loadSession(secureStore)
+      if (stored) {
+        const checked = await checkStoredSession(secureStore, stored, () => call<unknown>(stored, '/api/me'))
+        if (checked.ok || checked.reason === 'offline') setTokenState((current) => current ?? stored)
+      }
+      setBooting(false)
+    })()
+  }, [])
 
   useEffect(() => {
     AsyncStorage.getItem(PENDING_INVITE_KEY)
@@ -204,6 +231,9 @@ export function App() {
     return () => subscription.remove()
   }, [])
 
+  if (booting && !token) {
+    return <SafeAreaView style={styles.screen}><View style={styles.signIn}><Text style={styles.brand} accessibilityRole="header">Divvy</Text></View></SafeAreaView>
+  }
   if (!token) {
     return (
       <SignIn
@@ -223,6 +253,7 @@ export function App() {
       inviteToken={inviteToken}
       onInviteHandled={forgetInvite}
       onSignedOut={() => { forgetInvite(); setToken(null) }}
+      onSessionExpired={() => setToken(null)}
     />
   )
 }
@@ -230,7 +261,7 @@ export function App() {
 type Me = { userId: string; email: string; participantId: string; displayName: string }
 
 /** After sign-in: the one-time name prompt (2e) comes first, then the group (and any pending join). */
-function SignedIn(props: { token: string; inviteToken: string | null; onInviteHandled: () => void; onSignedOut: () => void }) {
+function SignedIn({ onSessionExpired, ...props }: { token: string; inviteToken: string | null; onInviteHandled: () => void; onSignedOut: () => void; onSessionExpired: () => void }) {
   const [me, setMe] = useState<Me | null>(null)
   const [ask, setAsk] = useState<boolean | null>(null)
 
@@ -239,6 +270,11 @@ function SignedIn(props: { token: string; inviteToken: string | null; onInviteHa
     call<Me | null>(props.token, '/api/me')
       .then(async (found) => {
         if (cancelled) return
+        if (!found) {
+          // The session is gone on the server: clear it and go back to sign-in, keeping any pending invite.
+          onSessionExpired()
+          return
+        }
         setMe(found)
         const asked = found ? await AsyncStorage.getItem(nameAskedKey(found.userId)).catch(() => '1') : '1'
         if (!cancelled) setAsk(shouldAskName(found, !!asked))
@@ -279,8 +315,11 @@ function SignIn({ onToken, pendingInvite, onDismissInvite, linkFailure, onClearL
   const [sentTo, setSentTo] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [sending, setSending] = useState(false)
+  const [sampleAvailable, setSampleAvailable] = useState(false)
 
   useEffect(() => {
+    // Only show "Open the sample apartment" when the API says dev seed is on.
+    call<{ devSeed?: boolean }>(null, '/api/config').then((config) => setSampleAvailable(config.devSeed === true)).catch(() => setSampleAvailable(false))
     AsyncStorage.getItem(LAST_EMAIL_KEY).then((saved) => { if (saved) setSavedEmail(saved) }).catch(() => undefined)
   }, [])
 
@@ -299,6 +338,7 @@ function SignIn({ onToken, pendingInvite, onDismissInvite, linkFailure, onClearL
       onDismissInvite()
       issued = await send(null)
     }
+    cooldowns.mark(address, monotonicNow())
     setSavedEmail(address)
     AsyncStorage.setItem(LAST_EMAIL_KEY, address).catch(() => undefined)
     if (issued.devToken) {
@@ -317,6 +357,12 @@ function SignIn({ onToken, pendingInvite, onDismissInvite, linkFailure, onClearL
       return
     }
     const address = normalizeEmail(email)
+    // Same address again within the cooldown: go straight back to Check your email instead of re-sending.
+    const last = cooldowns.last(address)
+    if (last !== null && monotonicNow() - last >= 0 && monotonicNow() - last < 30_000) {
+      setSentTo(address)
+      return
+    }
     setSending(true)
     setError(null)
     try {
@@ -346,7 +392,7 @@ function SignIn({ onToken, pendingInvite, onDismissInvite, linkFailure, onClearL
     )
   }
   if (sentTo) {
-    return <CheckEmail email={sentTo} pendingInvite={!!pendingInvite} onResend={async () => { await request(sentTo) }} onBack={backToEntry} />
+    return <CheckEmail email={sentTo} pendingInvite={!!pendingInvite} lastSentAt={cooldowns.last(sentTo)} now={monotonicNow} onResend={async () => { await request(sentTo) }} onBack={backToEntry} />
   }
   if (linkFailure?.kind === 'expired') {
     return (
@@ -396,16 +442,19 @@ function SignIn({ onToken, pendingInvite, onDismissInvite, linkFailure, onClearL
           <Text style={styles.primaryText}>{sending ? 'Sending…' : offline ? 'Try again' : 'Send link'}</Text>
         </Pressable>
         <Text style={[styles.muted, styles.centerText]}>No password. The link works for 15 minutes.</Text>
-        <Pressable style={styles.secondary} onPress={async () => {
-          try {
-            const session = await call<{ token: string }>(null, '/api/dev/seed', { method: 'POST' })
-            onToken(session.token)
-          } catch (reason) {
-            setError(reason instanceof Error ? reason.message : 'Could not open the sample')
-          }
-        }}>
-          <Text style={styles.secondaryText}>Open the sample apartment</Text>
-        </Pressable>
+        {sampleAvailable && (
+          <Pressable style={styles.secondary} accessibilityRole="button" onPress={async () => {
+            try {
+              const session = await call<{ token: string }>(null, '/api/dev/seed', { method: 'POST' })
+              onToken(session.token)
+            } catch (reason) {
+              if ((reason as { status?: number }).status === 404) setSampleAvailable(false)
+              else setError(sendErrorMessage(reason))
+            }
+          }}>
+            <Text style={styles.secondaryText}>Open the sample apartment</Text>
+          </Pressable>
+        )}
       </View>
     </SafeAreaView>
   )
@@ -510,30 +559,17 @@ function Ledger({
     let cancelled = false
     setJoin({ kind: 'loading' })
     ;(async () => {
-      let publicPreview: ReturnType<typeof parsePublicPreview> | 'missing' = null
-      try {
-        publicPreview = parsePublicPreview(await call<unknown>(null, invitePath(joinToken, '/preview'))) ?? 'missing'
-      } catch (reason) {
-        if ((reason as { status?: number }).status === 404) publicPreview = 'missing'
-        else if ((reason as { code?: string }).code === 'NETWORK') { if (!cancelled) setJoin({ kind: 'offline' }); return }
-        else publicPreview = 'missing'
-      }
-      let authed: InvitePreview | null = null
-      try {
-        authed = parseInvitePreview(await call<unknown>(token, invitePath(joinToken)))
-      } catch (reason) {
-        const failure = joinFailure(reason)
-        if ('dead' in failure && publicPreview !== 'missing' && publicPreview?.status === 'valid') {
-          if (!cancelled) setJoin({ kind: 'dead', reason: failure.dead })
-          return
-        }
-        if ((reason as { code?: string }).code === 'NETWORK') { if (!cancelled) setJoin({ kind: 'offline' }); return }
-      }
-      const groups = await call<Home>(token, '/api/home').then((found) => found.groups.map((group) => group.id)).catch(() => [] as string[])
+      const view = await loadJoinView({
+        publicPreview: () => call<unknown>(null, invitePath(joinToken, '/preview')),
+        authedPreview: () => call<unknown>(token, invitePath(joinToken)),
+        yourGroupIds: () => call<Home>(token, '/api/home').then((found) => found.groups.map((group) => group.id)),
+        parseAuthed: (raw) => {
+          const parsed = parseInvitePreview(raw)
+          return parsed ? { ...parsed, youAreMember: (raw as { youAreMember?: unknown }).youAreMember === true } : null
+        },
+        yourParticipantId: participantId,
+      })
       if (cancelled) return
-      let view = decideJoin({ publicPreview, authed, yourGroupIds: groups, yourParticipantId: participantId })
-      // A valid link whose signed-in preview didn't parse is not something we can render: treat it as dead.
-      if (view.kind === 'loading') view = { kind: 'dead', reason: 'missing' }
       if (view.kind === 'already') {
         setGroupId(view.groupId)
         showToast(`You’re already in ${view.groupName}.`)
@@ -541,6 +577,7 @@ function Ledger({
         onInviteHandled()
         return
       }
+      // Only a really dead link clears the saved invite; 'offline' keeps it for Try again.
       if (view.kind === 'dead') onInviteHandled()
       setJoin(view)
     })()
@@ -670,7 +707,9 @@ function Ledger({
     }
   }
 
-  async function acceptJoin() {
+  const joinOnce = useRef(createOnce()).current
+  const acceptJoin = () => joinOnce(acceptJoinNow)
+  async function acceptJoinNow() {
     if (!joinToken || join?.kind !== 'preview' || join.joining) return
     setJoin({ ...join, joining: true, error: null })
     const before = (home?.groups ?? []).map((group) => group.id)
