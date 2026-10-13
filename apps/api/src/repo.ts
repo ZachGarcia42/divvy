@@ -31,7 +31,7 @@ import {
   type LedgerSettlement,
   type SplitSpec,
 } from '@divvy/domain'
-import { createHash, randomBytes, randomUUID } from 'node:crypto'
+import { createHash, randomBytes, randomInt, randomUUID, timingSafeEqual } from 'node:crypto'
 import type { Sql } from './db.ts'
 
 type Actor = { userId: string; email: string; participantId: string; displayName: string; homeCurrency: string }
@@ -56,6 +56,16 @@ type ExpenseInput = {
 const newId = () => randomUUID()
 const newToken = () => randomBytes(32).toString('base64url')
 const hashToken = (token: string) => createHash('sha256').update(token).digest('hex')
+// A code is hashed with its own login row's token hash, so the same 6 digits never hash alike twice.
+const hashCode = (code: string, rowHash: string) => createHash('sha256').update(`${rowHash}:${code}`).digest('hex')
+export const CODE_MAX_ATTEMPTS = 5
+
+/** 401 sign-in code errors; attemptsLeft is sent back for BAD_CODE. */
+export class CodeError extends LedgerError {
+  constructor(code: 'BAD_CODE' | 'CODE_LOCKED' | 'CODE_EXPIRED', message: string, readonly attemptsLeft?: number) {
+    super(code, message)
+  }
+}
 
 export class Repo {
   constructor(
@@ -76,14 +86,33 @@ export class Repo {
     const normalized = normalizeEmail(email)
     const nextPath = next == null ? null : cleanNextPath(next)
     const token = newToken()
-    const expires = new Date(this.deps.now().getTime() + 15 * 60 * 1000)
+    const rowHash = hashToken(token)
+    const now = this.deps.now().getTime()
+    const expires = new Date(now + 15 * 60 * 1000)
+    // Sign-in also gets a 6-digit code (CSPRNG), valid 10 minutes, tied to this same row: using either
+    // the code or the link marks the row used, so they are mutually exclusive.
+    const code = purpose === 'login' ? String(randomInt(0, 1_000_000)).padStart(6, '0') : null
+    const codeExpires = new Date(now + 10 * 60 * 1000)
+    if (code) {
+      // A new request (Resend) invalidates every earlier code for this email. Earlier links still work until used or expired.
+      await this.sql.query(`update magic_links set code_hash = null where email = $1 and purpose = 'login' and code_hash is not null`, [normalized])
+    }
     await this.sql.query(
-      `insert into magic_links (token_hash, email, purpose, user_id, expires_at, next_path) values ($1,$2,$3,$4,$5,$6)`,
-      [hashToken(token), normalized, purpose, userId ?? null, expires.toISOString(), nextPath],
+      `insert into magic_links (token_hash, email, purpose, user_id, expires_at, next_path, code_hash, code_expires_at)
+       values ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [rowHash, normalized, purpose, userId ?? null, expires.toISOString(), nextPath, code ? hashCode(code, rowHash) : null, code ? codeExpires.toISOString() : null],
     )
     const url = `${this.deps.webOrigin}/login?token=${encodeURIComponent(token)}${nextPath ? `&next=${encodeURIComponent(nextPath)}` : ''}`
-    await this.sendEmail(normalized, 'Your Divvy sign-in link', `Open this link to sign in. It expires in 15 minutes.\n${url}`)
-    return { token, url }
+    if (code) {
+      await this.sendEmail(
+        normalized,
+        `${code} is your Divvy sign-in code`,
+        `Your Divvy code is ${code}. Enter it in the app. It expires in 10 minutes.\n\nOr open this link to sign in. It expires in 15 minutes.\n${url}`,
+      )
+    } else {
+      await this.sendEmail(normalized, 'Your Divvy sign-in link', `Open this link to sign in. It expires in 15 minutes.\n${url}`)
+    }
+    return { token, url, code }
   }
 
   async verifyMagicLink(token: string) {
@@ -94,7 +123,47 @@ export class Repo {
     if (!link || link.used_at || new Date(link.expires_at).getTime() < this.deps.now().getTime()) {
       throw new LedgerError('BAD_TOKEN', 'That sign-in link is no longer valid')
     }
-    await this.sql.query(`update magic_links set used_at = now() where token_hash = $1`, [hashToken(token)])
+    // Claim the row atomically so a link and its code (or two taps) can't both sign in.
+    const claimed = await this.sql.query(`update magic_links set used_at = now(), code_hash = null where token_hash = $1 and used_at is null returning token_hash`, [hashToken(token)])
+    if (!claimed.length) throw new LedgerError('BAD_TOKEN', 'That sign-in link is no longer valid')
+    return this.completeSignIn(link)
+  }
+
+  /** Sign in with the 6-digit code from the email. Same result as verifyMagicLink. */
+  async verifyCode(email: string, code: string) {
+    const normalized = normalizeEmail(email)
+    const row = await this.one<{ token_hash: string; email: string; purpose: string; user_id: string | null; expires_at: string; code_hash: string; code_expires_at: string; code_attempts: number; next_path: string | null }>(
+      `select token_hash, email, purpose, user_id, expires_at, code_hash, code_expires_at, code_attempts, next_path from magic_links
+       where email = $1 and purpose = 'login' and used_at is null and code_hash is not null
+       order by code_expires_at desc limit 1`,
+      [normalized],
+    )
+    const expired = 'That code has expired. Tap Resend for a new code.'
+    if (!row || new Date(row.code_expires_at).getTime() < this.deps.now().getTime()) throw new CodeError('CODE_EXPIRED', expired)
+    const expected = Buffer.from(row.code_hash, 'hex')
+    const given = Buffer.from(hashCode(code, row.token_hash), 'hex')
+    if (expected.length !== given.length || !timingSafeEqual(expected, given)) {
+      const bumped = await this.sql.query<{ code_attempts: number }>(
+        `update magic_links set code_attempts = code_attempts + 1 where token_hash = $1 and code_hash is not null returning code_attempts`,
+        [row.token_hash],
+      )
+      const attempts = bumped[0]?.code_attempts ?? CODE_MAX_ATTEMPTS
+      if (attempts >= CODE_MAX_ATTEMPTS) {
+        await this.sql.query(`update magic_links set code_hash = null where token_hash = $1`, [row.token_hash])
+        throw new CodeError('CODE_LOCKED', 'Too many tries. Tap Resend for a new code.')
+      }
+      const left = CODE_MAX_ATTEMPTS - attempts
+      throw new CodeError('BAD_CODE', `That code isn’t right. ${left} ${left === 1 ? 'try' : 'tries'} left.`, left)
+    }
+    const claimed = await this.sql.query(
+      `update magic_links set used_at = now(), code_hash = null where token_hash = $1 and used_at is null and code_hash is not null returning token_hash`,
+      [row.token_hash],
+    )
+    if (!claimed.length) throw new CodeError('CODE_EXPIRED', expired)
+    return this.completeSignIn(row)
+  }
+
+  private async completeSignIn(link: { email: string; purpose: string; user_id: string | null; next_path: string | null }) {
     if (link.purpose === 'email_change') {
       if (!link.user_id) throw new LedgerError('BAD_TOKEN', 'That sign-in link is no longer valid')
       const taken = await this.one(`select id from users where email = $1 and id <> $2`, [link.email, link.user_id])

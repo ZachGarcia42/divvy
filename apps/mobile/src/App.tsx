@@ -76,8 +76,14 @@ async function call<T>(token: string | null, path: string, init?: RequestInit): 
   } finally {
     clearTimeout(timer)
   }
-  const body = await response.json().catch(() => ({})) as { error?: { code?: string; message?: string } }
-  if (!response.ok) throw Object.assign(new Error(body.error?.message ?? 'Request failed'), { code: body.error?.code ?? `HTTP_${response.status}`, status: response.status })
+  const body = await response.json().catch(() => ({})) as { error?: { code?: string; message?: string; attemptsLeft?: number } }
+  if (!response.ok) {
+    throw Object.assign(new Error(body.error?.message ?? 'Request failed'), {
+      code: body.error?.code ?? `HTTP_${response.status}`,
+      status: response.status,
+      attemptsLeft: body.error?.attemptsLeft,
+    })
+  }
   return body as T
 }
 
@@ -392,7 +398,21 @@ function SignIn({ onToken, pendingInvite, onDismissInvite, linkFailure, onClearL
     )
   }
   if (sentTo) {
-    return <CheckEmail email={sentTo} pendingInvite={!!pendingInvite} lastSentAt={cooldowns.last(sentTo)} now={monotonicNow} onResend={async () => { await request(sentTo) }} onBack={backToEntry} />
+    return (
+      <CheckEmail
+        email={sentTo}
+        pendingInvite={!!pendingInvite}
+        lastSentAt={cooldowns.last(sentTo)}
+        now={monotonicNow}
+        onResend={async () => { await request(sentTo) }}
+        onCode={async (code) => {
+          // Same result as a tapped link; any pending invite stays saved and opens after sign-in.
+          const session = await call<{ token: string }>(null, '/api/auth/verify-code', { method: 'POST', body: JSON.stringify({ email: sentTo, code }) })
+          onToken(session.token)
+        }}
+        onBack={backToEntry}
+      />
+    )
   }
   if (linkFailure?.kind === 'expired') {
     return (

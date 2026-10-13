@@ -5,6 +5,7 @@ import { AccessibilityInfo, Modal, Platform, Pressable, SafeAreaView, StyleSheet
 import { DEAD_TITLE, deadCopy, type JoinView } from './flows/join'
 import { checkName, saveNameError } from './flows/names'
 import { cooldownAnnouncement, resendButton, sendErrorMessage } from './flows/signin'
+import { CODE_LENGTH, codeFailure, sanitizeCode, shouldSubmitCode } from './flows/code'
 
 const C = { ink: '#14221c', body: '#3d4741', muted: '#6b7a72', teal: '#0f766e', line: '#e4e8e2', bg: '#f6f7f4', soft: '#f3faf7', softLine: '#cfe3db', red: '#8d2f39', redSoft: '#fbeef0' }
 
@@ -57,14 +58,71 @@ function Button({ label, onPress, disabled, busy, kind = 'primary', grow, testID
   )
 }
 
-export function CheckEmail({ email, pendingInvite, lastSentAt, now: clock, onResend, onBack }: {
+function CodeField({ onCode, resetKey }: { onCode: (code: string) => Promise<void>; resetKey: number }) {
+  const [code, setCode] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const lastSubmitted = useRef<string | null>(null)
+  // A Resend means a new code: clear the field and any error.
+  useEffect(() => { setCode(''); setError(null); lastSubmitted.current = null }, [resetKey])
+  const submit = async (value: string) => {
+    if (!shouldSubmitCode(value, lastSubmitted.current, busy)) return
+    lastSubmitted.current = value
+    setBusy(true)
+    setError(null)
+    try {
+      await onCode(value)
+    } catch (reason) {
+      const failure = codeFailure(reason)
+      setError(failure.message)
+      if (failure.clearField) setCode('')
+      lastSubmitted.current = failure.clearField ? null : value
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <View style={{ gap: 6 }}>
+      <Text style={s.label} nativeID="code-label">Enter the 6-digit code</Text>
+      <TextInput
+        testID="code-input"
+        value={code}
+        onChangeText={(text) => {
+          const next = sanitizeCode(text)
+          setCode(next)
+          if (error) setError(null)
+          if (next.length < CODE_LENGTH) lastSubmitted.current = null
+          void submit(next)
+        }}
+        keyboardType="number-pad"
+        inputMode="numeric"
+        textContentType="oneTimeCode"
+        autoComplete="one-time-code"
+        maxLength={32}
+        editable={!busy}
+        style={[s.codeInput, !!error && s.fieldBad]}
+        placeholder="••••••"
+        placeholderTextColor={C.muted}
+        accessibilityLabel="6-digit sign-in code"
+        accessibilityLabelledBy="code-label"
+        accessibilityState={{ busy, disabled: busy }}
+      />
+      {busy && <Text style={s.muted} accessibilityLiveRegion="polite">Checking…</Text>}
+      <ErrorText text={error} testID="code-error" />
+    </View>
+  )
+}
+
+export function CheckEmail({ email, pendingInvite, lastSentAt, now: clock, onResend, onCode, onBack }: {
   email: string
   pendingInvite: boolean
   lastSentAt: number | null
   now: () => number
   onResend: () => Promise<void>
+  onCode: (code: string) => Promise<void>
   onBack: () => void
 }) {
+  const [resends, setResends] = useState(0)
   const [resentAt, setResentAt] = useState<number | null>(null)
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -86,16 +144,18 @@ export function CheckEmail({ email, pendingInvite, lastSentAt, now: clock, onRes
       <View style={s.center} testID="check-email">
         <View style={s.badge}><Glyph text="✉" style={s.badgeText} /></View>
         <Text style={s.title} accessibilityRole="header">Check your email</Text>
-        <Text style={s.body}>We sent a sign-in link to <Text style={s.strong}>{email}</Text>. Open it on this phone.</Text>
+        <Text style={s.body}>We sent a code and a sign-in link to <Text style={s.strong}>{email}</Text>.</Text>
+        <CodeField onCode={onCode} resetKey={resends} />
         {pendingInvite
           ? <View style={s.note}><Text style={s.noteText}><Glyph text="🔗  " />After you sign in, we’ll open the group link.</Text></View>
-          : <Text style={s.muted}>It works for 15 minutes. Not there? Check spam.</Text>}
+          : <Text style={s.muted}>The code works for 10 minutes, or open the link on this phone. Not there? Check spam.</Text>}
         <ErrorText text={error} testID="resend-error" />
         <Button kind="secondary" testID="resend" label={button.label} disabled={button.disabled} busy={sending} onPress={async () => {
           setSending(true)
           setError(null)
           try {
             await onResend()
+            setResends((n) => n + 1)
             setResentAt(clock())
             announce('Sent again')
           } catch (reason) {
@@ -320,5 +380,7 @@ const s = StyleSheet.create({
   memberName: { fontSize: 16, color: C.ink },
   toast: { position: 'absolute', left: 16, right: 16, bottom: 24, backgroundColor: C.ink, borderRadius: 14, padding: 14 },
   toastText: { color: 'white', fontWeight: '600' },
+  label: { fontSize: 14, fontWeight: '700', color: C.body },
+  codeInput: { borderWidth: 1.5, borderColor: C.teal, borderRadius: 12, backgroundColor: 'white', paddingVertical: 12, fontSize: 28, fontWeight: '800', letterSpacing: 10, textAlign: 'center', color: C.ink },
   srOnly: { position: 'absolute', width: 1, height: 1, opacity: 0 },
 })

@@ -54,6 +54,8 @@ function LoginPage() {
   const navigate = useNavigate()
   const [email, setEmail] = useState('')
   const [devToken, setDevToken] = useState<string | null>(null)
+  const [sent, setSent] = useState(false)
+  const [code, setCode] = useState('')
   const [error, setError] = useState<string | null>(null)
   const token = new URLSearchParams(location.search).get('token')
 
@@ -72,6 +74,7 @@ function LoginPage() {
         try {
           const result = await api<{ devToken?: string }>('/api/auth/magic-link', { method: 'POST', body: JSON.stringify({ email }) })
           setDevToken(result.devToken ?? null)
+          setSent(true)
         } catch (reason) {
           setError(reason instanceof Error ? reason.message : 'Could not send the link')
         }
@@ -81,6 +84,30 @@ function LoginPage() {
         <label>Email<input value={email} onChange={(event) => setEmail(event.target.value)} type="email" required /></label>
         {error && <div className="error">{error}</div>}
         <button className="primary" type="submit">Email me a sign-in link</button>
+        {sent && (
+          <label>
+            6-digit code from the email
+            <input
+              value={code}
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              maxLength={6}
+              onChange={async (event) => {
+                const next = event.target.value.replace(/\D/g, '').slice(0, 6)
+                setCode(next)
+                setError(null)
+                if (next.length !== 6) return
+                try {
+                  const result = await api<{ next?: string | null }>('/api/auth/verify-code', { method: 'POST', body: JSON.stringify({ email, code: next }) })
+                  navigate(result.next && result.next.startsWith('/') && !result.next.startsWith('//') ? result.next : '/')
+                } catch (reason) {
+                  setCode('')
+                  setError(reason instanceof Error ? reason.message : 'That code didn’t work')
+                }
+              }}
+            />
+          </label>
+        )}
         {devToken && <button className="secondary" type="button" onClick={async () => {
           await api('/api/auth/verify', { method: 'POST', body: JSON.stringify({ token: devToken }) })
           navigate('/')

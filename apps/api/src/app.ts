@@ -3,7 +3,7 @@ import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie'
 import type { Sql } from './db.ts'
-import { cleanNextPath, normalizeEmail, Repo } from './repo.ts'
+import { cleanNextPath, CodeError, normalizeEmail, Repo } from './repo.ts'
 
 const COOKIE = 'divvy_session'
 
@@ -50,14 +50,19 @@ export function createApp(sql: Sql, options?: {
     const env = c.env as { incoming?: { socket?: { remoteAddress?: string } } } | undefined
     return env?.incoming?.socket?.remoteAddress ?? null
   }
-  /** Throws RATE_LIMITED (429) if this email or IP already used its quota in the window; otherwise records the hit. */
-  const throttle = (email: string, ip: string | null) => {
+  /**
+   * Throws RATE_LIMITED (429) if this email or IP already used its quota in the window; otherwise records the hit.
+   * Code checks use their own buckets ('code') with twice the quota, so a few typos plus a Resend still fit.
+   */
+  const throttle = (email: string, ip: string | null, bucket: 'link' | 'code' = 'link') => {
     if (!limit) return
     const now = clock()
-    const keys = [`email:${email.trim().toLowerCase()}`, ...(ip ? [`ip:${ip}`] : [])]
+    const prefix = bucket === 'code' ? 'code-' : ''
+    const max = bucket === 'code' ? limit.max * 2 : limit.max
+    const keys = [`${prefix}email:${email.trim().toLowerCase()}`, ...(ip ? [`${prefix}ip:${ip}`] : [])]
     const recent = keys.map((key) => (hits.get(key) ?? []).filter((at) => now - at < limit.windowMs))
     keys.forEach((key, index) => hits.set(key, recent[index]!))
-    if (recent.some((list) => list.length >= limit.max)) {
+    if (recent.some((list) => list.length >= max)) {
       throw new LedgerError('RATE_LIMITED', 'Too many sign-in links. Wait a few minutes and try again.')
     }
     keys.forEach((key, index) => recent[index]!.push(now))
@@ -77,6 +82,9 @@ export function createApp(sql: Sql, options?: {
     allowHeaders: ['content-type', 'authorization', 'x-admin-token'],
   }))
   app.onError((error, c) => {
+    if (error instanceof CodeError) {
+      return c.json({ error: { code: error.code, message: error.message, ...(error.attemptsLeft !== undefined ? { attemptsLeft: error.attemptsLeft } : {}) } }, 401)
+    }
     if (error instanceof LedgerError) {
       const status = error.code === 'UNAUTHENTICATED' || error.code === 'BAD_TOKEN' ? 401
         : error.code === 'FORBIDDEN' || error.code === 'SUSPENDED' || error.code === 'BLOCKED' ? 403
@@ -132,7 +140,8 @@ export function createApp(sql: Sql, options?: {
     const body = { email: emailFromBody(raw), next: nextFromBody(raw) }
     throttle(body.email, clientIp(c))
     const issued = await repo.requestMagicLink(body.email, 'login', undefined, body.next)
-    return c.json({ ok: true, devToken: devTokenFor(body.email) ? issued.token : undefined })
+    const dev = devTokenFor(body.email)
+    return c.json({ ok: true, devToken: dev ? issued.token : undefined, devCode: dev && issued.code ? issued.code : undefined })
   })
 
   app.post('/api/auth/verify', async (c) => {
@@ -140,6 +149,17 @@ export function createApp(sql: Sql, options?: {
     const token = body && typeof body === 'object' ? body.token : undefined
     if (typeof token !== 'string' || !token) throw new LedgerError('BAD_TOKEN', 'That sign-in link is no longer valid')
     const result = await repo.verifyMagicLink(token)
+    setCookie(c, COOKIE, result.token, { httpOnly: true, sameSite: 'Lax', path: '/', maxAge: 60 * 60 * 24 * 30 })
+    return c.json(result)
+  })
+
+  app.post('/api/auth/verify-code', async (c) => {
+    const body = await readBody(c)
+    const email = emailFromBody(body)
+    const code = body?.code
+    if (typeof code !== 'string' || !/^\d{6}$/.test(code)) throw new LedgerError('BAD_REQUEST', 'Enter the 6-digit code')
+    throttle(email, clientIp(c), 'code')
+    const result = await repo.verifyCode(email, code)
     setCookie(c, COOKIE, result.token, { httpOnly: true, sameSite: 'Lax', path: '/', maxAge: 60 * 60 * 24 * 30 })
     return c.json(result)
   })

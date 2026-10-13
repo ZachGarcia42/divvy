@@ -824,4 +824,106 @@ describe('ledger API', () => {
     expect(other.status).toBe(403)
     expect(await other.json()).toMatchObject({ error: { code: 'FORBIDDEN' } })
   })
+
+  describe('sign-in codes', () => {
+    const json = { 'content-type': 'application/json' }
+    const make = async (over: Parameters<typeof createApp>[1] = {}) => {
+      let now = new Date('2026-10-13T10:00:00Z').getTime()
+      const sql = await createMemorySql()
+      const made = createApp(sql, { dev: true, rateFor: async () => '1', devSigninEmails: null, now: () => new Date(now), ...over })
+      const app = made.app
+      const request = async (email: string, next?: string) => (await app.request('/api/auth/magic-link', { method: 'POST', headers: json, body: JSON.stringify(next ? { email, next } : { email }) })).json() as Promise<{ devToken?: string; devCode?: string }>
+      const code = (email: string, value: string) => app.request('/api/auth/verify-code', { method: 'POST', headers: json, body: JSON.stringify({ email, code: value }) })
+      const link = (token: string) => app.request('/api/auth/verify', { method: 'POST', headers: json, body: JSON.stringify({ token }) })
+      const wrong = (right: string) => String((Number(right) + 1) % 1_000_000).padStart(6, '0')
+      return { app, request, code, link, wrong, advance: (ms: number) => { now += ms } }
+    }
+
+    it('signs in with the emailed code and carries next', async () => {
+      const t = await make()
+      const issued = await t.request('Alex@Example.com', '/invite/abc')
+      expect(issued.devCode).toMatch(/^\d{6}$/)
+      const outbox = await (await t.app.request('/api/dev/outbox')).json() as { subject: string; body: string }[]
+      expect(outbox.at(-1)!.subject).toBe(`${issued.devCode} is your Divvy sign-in code`)
+      expect(outbox.at(-1)!.body.split('\n')[0]).toContain(issued.devCode)
+      expect(outbox.at(-1)!.body).toContain('/login?token=')
+      const response = await t.code(' alex@example.com ', issued.devCode!)
+      expect(response.status).toBe(200)
+      expect(await response.json()).toMatchObject({ token: expect.any(String), user: { email: 'alex@example.com' }, next: '/invite/abc' })
+    })
+
+    it('rejects bad input with 400', async () => {
+      const t = await make()
+      for (const body of [{ email: 'a@b.co' }, { email: 'a@b.co', code: '12345' }, { email: 'a@b.co', code: 123456 }, { email: 'a@b.co', code: '12a456' }, { code: '123456' }, { email: 'nope', code: '123456' }]) {
+        const response = await t.app.request('/api/auth/verify-code', { method: 'POST', headers: json, body: JSON.stringify(body) })
+        expect(response.status, JSON.stringify(body)).toBe(400)
+      }
+    })
+
+    it('counts wrong codes down and locks on the 5th', async () => {
+      const t = await make()
+      const issued = await t.request('alex@example.com')
+      for (const left of [4, 3, 2, 1]) {
+        const response = await t.code('alex@example.com', t.wrong(issued.devCode!))
+        expect(response.status).toBe(401)
+        expect(await response.json()).toMatchObject({ error: { code: 'BAD_CODE', attemptsLeft: left } })
+      }
+      const locked = await t.code('alex@example.com', t.wrong(issued.devCode!))
+      expect(locked.status).toBe(401)
+      expect(await locked.json()).toEqual({ error: { code: 'CODE_LOCKED', message: 'Too many tries. Tap Resend for a new code.' } })
+      // The right code no longer works once locked; the link still does.
+      expect(await (await t.code('alex@example.com', issued.devCode!)).json()).toMatchObject({ error: { code: 'CODE_EXPIRED' } })
+      expect((await t.link(issued.devToken!)).status).toBe(200)
+    })
+
+    it('expires codes after 10 minutes while the link lasts 15', async () => {
+      const t = await make()
+      const issued = await t.request('alex@example.com')
+      t.advance(10 * 60 * 1000 + 1)
+      const response = await t.code('alex@example.com', issued.devCode!)
+      expect(response.status).toBe(401)
+      expect(await response.json()).toMatchObject({ error: { code: 'CODE_EXPIRED' } })
+      expect((await t.link(issued.devToken!)).status).toBe(200)
+    })
+
+    it('invalidates the old code on resend', async () => {
+      const t = await make()
+      const first = await t.request('alex@example.com')
+      const second = await t.request('alex@example.com')
+      if (first.devCode !== second.devCode) {
+        expect(await (await t.code('alex@example.com', first.devCode!)).json()).toMatchObject({ error: { code: 'BAD_CODE' } })
+      }
+      expect((await t.code('alex@example.com', second.devCode!)).status).toBe(200)
+    })
+
+    it('makes the link and the code mutually exclusive', async () => {
+      const t = await make()
+      const a = await t.request('alex@example.com')
+      expect((await t.code('alex@example.com', a.devCode!)).status).toBe(200)
+      expect(await (await t.link(a.devToken!)).json()).toMatchObject({ error: { code: 'BAD_TOKEN' } })
+      const b = await t.request('sam@example.com')
+      expect((await t.link(b.devToken!)).status).toBe(200)
+      expect(await (await t.code('sam@example.com', b.devCode!)).json()).toMatchObject({ error: { code: 'CODE_EXPIRED' } })
+    })
+
+    it('rate-limits code checks per email and per IP', async () => {
+      const t = await make({ trustProxy: true })
+      const at = (email: string, ip: string) => t.app.request('/api/auth/verify-code', { method: 'POST', headers: { ...json, 'x-forwarded-for': ip }, body: JSON.stringify({ email, code: '000000' }) })
+      const statuses: number[] = []
+      for (let i = 0; i < 11; i += 1) statuses.push((await at('victim@example.com', `10.1.0.${i}`)).status)
+      expect(statuses.slice(0, 10).every((status) => status === 401)).toBe(true)
+      expect(statuses[10]).toBe(429)
+      const ip: number[] = []
+      for (let i = 0; i < 11; i += 1) ip.push((await at(`p${i}@example.com`, '10.2.2.2')).status)
+      expect(ip[10]).toBe(429)
+    })
+
+    it('returns devCode only when devToken is returned', async () => {
+      const t = await make({ devSigninEmails: 'tester@example.com' })
+      expect(await t.request('tester@example.com')).toMatchObject({ devToken: expect.any(String), devCode: expect.stringMatching(/^\d{6}$/) })
+      expect(await t.request('stranger@example.com')).toEqual({ ok: true })
+      const prod = await make({ dev: false })
+      expect(await prod.request('tester@example.com')).toEqual({ ok: true })
+    })
+  })
 })
