@@ -3,6 +3,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage'
 import * as SecureStore from 'expo-secure-store'
 import { useEffect, useRef, useState } from 'react'
 import {
+  ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
   Linking,
@@ -304,7 +305,7 @@ function SignedIn({ onSessionExpired, ...props }: { token: string; inviteToken: 
   }, [props.token])
 
   if (ask === null) {
-    return <SafeAreaView style={styles.screen}><View style={styles.signIn}><Text style={styles.copy}>Signing you in…</Text></View></SafeAreaView>
+    return <SigningIn email={me?.email ?? null} />
   }
   if (ask && me) {
     const finish = () => {
@@ -320,6 +321,31 @@ function SignedIn({ onSessionExpired, ...props }: { token: string; inviteToken: 
     )
   }
   return <Ledger {...props} participantId={me?.participantId ?? null} />
+}
+
+/** 1e: spinner, "Signing you in…", and the email under it when we know it. */
+function SigningIn({ email }: { email: string | null }) {
+  return (
+    <SafeAreaView style={styles.screen}>
+      <View style={[styles.signIn, styles.centerItems]} testID="verifying" accessibilityLiveRegion="polite">
+        <ActivityIndicator size="large" color="#0f766e" accessibilityLabel="Signing you in" />
+        <Text style={styles.verifyingTitle} accessibilityRole="header">Signing you in…</Text>
+        {email && <Text style={styles.muted}>{email}</Text>}
+      </View>
+    </SafeAreaView>
+  )
+}
+
+/** 1d: the mockup's red box with an icon. The icon is decorative; the text is a live region. */
+function OfflineBox({ text }: { text: string }) {
+  return (
+    <View style={styles.offlineBox} testID="sign-in-offline">
+      <View style={styles.offlineIcon} accessible={false} importantForAccessibility="no-hide-descendants">
+        <Text style={styles.offlineIconText}>!</Text>
+      </View>
+      <Text style={styles.offlineText} accessibilityLiveRegion="polite" accessibilityRole="alert">{text}</Text>
+    </View>
+  )
 }
 
 function SignIn({ onToken, pendingInvite, onDismissInvite, linkFailure, onClearLinkFailure, verifying }: {
@@ -403,12 +429,7 @@ function SignIn({ onToken, pendingInvite, onDismissInvite, linkFailure, onClearL
 
   if (verifying) {
     return (
-      <SafeAreaView style={styles.screen}>
-        <View style={styles.signIn} testID="verifying">
-          <Text style={styles.groupName}>Signing you in…</Text>
-          {savedEmail && <Text style={styles.muted}>{savedEmail}</Text>}
-        </View>
-      </SafeAreaView>
+      <SigningIn email={savedEmail} />
     )
   }
   if (sentTo) {
@@ -471,7 +492,9 @@ function SignIn({ onToken, pendingInvite, onDismissInvite, linkFailure, onClearL
           placeholderTextColor="#6b7a72"
           testID="sign-in-email"
         />
-        {shownError && <Text style={styles.error} testID="sign-in-error">{offline ? '! ' : ''}{shownError}</Text>}
+        {shownError && (offline
+          ? <OfflineBox text={shownError} />
+          : <Text style={styles.error} testID="sign-in-error" accessibilityLiveRegion="polite" accessibilityRole="alert">{shownError}</Text>)}
         <Pressable style={[styles.primary, sending && styles.disabled]} disabled={sending} onPress={sendLink} testID="send-link" accessibilityRole="button" accessibilityState={{ disabled: sending, busy: sending }}>
           <Text style={styles.primaryText}>{sending ? 'Sending…' : offline ? 'Try again' : 'Send link'}</Text>
         </Pressable>
@@ -775,7 +798,14 @@ function Ledger({
   return (
     <SafeAreaView style={styles.screen}>
       <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-        <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.scroll}>
+        <ScrollView
+          keyboardShouldPersistTaps="handled"
+          contentContainerStyle={styles.scroll}
+          style={styles.noSideways}
+          horizontal={false}
+          alwaysBounceHorizontal={false}
+          showsHorizontalScrollIndicator={false}
+        >
           <View style={styles.header}>
             <Text style={styles.wordmark}>Divvy</Text>
             <View style={styles.spacer} />
@@ -837,7 +867,7 @@ function Ledger({
                   inputMode="decimal"
                   style={styles.amount}
                 />
-                <Pressable style={styles.primary} testID="add-expense" onPress={addExpense} accessibilityRole="button" accessibilityLabel="Add expense" accessibilityState={{ disabled: saving, busy: saving }}>
+                <Pressable style={[styles.primary, styles.addButton]} testID="add-expense" onPress={addExpense} accessibilityRole="button" accessibilityLabel="Add expense" accessibilityState={{ disabled: saving, busy: saving }}>
                   <Text style={styles.primaryText}>{saving ? 'Adding' : 'Add'}</Text>
                 </Pressable>
               </View>
@@ -937,7 +967,8 @@ function Ledger({
             </View>
           )}
 
-          <View style={styles.card}>
+          {!join && !detail && (
+          <View style={styles.card} testID="paste-card">
             {showPaste ? (
               <>
                 <TextInput
@@ -974,6 +1005,7 @@ function Ledger({
               </Pressable>
             )}
           </View>
+          )}
         </ScrollView>
       </KeyboardAvoidingView>
       {editingName && home && (
@@ -997,7 +1029,8 @@ function Ledger({
 const styles = StyleSheet.create({
   flex: { flex: 1 },
   screen: { flex: 1, backgroundColor: '#f6f7f4' },
-  scroll: { padding: 16, gap: 12, paddingBottom: 40 },
+  scroll: { padding: 16, gap: 12, paddingBottom: 40, maxWidth: '100%' },
+  noSideways: { overflow: 'hidden' },
   signIn: { flex: 1, padding: 20, justifyContent: 'center', gap: 10 },
   header: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   wordmark: { fontSize: 22, fontWeight: '800', color: '#14221c' },
@@ -1013,8 +1046,10 @@ const styles = StyleSheet.create({
   card: { backgroundColor: 'white', borderRadius: 24, padding: 18, borderWidth: 1, borderColor: '#e4e8e2', gap: 10 },
   groupName: { fontSize: 28, fontWeight: '800', color: '#14221c' },
   balance: { fontSize: 22, fontWeight: '800', color: '#0f766e' },
-  amountRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  amount: { flex: 1, fontSize: 32, fontWeight: '800', color: '#14221c', paddingVertical: 4 },
+  amountRow: { flexDirection: 'row', alignItems: 'center', gap: 10, width: '100%' },
+  // flex:1 + minWidth:0 lets the field shrink, so Add always fits (a 32 pt TextInput otherwise sizes to its content on web).
+  amount: { flex: 1, minWidth: 0, flexShrink: 1, fontSize: 32, fontWeight: '800', color: '#14221c', paddingVertical: 4 },
+  addButton: { flexShrink: 0 },
   description: { fontSize: 16, color: '#14221c', paddingVertical: 8 },
   input: { backgroundColor: '#f6f7f4', borderRadius: 12, padding: 14, color: '#14221c' },
   primary: { backgroundColor: '#0f766e', borderRadius: 999, paddingVertical: 12, paddingHorizontal: 16, alignItems: 'center' },
@@ -1035,7 +1070,7 @@ const styles = StyleSheet.create({
   shareRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   shareName: { flex: 1, color: '#14221c', fontSize: 16 },
   shareInput: { width: 110, fontSize: 18, fontWeight: '700', color: '#14221c', textAlign: 'right' },
-  link: { color: '#14221c', fontSize: 14 },
+  link: { color: '#14221c', fontSize: 14, flexShrink: 1 },
   rowActions: { flexDirection: 'row', gap: 8 },
   strong: { fontWeight: '800', color: '#14221c' },
   inviteNote: { borderRadius: 12, borderWidth: 1, borderColor: '#cfe3db', backgroundColor: '#f3faf7', padding: 12, gap: 4 },
@@ -1047,4 +1082,10 @@ const styles = StyleSheet.create({
   chipAvatarText: { color: 'white', fontWeight: '800', fontSize: 12 },
   chipText: { color: '#14221c', fontWeight: '700' },
   spacer: { flex: 1 },
+  centerItems: { alignItems: 'center', gap: 12 },
+  verifyingTitle: { fontSize: 22, fontWeight: '800', color: '#14221c' },
+  offlineBox: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, borderRadius: 12, borderWidth: 1, borderColor: '#f1c9cf', backgroundColor: '#fbeef0', padding: 12 },
+  offlineIcon: { width: 22, height: 22, borderRadius: 11, backgroundColor: '#8d2f39', alignItems: 'center', justifyContent: 'center' },
+  offlineIconText: { color: 'white', fontWeight: '800' },
+  offlineText: { flex: 1, color: '#8d2f39' },
 })
