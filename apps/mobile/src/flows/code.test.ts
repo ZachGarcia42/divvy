@@ -24,8 +24,8 @@ describe('sign-in code', () => {
   it('maps code errors to inline copy and points expired/locked at Resend', () => {
     expect(codeFailure(err('BAD_CODE', { attemptsLeft: 3 }))).toEqual({ message: 'That code isn’t right. 3 tries left.', pointToResend: false, clearField: true })
     expect(codeFailure(err('BAD_CODE', { attemptsLeft: 1 })).message).toBe('That code isn’t right. 1 try left.')
-    expect(codeFailure(err('CODE_EXPIRED'))).toMatchObject({ pointToResend: true, message: expect.stringMatching(/Resend/) })
-    expect(codeFailure(err('CODE_LOCKED'))).toEqual({ message: 'Too many tries. Tap Resend for a new code.', pointToResend: true, clearField: true })
+    expect(codeFailure(err('CODE_EXPIRED'))).toMatchObject({ pointToResend: true, message: 'That code has expired. Get a new code below.' })
+    expect(codeFailure(err('CODE_LOCKED'))).toEqual({ message: 'Too many tries. Get a new code below.', pointToResend: true, clearField: true })
     expect(codeFailure(err('RATE_LIMITED')).message).toMatch(/Wait a few minutes/)
     expect(codeFailure(err('HTTP_502', { status: 502 })).message).toMatch(/Check your signal/)
     expect(codeFailure(err('NETWORK')).clearField).toBe(false)

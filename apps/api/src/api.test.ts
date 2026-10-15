@@ -870,7 +870,7 @@ describe('ledger API', () => {
       }
       const locked = await t.code('alex@example.com', t.wrong(issued.devCode!))
       expect(locked.status).toBe(401)
-      expect(await locked.json()).toEqual({ error: { code: 'CODE_LOCKED', message: 'Too many tries. Tap Resend for a new code.' } })
+      expect(await locked.json()).toEqual({ error: { code: 'CODE_LOCKED', message: 'Too many tries. Get a new code below.' } })
       // The right code no longer works once locked; the link still does.
       expect(await (await t.code('alex@example.com', issued.devCode!)).json()).toMatchObject({ error: { code: 'CODE_EXPIRED' } })
       expect((await t.link(issued.devToken!)).status).toBe(200)
@@ -896,6 +896,15 @@ describe('ledger API', () => {
         expect(await old.json()).toMatchObject({ error: { code: 'CODE_EXPIRED' } })
       }
       expect((await t.code('alex@example.com', second.devCode!)).status).toBe(200)
+    })
+
+    it('leaves exactly one live code when two requests race', async () => {
+      const t = await make()
+      const [a, b] = await Promise.all([t.request('race@example.com'), t.request('race@example.com')])
+      expect(a.devCode && b.devCode).toBeTruthy()
+      const results = []
+      for (const issued of [a, b]) results.push((await t.code('race@example.com', issued.devCode!)).status)
+      expect(results.filter((status) => status === 200)).toHaveLength(1)
     })
 
     it('does not count a superseded code against the new one', async () => {

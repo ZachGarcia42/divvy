@@ -28,8 +28,8 @@ export function codeFailure(reason: unknown): CodeFailure {
       : 'That code isn’t right.'
     return { message, pointToResend: false, clearField: true }
   }
-  if (code === 'CODE_EXPIRED') return { message: 'That code has expired. Tap Resend for a new code.', pointToResend: true, clearField: true }
-  if (code === 'CODE_LOCKED') return { message: 'Too many tries. Tap Resend for a new code.', pointToResend: true, clearField: true }
+  if (code === 'CODE_EXPIRED') return { message: 'That code has expired. Get a new code below.', pointToResend: true, clearField: true }
+  if (code === 'CODE_LOCKED') return { message: 'Too many tries. Get a new code below.', pointToResend: true, clearField: true }
   if (code === 'RATE_LIMITED') return { message: 'That’s a lot of tries. Wait a few minutes, then try again.', pointToResend: false, clearField: false }
   if (code === 'BAD_REQUEST') return { message: 'Enter the 6-digit code', pointToResend: false, clearField: false }
   if (isTransient(reason) || !code || code.startsWith('HTTP_')) {

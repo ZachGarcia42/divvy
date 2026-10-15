@@ -98,21 +98,25 @@ export class Repo {
     // the code or the link marks the row used, so they are mutually exclusive.
     const code = purpose === 'login' ? String(randomInt(0, 1_000_000)).padStart(6, '0') : null
     const codeExpires = new Date(now + 10 * 60 * 1000)
-    if (code) {
-      // A new request (Resend) supersedes every earlier code for this email. Their hashes are kept until they
-      // would have expired, so an old code is recognized (CODE_EXPIRED) instead of counting as a wrong try.
-      // Earlier links still work until used or expired.
-      await this.sql.query(
-        `update magic_links set code_superseded_at = now()
-         where email = $1 and purpose = 'login' and code_expires_at is not null and code_superseded_at is null`,
-        [normalized],
+    // Insert, then supersede every OTHER live code for this email, in one transaction under a per-email lock.
+    // The lock serializes concurrent requests, so whichever commits last sees the others and wins: exactly one
+    // live code remains. Superseded hashes are kept until they would have expired, so an old code is recognized
+    // (CODE_EXPIRED) instead of counting as a wrong try. Earlier links still work until used or expired.
+    await this.sql.tx(async (tx) => {
+      if (code) await tx.query(`select pg_advisory_xact_lock(hashtext($1))`, [`magic:${normalized}`])
+      await tx.query(
+        `insert into magic_links (token_hash, email, purpose, user_id, expires_at, next_path, code_hash, code_expires_at)
+         values ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [rowHash, normalized, purpose, userId ?? null, expires.toISOString(), nextPath, code ? hashCode(code, rowHash) : null, code ? codeExpires.toISOString() : null],
       )
-    }
-    await this.sql.query(
-      `insert into magic_links (token_hash, email, purpose, user_id, expires_at, next_path, code_hash, code_expires_at)
-       values ($1,$2,$3,$4,$5,$6,$7,$8)`,
-      [rowHash, normalized, purpose, userId ?? null, expires.toISOString(), nextPath, code ? hashCode(code, rowHash) : null, code ? codeExpires.toISOString() : null],
-    )
+      if (code) {
+        await tx.query(
+          `update magic_links set code_superseded_at = now()
+           where email = $1 and purpose = 'login' and code_expires_at is not null and code_superseded_at is null and token_hash <> $2`,
+          [normalized, rowHash],
+        )
+      }
+    })
     const url = `${this.deps.webOrigin}/login?token=${encodeURIComponent(token)}${nextPath ? `&next=${encodeURIComponent(nextPath)}` : ''}`
     if (code) {
       await this.sendEmail(
@@ -149,7 +153,7 @@ export class Repo {
        order by code_expires_at desc limit 1`,
       [normalized],
     )
-    const expired = 'That code has expired. Tap Resend for a new code.'
+    const expired = 'That code has expired. Get a new code below.'
     if (!row || new Date(row.code_expires_at).getTime() < this.deps.now().getTime()) throw new CodeError('CODE_EXPIRED', expired)
     if (!sameHash(row.code_hash, hashCode(code, row.token_hash))) {
       // A code from a superseded request is "expired", and does not count against the current code.
@@ -161,7 +165,7 @@ export class Repo {
       const attempts = bumped[0]?.code_attempts ?? CODE_MAX_ATTEMPTS
       if (attempts >= CODE_MAX_ATTEMPTS) {
         await this.sql.query(`update magic_links set code_hash = null where token_hash = $1`, [row.token_hash])
-        throw new CodeError('CODE_LOCKED', 'Too many tries. Tap Resend for a new code.')
+        throw new CodeError('CODE_LOCKED', 'Too many tries. Get a new code below.')
       }
       const left = CODE_MAX_ATTEMPTS - attempts
       throw new CodeError('BAD_CODE', `That code isn’t right. ${left} ${left === 1 ? 'try' : 'tries'} left.`, left)

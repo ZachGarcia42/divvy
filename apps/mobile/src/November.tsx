@@ -7,6 +7,8 @@ import { checkName, saveNameError } from './flows/names'
 import { cooldownAnnouncement, resendButton, sendErrorMessage } from './flows/signin'
 import { CODE_LENGTH, codeFailure, resendPresentation, sanitizeCode, shouldSubmitCode } from './flows/code'
 
+// Placeholder: C.muted at 40% opacity; the empty field also drops to normal weight (see codeEmpty).
+const CODE_PLACEHOLDER = 'rgba(107, 122, 114, 0.4)'
 const C = { ink: '#14221c', body: '#3d4741', muted: '#6b7a72', teal: '#0f766e', line: '#e4e8e2', bg: '#f6f7f4', soft: '#f3faf7', softLine: '#cfe3db', red: '#8d2f39', redSoft: '#fbeef0' }
 
 function useNow(clock: () => number) {
@@ -63,8 +65,12 @@ function CodeField({ onCode, resetKey, onPointToResend }: { onCode: (code: strin
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const lastSubmitted = useRef<string | null>(null)
-  // A Resend means a new code: clear the field and any error.
-  useEffect(() => { setCode(''); setError(null); lastSubmitted.current = null }, [resetKey])
+  const input = useRef<TextInput>(null)
+  // A Resend means a new code: clear the field and any error, and put the cursor back in the field.
+  useEffect(() => {
+    setCode(''); setError(null); lastSubmitted.current = null
+    if (resetKey > 0) input.current?.focus()
+  }, [resetKey])
   const submit = async (value: string) => {
     if (!shouldSubmitCode(value, lastSubmitted.current, busy)) return
     lastSubmitted.current = value
@@ -87,6 +93,7 @@ function CodeField({ onCode, resetKey, onPointToResend }: { onCode: (code: strin
       <Text style={s.label} nativeID="code-label">Enter the 6-digit code</Text>
       <View style={s.codeWrap}>
       <TextInput
+        ref={input}
         autoFocus
         testID="code-input"
         value={code}
@@ -103,9 +110,9 @@ function CodeField({ onCode, resetKey, onPointToResend }: { onCode: (code: strin
         autoComplete="one-time-code"
         maxLength={32}
         editable={!busy}
-        style={[s.codeInput, !!error && s.codeBad, busy && s.codeBusy]}
+        style={[s.codeInput, !code && s.codeEmpty, !!error && s.codeBad, busy && s.codeBusy]}
         placeholder="123 456"
-        placeholderTextColor={C.muted}
+        placeholderTextColor={CODE_PLACEHOLDER}
         accessibilityLabel="6-digit sign-in code"
         accessibilityLabelledBy="code-label"
         accessibilityState={{ busy, disabled: busy }}
@@ -398,6 +405,7 @@ const s = StyleSheet.create({
   codeBad: { borderColor: C.red, borderWidth: 2 },
   codeBusy: { color: C.muted, opacity: 0.6 },
   codeSpinner: { position: 'absolute', right: 14 },
+  codeEmpty: { fontWeight: '400' },
   codeInput: { borderWidth: 1.5, borderColor: C.teal, borderRadius: 12, backgroundColor: 'white', paddingVertical: 12, fontSize: 28, fontWeight: '800', letterSpacing: 10, textAlign: 'center', color: C.ink },
   srOnly: { position: 'absolute', width: 1, height: 1, opacity: 0 },
 })
