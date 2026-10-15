@@ -281,7 +281,8 @@ export function createApp(sql: Sql, options?: {
   app.get('/api/groups/:id/charts', async (c) => c.json(await repo.charts(await actor(c), c.req.param('id'), c.req.query('from'), c.req.query('to'))))
   app.get('/api/groups/:id/comments', async (c) => c.json(await repo.comments(await actor(c), c.req.param('id'), c.req.query('targetId') ?? '')))
   app.post('/api/groups/:id/comments', async (c) => {
-    const body = await c.req.json<{ targetType: string; targetId: string; body: string }>()
+    const body = await readBody(c)
+    if (!body) throw new LedgerError('BAD_COMMENT', 'Send a JSON object')
     return c.json(await repo.addComment(await actor(c), c.req.param('id'), body.targetType, body.targetId, body.body))
   })
   app.delete('/api/groups/:id/comments/:commentId', async (c) => {

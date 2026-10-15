@@ -66,6 +66,9 @@ const sameHash = (a: string, b: string) => {
 }
 
 /** 401 sign-in code errors; attemptsLeft is sent back for BAD_CODE. */
+export const COMMENT_TARGETS = ['expense', 'settlement'] as const
+export const COMMENT_MAX = 2000
+
 export class CodeError extends LedgerError {
   constructor(code: 'BAD_CODE' | 'CODE_LOCKED' | 'CODE_EXPIRED', message: string, readonly attemptsLeft?: number) {
     super(code, message)
@@ -1007,14 +1010,23 @@ export class Repo {
     }))
   }
 
-  async addComment(actor: Actor, groupId: string, targetType: string, targetId: string, body: string) {
+  async addComment(actor: Actor, groupId: string, targetType: unknown, targetId: unknown, body: unknown) {
     await this.requireMember(actor, groupId)
+    if (typeof targetType !== 'string' || !(COMMENT_TARGETS as readonly string[]).includes(targetType)) {
+      throw new LedgerError('BAD_COMMENT', `targetType must be one of: ${COMMENT_TARGETS.join(', ')}`)
+    }
+    if (typeof targetId !== 'string' || !targetId.trim()) throw new LedgerError('BAD_COMMENT', 'targetId is required')
+    if (typeof body !== 'string') throw new LedgerError('BAD_COMMENT', 'Write a comment first')
     const text = body.trim()
     if (!text) throw new LedgerError('BAD_COMMENT', 'Write a comment first')
+    if (text.length > COMMENT_MAX) throw new LedgerError('BAD_COMMENT', `Keep comments to ${COMMENT_MAX} characters or fewer`)
+    const table = targetType === 'expense' ? 'expenses' : 'settlements'
+    const target = await this.one(`select id from ${table} where id = $1 and group_id = $2 and deleted_at is null`, [targetId, groupId])
+    if (!target) throw new LedgerError('NOT_FOUND', `That ${targetType} isn't in this group`)
     const id = newId()
     await this.sql.query(
       `insert into comments (id, group_id, target_type, target_id, author_participant_id, body) values ($1,$2,$3,$4,$5,$6)`,
-      [id, groupId, targetType, targetId, actor.participantId, text.slice(0, 2000)],
+      [id, groupId, targetType, targetId, actor.participantId, text],
     )
     const involved = await this.sql.query<{ user_id: string; participant_id: string }>(
       `select distinct p.user_id, p.id as participant_id

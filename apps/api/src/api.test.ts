@@ -825,6 +825,50 @@ describe('ledger API', () => {
     expect(await other.json()).toMatchObject({ error: { code: 'FORBIDDEN' } })
   })
 
+  it('validates comments: target type, target in group, and body', async () => {
+    const sql = await createMemorySql()
+    const { app } = createApp(sql, { now: () => new Date('2026-09-26T15:00:00Z'), rateFor: async () => '1', dev: true })
+    const alex = await sessionFor(app, 'alex@example.com')
+    const auth = { authorization: `Bearer ${alex.token}`, 'content-type': 'application/json' }
+    const mk = async (name: string) => (await (await app.request('/api/groups', { method: 'POST', headers: auth, body: JSON.stringify({ name, currency: 'USD', timezone: 'UTC' }) })).json()) as { group: { id: string }; members: { id: string }[] }
+    const g = await mk('Home')
+    const other = await mk('Other')
+    const me = g.members[0]!.id
+    const bob = ((await (await app.request(`/api/groups/${g.group.id}/people`, { method: 'POST', headers: auth, body: JSON.stringify({ displayName: 'Bob' }) })).json()) as { participantId: string }).participantId
+    const expense = await (await app.request(`/api/groups/${g.group.id}/expenses`, { method: 'POST', headers: auth, body: JSON.stringify({
+      description: 'Milk', date: '2026-09-01', originalMinor: 500, originalCurrency: 'USD',
+      payers: [{ participantId: me, minor: 500 }], split: { type: 'exact', amounts: [{ participantId: me, minor: 250 }, { participantId: bob, minor: 250 }] },
+    }) })).json() as { id: string }
+    expect(expense.id, JSON.stringify(expense)).toBeTruthy()
+    const post = (groupId: string, body: unknown) => app.request(`/api/groups/${groupId}/comments`, { method: 'POST', headers: auth, body: typeof body === 'string' ? body : JSON.stringify(body) })
+    const ok = { targetType: 'expense', targetId: expense.id, body: 'nice' }
+    for (const bad of [
+      { body: 'x' },
+      { ...ok, targetType: 'group' },
+      { ...ok, targetType: 7 },
+      { ...ok, targetId: '' },
+      { ...ok, targetId: '   ' },
+      { ...ok, targetId: 42 },
+      { ...ok, body: '' },
+      { ...ok, body: '   ' },
+      { ...ok, body: null },
+      { ...ok, body: 'a'.repeat(2001) },
+      '[]',
+      'not json',
+    ]) {
+      const res = await post(g.group.id, bad)
+      expect(res.status, JSON.stringify(bad)).toBe(400)
+      expect(((await res.json()) as { error: { code: string } }).error.code).toBe('BAD_COMMENT')
+    }
+    expect((await post(g.group.id, { ...ok, targetId: 'nope' })).status).toBe(404)
+    expect((await post(g.group.id, { ...ok, targetType: 'settlement' })).status).toBe(404)
+    expect((await post(other.group.id, ok)).status).toBe(404)
+    expect((await post(g.group.id, { ...ok, body: 'a'.repeat(2000) })).status).toBe(200)
+    expect((await post(g.group.id, ok)).status).toBe(200)
+    const list = await (await app.request(`/api/groups/${g.group.id}/comments?targetId=${expense.id}`, { headers: auth })).json() as unknown[]
+    expect(list).toHaveLength(2)
+  })
+
   describe('sign-in codes', () => {
     const json = { 'content-type': 'application/json' }
     const make = async (over: Parameters<typeof createApp>[1] = {}) => {
