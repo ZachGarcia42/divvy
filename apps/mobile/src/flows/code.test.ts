@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { codeFailure, sanitizeCode, shouldSubmitCode } from './code'
+import { codeFailure, resendPresentation, sanitizeCode, shouldSubmitCode } from './code'
 
 const err = (code: string | undefined, extra: Record<string, unknown> = {}) => Object.assign(new Error('x'), { code, ...extra })
 
@@ -29,5 +29,14 @@ describe('sign-in code', () => {
     expect(codeFailure(err('RATE_LIMITED')).message).toMatch(/Wait a few minutes/)
     expect(codeFailure(err('HTTP_502', { status: 502 })).message).toMatch(/Check your signal/)
     expect(codeFailure(err('NETWORK')).clearField).toBe(false)
+  })
+
+  it('promotes Resend past the cooldown after an expired or locked code', () => {
+    const cooling = { label: 'Resend in 20 s', disabled: true }
+    expect(resendPresentation(cooling, { pointToResend: false, sending: false })).toEqual({ ...cooling, kind: 'secondary' })
+    expect(resendPresentation(cooling, { pointToResend: true, sending: false })).toEqual({ label: 'Send a new code', disabled: false, kind: 'primary' })
+    expect(resendPresentation(cooling, { pointToResend: true, sending: true })).toEqual({ label: 'Sending…', disabled: true, kind: 'primary' })
+    const ready = { label: 'Resend link', disabled: false }
+    expect(resendPresentation(ready, { pointToResend: false, sending: false })).toEqual({ ...ready, kind: 'secondary' })
   })
 })

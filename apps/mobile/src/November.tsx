@@ -1,11 +1,11 @@
 // November screens: check your email, expired link, name sheet / first-run prompt, join card, toast.
 // All decisions live in ./flows so they can be unit-tested; these components only render them.
 import { useEffect, useRef, useState } from 'react'
-import { AccessibilityInfo, Modal, Platform, Pressable, SafeAreaView, StyleSheet, Text, TextInput, View } from 'react-native'
+import { AccessibilityInfo, ActivityIndicator, Modal, Platform, Pressable, SafeAreaView, StyleSheet, Text, TextInput, View } from 'react-native'
 import { DEAD_TITLE, deadCopy, type JoinView } from './flows/join'
 import { checkName, saveNameError } from './flows/names'
 import { cooldownAnnouncement, resendButton, sendErrorMessage } from './flows/signin'
-import { CODE_LENGTH, codeFailure, sanitizeCode, shouldSubmitCode } from './flows/code'
+import { CODE_LENGTH, codeFailure, resendPresentation, sanitizeCode, shouldSubmitCode } from './flows/code'
 
 const C = { ink: '#14221c', body: '#3d4741', muted: '#6b7a72', teal: '#0f766e', line: '#e4e8e2', bg: '#f6f7f4', soft: '#f3faf7', softLine: '#cfe3db', red: '#8d2f39', redSoft: '#fbeef0' }
 
@@ -58,7 +58,7 @@ function Button({ label, onPress, disabled, busy, kind = 'primary', grow, testID
   )
 }
 
-function CodeField({ onCode, resetKey }: { onCode: (code: string) => Promise<void>; resetKey: number }) {
+function CodeField({ onCode, resetKey, onPointToResend }: { onCode: (code: string) => Promise<void>; resetKey: number; onPointToResend: (on: boolean) => void }) {
   const [code, setCode] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -75,6 +75,7 @@ function CodeField({ onCode, resetKey }: { onCode: (code: string) => Promise<voi
     } catch (reason) {
       const failure = codeFailure(reason)
       setError(failure.message)
+      onPointToResend(failure.pointToResend)
       if (failure.clearField) setCode('')
       lastSubmitted.current = failure.clearField ? null : value
     } finally {
@@ -84,7 +85,9 @@ function CodeField({ onCode, resetKey }: { onCode: (code: string) => Promise<voi
   return (
     <View style={{ gap: 6 }}>
       <Text style={s.label} nativeID="code-label">Enter the 6-digit code</Text>
+      <View style={s.codeWrap}>
       <TextInput
+        autoFocus
         testID="code-input"
         value={code}
         onChangeText={(text) => {
@@ -100,15 +103,23 @@ function CodeField({ onCode, resetKey }: { onCode: (code: string) => Promise<voi
         autoComplete="one-time-code"
         maxLength={32}
         editable={!busy}
-        style={[s.codeInput, !!error && s.fieldBad]}
-        placeholder="••••••"
+        style={[s.codeInput, !!error && s.codeBad, busy && s.codeBusy]}
+        placeholder="123 456"
         placeholderTextColor={C.muted}
         accessibilityLabel="6-digit sign-in code"
         accessibilityLabelledBy="code-label"
         accessibilityState={{ busy, disabled: busy }}
       />
-      {busy && <Text style={s.muted} accessibilityLiveRegion="polite">Checking…</Text>}
+      {busy && (
+        <View style={s.codeSpinner} accessible={false} importantForAccessibility="no-hide-descendants">
+          <ActivityIndicator color={C.teal} />
+        </View>
+      )}
+      </View>
+      {/* Screen readers still hear "Checking…"; sighted users see the greyed digits and the spinner. */}
+      <Text style={s.srOnly} accessibilityLiveRegion="polite">{busy ? 'Checking…' : ''}</Text>
       <ErrorText text={error} testID="code-error" />
+      <Text style={s.muted}>The code works for 10 minutes.</Text>
     </View>
   )
 }
@@ -123,11 +134,12 @@ export function CheckEmail({ email, pendingInvite, lastSentAt, now: clock, onRes
   onBack: () => void
 }) {
   const [resends, setResends] = useState(0)
+  const [pointToResend, setPointToResend] = useState(false)
   const [resentAt, setResentAt] = useState<number | null>(null)
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const now = useNow(clock)
-  const button = resendButton({ sentAt: lastSentAt, resentAt, sending }, now)
+  const button = resendPresentation(resendButton({ sentAt: lastSentAt, resentAt, sending }, now), { pointToResend, sending })
   const left = Number(/(\d+) s$/.exec(button.label)?.[1] ?? 0)
   const previousLeft = useRef(0)
   const [cooldownMessage, setCooldownMessage] = useState<string | null>(null)
@@ -145,16 +157,17 @@ export function CheckEmail({ email, pendingInvite, lastSentAt, now: clock, onRes
         <View style={s.badge}><Glyph text="✉" style={s.badgeText} /></View>
         <Text style={s.title} accessibilityRole="header">Check your email</Text>
         <Text style={s.body}>We sent a code and a sign-in link to <Text style={s.strong}>{email}</Text>.</Text>
-        <CodeField onCode={onCode} resetKey={resends} />
+        <CodeField onCode={onCode} resetKey={resends} onPointToResend={setPointToResend} />
         {pendingInvite
           ? <View style={s.note}><Text style={s.noteText}><Glyph text="🔗  " />After you sign in, we’ll open the group link.</Text></View>
-          : <Text style={s.muted}>The code works for 10 minutes, or open the link on this phone. Not there? Check spam.</Text>}
+          : <Text style={s.muted}>Or open the link in the email on this phone. Not there? Check spam.</Text>}
         <ErrorText text={error} testID="resend-error" />
-        <Button kind="secondary" testID="resend" label={button.label} disabled={button.disabled} busy={sending} onPress={async () => {
+        <Button kind={button.kind} testID="resend" label={button.label} disabled={button.disabled} busy={sending} onPress={async () => {
           setSending(true)
           setError(null)
           try {
             await onResend()
+            setPointToResend(false)
             setResends((n) => n + 1)
             setResentAt(clock())
             announce('Sent again')
@@ -381,6 +394,10 @@ const s = StyleSheet.create({
   toast: { position: 'absolute', left: 16, right: 16, bottom: 24, backgroundColor: C.ink, borderRadius: 14, padding: 14 },
   toastText: { color: 'white', fontWeight: '600' },
   label: { fontSize: 14, fontWeight: '700', color: C.body },
+  codeWrap: { position: 'relative', justifyContent: 'center' },
+  codeBad: { borderColor: C.red, borderWidth: 2 },
+  codeBusy: { color: C.muted, opacity: 0.6 },
+  codeSpinner: { position: 'absolute', right: 14 },
   codeInput: { borderWidth: 1.5, borderColor: C.teal, borderRadius: 12, backgroundColor: 'white', paddingVertical: 12, fontSize: 28, fontWeight: '800', letterSpacing: 10, textAlign: 'center', color: C.ink },
   srOnly: { position: 'absolute', width: 1, height: 1, opacity: 0 },
 })

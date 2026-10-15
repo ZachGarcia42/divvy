@@ -37,3 +37,16 @@ export function codeFailure(reason: unknown): CodeFailure {
   }
   return { message: reason instanceof Error ? reason.message : 'Couldn’t check the code.', pointToResend: false, clearField: false }
 }
+
+/**
+ * The Resend button on Check your email. After CODE_EXPIRED / CODE_LOCKED it becomes the primary action and
+ * skips the local cooldown (the server's rate limit still applies); otherwise it follows the normal cooldown.
+ */
+export function resendPresentation(
+  base: { label: string; disabled: boolean },
+  state: { pointToResend: boolean; sending: boolean },
+): { label: string; disabled: boolean; kind: 'primary' | 'secondary' } {
+  if (state.sending) return { label: 'Sending…', disabled: true, kind: state.pointToResend ? 'primary' : 'secondary' }
+  if (state.pointToResend) return { label: 'Send a new code', disabled: false, kind: 'primary' }
+  return { ...base, kind: 'secondary' }
+}
