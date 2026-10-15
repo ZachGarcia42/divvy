@@ -891,9 +891,63 @@ describe('ledger API', () => {
       const first = await t.request('alex@example.com')
       const second = await t.request('alex@example.com')
       if (first.devCode !== second.devCode) {
-        expect(await (await t.code('alex@example.com', first.devCode!)).json()).toMatchObject({ error: { code: 'BAD_CODE' } })
+        const old = await t.code('alex@example.com', first.devCode!)
+        expect(old.status).toBe(401)
+        expect(await old.json()).toMatchObject({ error: { code: 'CODE_EXPIRED' } })
       }
       expect((await t.code('alex@example.com', second.devCode!)).status).toBe(200)
+    })
+
+    it('does not count a superseded code against the new one', async () => {
+      const t = await make()
+      const first = await t.request('alex@example.com')
+      const second = await t.request('alex@example.com')
+      if (first.devCode === second.devCode) return // 1-in-a-million collision; nothing to distinguish
+      for (let i = 0; i < 7; i += 1) {
+        expect(await (await t.code('alex@example.com', first.devCode!)).json()).toMatchObject({ error: { code: 'CODE_EXPIRED' } })
+      }
+      // A code that matches neither request.
+      const wrong = t.wrong(second.devCode!)
+      const notEither = wrong === first.devCode ? t.wrong(wrong) : wrong
+      expect(await (await t.code('alex@example.com', notEither)).json()).toMatchObject({ error: { code: 'BAD_CODE', attemptsLeft: 4 } })
+      expect((await t.code('alex@example.com', second.devCode!)).status).toBe(200)
+      // The superseded request's link still works until it expires.
+      const third = await t.request('sam@example.com')
+      await t.request('sam@example.com')
+      expect((await t.link(third.devToken!)).status).toBe(200)
+    })
+
+    it('stops recognizing superseded codes once they would have expired', async () => {
+      const t = await make()
+      const first = await t.request('alex@example.com')
+      t.advance(9 * 60 * 1000)
+      const second = await t.request('alex@example.com')
+      if (first.devCode === second.devCode) return
+      t.advance(2 * 60 * 1000)
+      expect(await (await t.code('alex@example.com', first.devCode!)).json()).toMatchObject({ error: { code: 'BAD_CODE', attemptsLeft: 4 } })
+      expect((await t.code('alex@example.com', second.devCode!)).status).toBe(200)
+    })
+
+    it('gives the real user fresh code attempts after a Resend and keeps the link working after a lock', async () => {
+      const t = await make({ trustProxy: true })
+      const at = (code: string, ip: string) => t.app.request('/api/auth/verify-code', { method: 'POST', headers: { ...json, 'x-forwarded-for': ip }, body: JSON.stringify({ email: 'victim@example.com', code }) })
+      const first = await t.request('victim@example.com')
+      // An attacker who only knows the email burns the code and the per-email bucket for this request.
+      const statuses: number[] = []
+      for (let i = 0; i < 11; i += 1) statuses.push((await at(t.wrong(first.devCode!), `10.3.0.${i}`)).status)
+      expect(statuses[4]).toBe(401)
+      expect(statuses[10]).toBe(429)
+      expect((await t.link(first.devToken!)).status).toBe(200)
+      // The real user taps Resend: a new request means a fresh per-email bucket and fresh attempts.
+      const second = await t.request('victim@example.com')
+      const bad = await at(t.wrong(second.devCode!) === first.devCode ? t.wrong(t.wrong(second.devCode!)) : t.wrong(second.devCode!), '192.0.2.10')
+      const badBody = await bad.json()
+      expect(badBody, JSON.stringify(badBody)).toMatchObject({ error: { code: 'BAD_CODE', attemptsLeft: 4 } })
+      expect((await at(second.devCode!, '192.0.2.10')).status).toBe(200)
+      // Per-IP stays: one IP can't spray codes across many requests.
+      const ip: number[] = []
+      for (let i = 0; i < 11; i += 1) ip.push((await at('000000', '10.4.4.4')).status)
+      expect(ip[10]).toBe(429)
     })
 
     it('makes the link and the code mutually exclusive', async () => {

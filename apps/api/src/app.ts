@@ -54,12 +54,17 @@ export function createApp(sql: Sql, options?: {
    * Throws RATE_LIMITED (429) if this email or IP already used its quota in the window; otherwise records the hit.
    * Code checks use their own buckets ('code') with twice the quota, so a few typos plus a Resend still fit.
    */
-  const throttle = (email: string, ip: string | null, bucket: 'link' | 'code' = 'link') => {
+  const throttle = (email: string, ip: string | null, bucket: 'link' | 'code' = 'link', request?: string | null) => {
     if (!limit) return
     const now = clock()
     const prefix = bucket === 'code' ? 'code-' : ''
     const max = bucket === 'code' ? limit.max * 2 : limit.max
-    const keys = [`${prefix}email:${email.trim().toLowerCase()}`, ...(ip ? [`${prefix}ip:${ip}`] : [])]
+    // Code checks are limited per email *and current request*, so someone who only knows your email can't
+    // burn your attempts for the whole window: a Resend starts a fresh bucket. The per-IP limit is unchanged.
+    // Residual risk: they can still lock each new code (5 tries) and trigger Resends, but Resends are capped by
+    // the link limit (5 per email per 15 min) and the magic link keeps working even when the code is locked.
+    const emailKey = `${prefix}email:${email.trim().toLowerCase()}${bucket === 'code' ? `:${request ?? 'none'}` : ''}`
+    const keys = [emailKey, ...(ip ? [`${prefix}ip:${ip}`] : [])]
     const recent = keys.map((key) => (hits.get(key) ?? []).filter((at) => now - at < limit.windowMs))
     keys.forEach((key, index) => hits.set(key, recent[index]!))
     if (recent.some((list) => list.length >= max)) {
@@ -158,7 +163,7 @@ export function createApp(sql: Sql, options?: {
     const email = emailFromBody(body)
     const code = body?.code
     if (typeof code !== 'string' || !/^\d{6}$/.test(code)) throw new LedgerError('BAD_REQUEST', 'Enter the 6-digit code')
-    throttle(email, clientIp(c), 'code')
+    throttle(email, clientIp(c), 'code', await repo.currentCodeRequest(email))
     const result = await repo.verifyCode(email, code)
     setCookie(c, COOKIE, result.token, { httpOnly: true, sameSite: 'Lax', path: '/', maxAge: 60 * 60 * 24 * 30 })
     return c.json(result)

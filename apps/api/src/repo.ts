@@ -59,6 +59,11 @@ const hashToken = (token: string) => createHash('sha256').update(token).digest('
 // A code is hashed with its own login row's token hash, so the same 6 digits never hash alike twice.
 const hashCode = (code: string, rowHash: string) => createHash('sha256').update(`${rowHash}:${code}`).digest('hex')
 export const CODE_MAX_ATTEMPTS = 5
+const sameHash = (a: string, b: string) => {
+  const x = Buffer.from(a, 'hex')
+  const y = Buffer.from(b, 'hex')
+  return x.length === y.length && timingSafeEqual(x, y)
+}
 
 /** 401 sign-in code errors; attemptsLeft is sent back for BAD_CODE. */
 export class CodeError extends LedgerError {
@@ -94,8 +99,14 @@ export class Repo {
     const code = purpose === 'login' ? String(randomInt(0, 1_000_000)).padStart(6, '0') : null
     const codeExpires = new Date(now + 10 * 60 * 1000)
     if (code) {
-      // A new request (Resend) invalidates every earlier code for this email. Earlier links still work until used or expired.
-      await this.sql.query(`update magic_links set code_hash = null where email = $1 and purpose = 'login' and code_hash is not null`, [normalized])
+      // A new request (Resend) supersedes every earlier code for this email. Their hashes are kept until they
+      // would have expired, so an old code is recognized (CODE_EXPIRED) instead of counting as a wrong try.
+      // Earlier links still work until used or expired.
+      await this.sql.query(
+        `update magic_links set code_superseded_at = now()
+         where email = $1 and purpose = 'login' and code_expires_at is not null and code_superseded_at is null`,
+        [normalized],
+      )
     }
     await this.sql.query(
       `insert into magic_links (token_hash, email, purpose, user_id, expires_at, next_path, code_hash, code_expires_at)
@@ -134,15 +145,15 @@ export class Repo {
     const normalized = normalizeEmail(email)
     const row = await this.one<{ token_hash: string; email: string; purpose: string; user_id: string | null; expires_at: string; code_hash: string; code_expires_at: string; code_attempts: number; next_path: string | null }>(
       `select token_hash, email, purpose, user_id, expires_at, code_hash, code_expires_at, code_attempts, next_path from magic_links
-       where email = $1 and purpose = 'login' and used_at is null and code_hash is not null
+       where email = $1 and purpose = 'login' and used_at is null and code_hash is not null and code_superseded_at is null
        order by code_expires_at desc limit 1`,
       [normalized],
     )
     const expired = 'That code has expired. Tap Resend for a new code.'
     if (!row || new Date(row.code_expires_at).getTime() < this.deps.now().getTime()) throw new CodeError('CODE_EXPIRED', expired)
-    const expected = Buffer.from(row.code_hash, 'hex')
-    const given = Buffer.from(hashCode(code, row.token_hash), 'hex')
-    if (expected.length !== given.length || !timingSafeEqual(expected, given)) {
+    if (!sameHash(row.code_hash, hashCode(code, row.token_hash))) {
+      // A code from a superseded request is "expired", and does not count against the current code.
+      if (await this.matchesSupersededCode(normalized, code)) throw new CodeError('CODE_EXPIRED', expired)
       const bumped = await this.sql.query<{ code_attempts: number }>(
         `update magic_links set code_attempts = code_attempts + 1 where token_hash = $1 and code_hash is not null returning code_attempts`,
         [row.token_hash],
@@ -156,11 +167,35 @@ export class Repo {
       throw new CodeError('BAD_CODE', `That code isn’t right. ${left} ${left === 1 ? 'try' : 'tries'} left.`, left)
     }
     const claimed = await this.sql.query(
-      `update magic_links set used_at = now(), code_hash = null where token_hash = $1 and used_at is null and code_hash is not null returning token_hash`,
+      `update magic_links set used_at = now(), code_hash = null
+       where token_hash = $1 and used_at is null and code_hash is not null and code_superseded_at is null returning token_hash`,
       [row.token_hash],
     )
     if (!claimed.length) throw new CodeError('CODE_EXPIRED', expired)
     return this.completeSignIn(row)
+  }
+
+  /** The id of the request whose code is current for this email (used to key the per-email code limit). */
+  async currentCodeRequest(email: string) {
+    const row = await this.one<{ token_hash: string }>(
+      // The latest request, even if its code is locked or used, so locking doesn't reset the bucket.
+      `select token_hash from magic_links
+       where email = $1 and purpose = 'login' and code_expires_at is not null and code_superseded_at is null
+       order by code_expires_at desc limit 1`,
+      [normalizeEmail(email)],
+    )
+    return row?.token_hash ?? null
+  }
+
+  private async matchesSupersededCode(email: string, code: string) {
+    const rows = await this.sql.query<{ token_hash: string; code_hash: string }>(
+      `select token_hash, code_hash from magic_links
+       where email = $1 and purpose = 'login' and code_hash is not null and code_superseded_at is not null and code_expires_at > $2`,
+      [email, this.deps.now().toISOString()],
+    )
+    let hit = false
+    for (const old of rows) hit = sameHash(old.code_hash, hashCode(code, old.token_hash)) || hit
+    return hit
   }
 
   private async completeSignIn(link: { email: string; purpose: string; user_id: string | null; next_path: string | null }) {
