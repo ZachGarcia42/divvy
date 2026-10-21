@@ -1,4 +1,4 @@
-import { computeShares, exponentOf, formatMoney, parseMajor } from '@divvy/domain'
+import { computeShares, exponentOf, formatMoney, parseMajor, shareGapMessage, splitPhrase } from '@divvy/domain'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import * as SecureStore from 'expo-secure-store'
 import { useEffect, useRef, useState } from 'react'
@@ -46,6 +46,7 @@ type Expense = {
   description: string
   settlementMinor: number
   payers: { participantId: string; name: string; minor: number }[]
+  shares?: { participantId: string; minor: number }[]
 }
 type Settlement = { id: string; fromId: string; toId: string; fromName: string; toName: string; minor: number }
 type Payment = { fromId: string; toId: string; minor: number }
@@ -705,7 +706,7 @@ function Ledger({
       }
       const sum = amounts.reduce((total, share) => total + share.minor, 0)
       if (sum !== minor) {
-        setError('Shares have to add up to the total')
+        setError(shareGapMessage(sum, minor, detail.currency) ?? 'Shares have to add up to the total')
         return
       }
       payload.split = { type: 'exact', amounts }
@@ -950,7 +951,7 @@ function Ledger({
                 <View key={expense.id} style={styles.line} testID={`expense-${expense.id}`}>
                   <View style={styles.lineCopy}>
                     {expense.description.trim() ? <Text style={styles.expenseTitle}>{expense.description}</Text> : null}
-                    <Text style={styles.muted}>{payerPhrase(expense.payers, detail.yourParticipantId)} · {shortDate(expense.date)}</Text>
+                    <Text style={styles.muted}>{payerPhrase(expense.payers, detail.yourParticipantId)} · {shortDate(expense.date)}{!expense.description.trim() && expense.shares ? ` · ${splitPhrase(expense.shares)}` : ''}</Text>
                   </View>
                   <Text style={styles.money}>{formatMoney(expense.settlementMinor, detail.currency)}</Text>
                 </View>

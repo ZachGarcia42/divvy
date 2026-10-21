@@ -38,3 +38,4 @@ export { defaultSplitSpec, sharesFromDefault, startingSplit } from './defaults.t
 export { nextOccurrence, occurrenceOn, type Frequency } from './recurrence.ts'
 export { categoryTotals, chartEntries, monthlyTotals, personalChartShares, type ChartExpense } from './charts.ts'
 export { DEFAULT_CATEGORY_ID, FIXED_CATEGORIES } from './categories.ts'
+export { shareGapMessage, splitPhrase } from './labels.ts'

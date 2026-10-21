@@ -1,4 +1,4 @@
-import { calendarDateInTimeZone, computeShares, formatMoney, parseMajor, startingSplit, type SplitSpec } from '@divvy/domain'
+import { calendarDateInTimeZone, computeShares, formatMoney, parseMajor, splitPhrase, startingSplit, type SplitSpec } from '@divvy/domain'
 import { useEffect, useState, type FormEvent } from 'react'
 import { Link, NavLink, Navigate, Route, Routes, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { api, ApiError, type GroupDetail } from './api.ts'
@@ -325,7 +325,7 @@ function GroupPage() {
                 {expense.description
                   ? <strong>{expense.description}</strong>
                   : <strong>{expense.payers.filter((payer) => payer.minor > 0).map((payer) => payer.name).join(', ') || 'Someone'} paid</strong>}
-                <div className="muted">{expense.date}{expense.description ? ` · ${labelOf(detail, expense.categoryId)} · ${expense.payers.map((payer) => payer.name).join(', ')} paid` : ''}</div>
+                <div className="muted">{expense.date}{expense.description ? ` · ${labelOf(detail, expense.categoryId)} · ${expense.payers.map((payer) => payer.name).join(', ')} paid` : ` · ${splitPhrase(expense.shares)}`}</div>
               </div>
             </div>
             <span className="actions">

@@ -1073,6 +1073,46 @@ describe('ledger API', () => {
     }
   })
 
+  it('personalizes the invite landing page from the preview, escaped, with a generic fallback', async () => {
+    const sql = await createMemorySql()
+    let now = new Date('2026-09-26T15:00:00Z')
+    const { app } = createApp(sql, { now: () => now, dev: true, rateFor: async () => '1' })
+    const alex = await sessionFor(app, 'alex@example.com')
+    const auth = { authorization: `Bearer ${alex.token}`, 'content-type': 'application/json' }
+    await app.request('/api/me', { method: 'PATCH', headers: auth, body: JSON.stringify({ displayName: 'Al <b>&' }) })
+    const inviter = 'Al <b>&'
+    const esc = (v: string) => v.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
+    const created = await (await app.request('/api/groups', { method: 'POST', headers: auth, body: JSON.stringify({ name: 'Design <i>review</i>', currency: 'USD', timezone: 'UTC' }) })).json() as { group: { id: string } }
+    const link = await (await app.request(`/api/groups/${created.group.id}/invite-link`, { method: 'POST', headers: auth })).json() as { token: string }
+    const html = await (await app.request(`/invite/${link.token}`)).text()
+    expect(html).toContain(esc(`${inviter} invited you to Design <i>review</i>`))
+    expect(html).not.toContain('<i>review')
+    expect(html).toContain(`href="divvy://invite/${link.token}"`)
+    const unknown = await (await app.request('/invite/abcDEF_123-unknown0')).text()
+    expect(unknown).toContain('You’re invited to a Divvy group')
+    expect(unknown).not.toContain('Design')
+    const other = await (await app.request('/api/groups', { method: 'POST', headers: auth, body: JSON.stringify({ name: 'Old trip', currency: 'USD', timezone: 'UTC' }) })).json() as { group: { id: string } }
+    const otherLink = await (await app.request(`/api/groups/${other.group.id}/invite-link`, { method: 'POST', headers: auth })).json() as { token: string }
+    expect((await app.request(`/api/groups/${other.group.id}/archive`, { method: 'POST', headers: auth })).status).toBe(200)
+    const archived = await (await app.request(`/invite/${otherLink.token}`)).text()
+    expect(archived).toContain('You’re invited to a Divvy group')
+    expect(archived).not.toContain('Old trip')
+    now = new Date('2027-09-26T15:00:00Z')
+    const expired = await (await app.request(`/invite/${link.token}`)).text()
+    expect(expired).toContain('You’re invited to a Divvy group')
+    expect(expired).not.toContain('Design')
+  })
+
+  it('reports the build on /api/health', async () => {
+    const sql = await createMemorySql()
+    const { app } = createApp(sql, { dev: true, rateFor: async () => '1', build: 'abc1234' })
+    expect(await (await app.request('/api/health')).json()).toEqual({ ok: true, build: 'abc1234' })
+    const { resolveBuild } = await import('./app.ts')
+    expect(resolveBuild('  f00ba47 ', '/nonexistent/BUILD')).toBe('f00ba47')
+    expect(resolveBuild(undefined, '/nonexistent/BUILD')).toBe('dev')
+    expect(resolveBuild('', '/nonexistent/BUILD')).toBe('dev')
+  })
+
   it('sends RateLimit headers and Retry-After on 429', async () => {
     const sql = await createMemorySql()
     const { app } = createApp(sql, { dev: true, rateFor: async () => '1', devSigninEmails: null })

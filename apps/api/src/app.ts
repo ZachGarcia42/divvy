@@ -2,6 +2,7 @@ import { LedgerError } from '@divvy/domain'
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie'
+import { readFileSync } from 'node:fs'
 import type { Sql } from './db.ts'
 import { cleanNextPath, CodeError, normalizeEmail, Repo } from './repo.ts'
 
@@ -23,6 +24,17 @@ const safeNextPath = (next: string | undefined) => {
     return null
   }
 }
+/** Build id for /api/health: BUILD_SHA env, else a BUILD file written at deploy time, else "dev". */
+export function resolveBuild(env: string | undefined = process.env.BUILD_SHA, file = 'BUILD') {
+  const fromEnv = env?.trim()
+  if (fromEnv) return fromEnv
+  try {
+    const fromFile = readFileSync(file, 'utf8').trim()
+    if (fromFile) return fromFile
+  } catch {}
+  return 'dev'
+}
+
 const escapeHtml = (value: string) => value.replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch]!)
 
 /** Minimal page that tries to open the app via a divvy:// deep link. */
@@ -53,7 +65,10 @@ export function createApp(sql: Sql, options?: {
   rateLimit?: { max: number; windowMs: number } | false
   /** Trust the last X-Forwarded-For entry as the client IP (only behind a proxy you control). */
   trustProxy?: boolean
+  /** Build id reported by /api/health (defaults to resolveBuild()). */
+  build?: string
 }) {
+  const build = options?.build ?? resolveBuild()
   const dev = options?.dev ?? process.env.NODE_ENV !== 'production'
   // Lockdown is on whenever an allowlist is supplied at all: the createApp option (even an empty
   // array or string) or the DEV_SIGNIN_EMAILS env var being present (even empty or whitespace).
@@ -176,13 +191,21 @@ export function createApp(sql: Sql, options?: {
     const next = safeNextPath(c.req.query('next'))
     return c.html(linkPage('Sign in to Divvy', `divvy://login?token=${encodeURIComponent(token)}${next ? `&next=${encodeURIComponent(next)}` : ''}`))
   })
-  app.get('/invite/:token', (c) => {
+  app.get('/invite/:token', async (c) => {
     const token = c.req.param('token')
     if (!isLinkToken(token)) return c.html(linkPage('That invite link isn’t valid', null), 400)
-    return c.html(linkPage('You’re invited to a Divvy group', `divvy://invite/${encodeURIComponent(token)}`))
+    const deepLink = `divvy://invite/${encodeURIComponent(token)}`
+    let title = 'You’re invited to a Divvy group'
+    try {
+      const preview = await repo.publicInvitePreview(token)
+      if (preview.status === 'valid' && preview.groupName) {
+        title = preview.inviterName ? `${preview.inviterName} invited you to ${preview.groupName}` : `You’re invited to ${preview.groupName}`
+      }
+    } catch {}
+    return c.html(linkPage(title, deepLink))
   })
 
-  app.get('/api/health', (c) => c.json({ ok: true }))
+  app.get('/api/health', (c) => c.json({ ok: true, build }))
   // Lets clients hide tester-only affordances (the sample apartment) without probing /api/dev/*.
   app.get('/api/config', (c) => c.json({ devSeed: devRoutes }))
 

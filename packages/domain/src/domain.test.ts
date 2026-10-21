@@ -473,3 +473,20 @@ describe('itemization, defaults, dates', () => {
     ])
   })
 })
+
+describe('expense labels', () => {
+  it('names the split type from the shares', async () => {
+    const { splitPhrase } = await import('./index.ts')
+    expect(splitPhrase([{ minor: 334 }, { minor: 333 }, { minor: 333 }])).toBe('split equally')
+    expect(splitPhrase([{ minor: 500 }, { minor: 500 }])).toBe('split equally')
+    expect(splitPhrase([{ minor: 700 }, { minor: 300 }])).toBe('custom split')
+    expect(splitPhrase([])).toBe('split equally')
+  })
+  it('says how far off custom shares are', async () => {
+    const { shareGapMessage } = await import('./index.ts')
+    expect(shareGapMessage(1500, 2000, 'USD')).toBe('Shares have to add up to the total. $5.00 left.')
+    expect(shareGapMessage(2500, 2000, 'USD')).toBe('Shares have to add up to the total. $5.00 over.')
+    expect(shareGapMessage(2000, 2000, 'USD')).toBeNull()
+    expect(shareGapMessage(0, 500, 'JPY')).toBe('Shares have to add up to the total. ¥500 left.')
+  })
+})
