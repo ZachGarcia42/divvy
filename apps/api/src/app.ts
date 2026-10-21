@@ -7,6 +7,41 @@ import { cleanNextPath, CodeError, normalizeEmail, Repo } from './repo.ts'
 
 const COOKIE = 'divvy_session'
 
+class RateLimitError extends LedgerError {
+  constructor(readonly max: number, readonly retryAfter: number) {
+    super('RATE_LIMITED', 'Too many sign-in links. Wait a few minutes and try again.')
+  }
+}
+
+const LINK_TOKEN = /^[A-Za-z0-9_-]{16,128}$/
+const isLinkToken = (value: unknown): value is string => typeof value === 'string' && LINK_TOKEN.test(value)
+const safeNextPath = (next: string | undefined) => {
+  if (!next) return null
+  try {
+    return cleanNextPath(next)
+  } catch {
+    return null
+  }
+}
+const escapeHtml = (value: string) => value.replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch]!)
+
+/** Minimal page that tries to open the app via a divvy:// deep link. */
+export function linkPage(title: string, deepLink: string | null) {
+  const t = escapeHtml(title)
+  const href = deepLink ? escapeHtml(deepLink) : null
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer"><meta name="robots" content="noindex">
+<title>${t}</title>
+<style>body{font-family:system-ui,sans-serif;max-width:28rem;margin:4rem auto;padding:0 1.5rem;text-align:center;color:#1a1a1a}a.button{display:inline-block;margin:1.5rem 0;padding:.9rem 1.6rem;border-radius:.75rem;background:#2f6f4f;color:#fff;text-decoration:none;font-weight:600}p{color:#555}</style>
+${href ? `<meta http-equiv="refresh" content="0;url=${href}">` : ''}
+</head><body>
+<h1>${t}</h1>
+${href ? `<a class="button" href="${href}">Open in Divvy</a>` : '<p>Ask for a new link.</p>'}
+<p>Need the app? It’s in testing.</p>
+</body></html>`
+}
+
 export function createApp(sql: Sql, options?: {
   now?: () => Date
   rateFor?: (from: string, to: string, date: string) => Promise<string>
@@ -54,7 +89,7 @@ export function createApp(sql: Sql, options?: {
    * Throws RATE_LIMITED (429) if this email or IP already used its quota in the window; otherwise records the hit.
    * Code checks use their own buckets ('code') with twice the quota, so a few typos plus a Resend still fit.
    */
-  const throttle = (email: string, ip: string | null, bucket: 'link' | 'code' = 'link', request?: string | null) => {
+  const throttle = (c: { header: (name: string, value: string) => void }, email: string, ip: string | null, bucket: 'link' | 'code' = 'link', request?: string | null) => {
     if (!limit) return
     const now = clock()
     const prefix = bucket === 'code' ? 'code-' : ''
@@ -67,10 +102,18 @@ export function createApp(sql: Sql, options?: {
     const keys = [emailKey, ...(ip ? [`${prefix}ip:${ip}`] : [])]
     const recent = keys.map((key) => (hits.get(key) ?? []).filter((at) => now - at < limit.windowMs))
     keys.forEach((key, index) => hits.set(key, recent[index]!))
+    // IETF RateLimit headers: the tightest of this request's buckets.
+    const oldest = recent.map((list) => list[0]).filter((at): at is number => at !== undefined)
+    const resetSeconds = (full: number[][]) => Math.max(1, Math.ceil(Math.max(0, ...full.map((list) => (list[0] ?? now) + limit.windowMs - now)) / 1000))
     if (recent.some((list) => list.length >= max)) {
-      throw new LedgerError('RATE_LIMITED', 'Too many sign-in links. Wait a few minutes and try again.')
+      const reset = resetSeconds(recent.filter((list) => list.length >= max))
+      throw new RateLimitError(max, reset)
     }
     keys.forEach((key, index) => recent[index]!.push(now))
+    const remaining = Math.max(0, max - Math.max(...recent.map((list) => list.length)))
+    c.header('RateLimit-Limit', String(max))
+    c.header('RateLimit-Remaining', String(remaining))
+    c.header('RateLimit-Reset', String(oldest.length ? resetSeconds(recent) : Math.ceil(limit.windowMs / 1000)))
     if (hits.size > 10_000) {
       for (const [key, list] of hits) if (!list.some((at) => now - at < limit.windowMs)) hits.delete(key)
     }
@@ -89,6 +132,12 @@ export function createApp(sql: Sql, options?: {
   app.onError((error, c) => {
     if (error instanceof CodeError) {
       return c.json({ error: { code: error.code, message: error.message, ...(error.attemptsLeft !== undefined ? { attemptsLeft: error.attemptsLeft } : {}) } }, 401)
+    }
+    if (error instanceof RateLimitError) {
+      c.header('Retry-After', String(error.retryAfter))
+      c.header('RateLimit-Limit', String(error.max))
+      c.header('RateLimit-Remaining', '0')
+      c.header('RateLimit-Reset', String(error.retryAfter))
     }
     if (error instanceof LedgerError) {
       const status = error.code === 'UNAUTHENTICATED' || error.code === 'BAD_TOKEN' ? 401
@@ -120,6 +169,19 @@ export function createApp(sql: Sql, options?: {
     }
   }
 
+  // Landing pages for links in emails and shares (WEB_ORIGIN may be this API). Each opens the app.
+  app.get('/login', (c) => {
+    const token = c.req.query('token')
+    if (!isLinkToken(token)) return c.html(linkPage('That sign-in link isn’t valid', null), 400)
+    const next = safeNextPath(c.req.query('next'))
+    return c.html(linkPage('Sign in to Divvy', `divvy://login?token=${encodeURIComponent(token)}${next ? `&next=${encodeURIComponent(next)}` : ''}`))
+  })
+  app.get('/invite/:token', (c) => {
+    const token = c.req.param('token')
+    if (!isLinkToken(token)) return c.html(linkPage('That invite link isn’t valid', null), 400)
+    return c.html(linkPage('You’re invited to a Divvy group', `divvy://invite/${encodeURIComponent(token)}`))
+  })
+
   app.get('/api/health', (c) => c.json({ ok: true }))
   // Lets clients hide tester-only affordances (the sample apartment) without probing /api/dev/*.
   app.get('/api/config', (c) => c.json({ devSeed: devRoutes }))
@@ -143,7 +205,7 @@ export function createApp(sql: Sql, options?: {
   app.post('/api/auth/magic-link', async (c) => {
     const raw = await readBody(c)
     const body = { email: emailFromBody(raw), next: nextFromBody(raw) }
-    throttle(body.email, clientIp(c))
+    throttle(c, body.email, clientIp(c))
     const issued = await repo.requestMagicLink(body.email, 'login', undefined, body.next)
     const dev = devTokenFor(body.email)
     return c.json({ ok: true, devToken: dev ? issued.token : undefined, devCode: dev && issued.code ? issued.code : undefined })
@@ -163,7 +225,7 @@ export function createApp(sql: Sql, options?: {
     const email = emailFromBody(body)
     const code = body?.code
     if (typeof code !== 'string' || !/^\d{6}$/.test(code)) throw new LedgerError('BAD_REQUEST', 'Enter the 6-digit code')
-    throttle(email, clientIp(c), 'code', await repo.currentCodeRequest(email))
+    throttle(c, email, clientIp(c), 'code', await repo.currentCodeRequest(email))
     const result = await repo.verifyCode(email, code)
     setCookie(c, COOKIE, result.token, { httpOnly: true, sameSite: 'Lax', path: '/', maxAge: 60 * 60 * 24 * 30 })
     return c.json(result)
@@ -190,7 +252,7 @@ export function createApp(sql: Sql, options?: {
   app.post('/api/me/email', async (c) => {
     const current = await actor(c)
     const body = { email: emailFromBody(await readBody(c)) }
-    throttle(body.email, clientIp(c))
+    throttle(c, body.email, clientIp(c))
     const issued = await repo.requestMagicLink(body.email, 'email_change', current.userId)
     return c.json({ ok: true, devToken: devTokenFor(body.email) ? issued.token : undefined })
   })

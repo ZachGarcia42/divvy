@@ -152,7 +152,7 @@ export class Repo {
     const normalized = normalizeEmail(email)
     const row = await this.one<{ token_hash: string; email: string; purpose: string; user_id: string | null; expires_at: string; code_hash: string; code_expires_at: string; code_attempts: number; next_path: string | null }>(
       `select token_hash, email, purpose, user_id, expires_at, code_hash, code_expires_at, code_attempts, next_path from magic_links
-       where email = $1 and purpose = 'login' and used_at is null and code_hash is not null and code_superseded_at is null
+       where email = $1 and purpose = 'login' and used_at is null and code_hash is not null and code_locked_at is null and code_superseded_at is null
        order by code_expires_at desc limit 1`,
       [normalized],
     )
@@ -162,12 +162,13 @@ export class Repo {
       // A code from a superseded request is "expired", and does not count against the current code.
       if (await this.matchesSupersededCode(normalized, code)) throw new CodeError('CODE_EXPIRED', expired)
       const bumped = await this.sql.query<{ code_attempts: number }>(
-        `update magic_links set code_attempts = code_attempts + 1 where token_hash = $1 and code_hash is not null returning code_attempts`,
+        `update magic_links set code_attempts = code_attempts + 1 where token_hash = $1 and code_hash is not null and code_locked_at is null returning code_attempts`,
         [row.token_hash],
       )
       const attempts = bumped[0]?.code_attempts ?? CODE_MAX_ATTEMPTS
       if (attempts >= CODE_MAX_ATTEMPTS) {
-        await this.sql.query(`update magic_links set code_hash = null where token_hash = $1`, [row.token_hash])
+        // Keep the hash (marked locked) so the old code is still recognized as superseded after a Resend.
+        await this.sql.query(`update magic_links set code_locked_at = now() where token_hash = $1`, [row.token_hash])
         throw new CodeError('CODE_LOCKED', 'Too many tries. Get a new code below.')
       }
       const left = CODE_MAX_ATTEMPTS - attempts
@@ -175,7 +176,7 @@ export class Repo {
     }
     const claimed = await this.sql.query(
       `update magic_links set used_at = now(), code_hash = null
-       where token_hash = $1 and used_at is null and code_hash is not null and code_superseded_at is null returning token_hash`,
+       where token_hash = $1 and used_at is null and code_hash is not null and code_locked_at is null and code_superseded_at is null returning token_hash`,
       [row.token_hash],
     )
     if (!claimed.length) throw new CodeError('CODE_EXPIRED', expired)

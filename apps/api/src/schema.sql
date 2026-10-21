@@ -235,6 +235,7 @@ alter table magic_links add column if not exists code_hash text;
 alter table magic_links add column if not exists code_expires_at timestamptz;
 alter table magic_links add column if not exists code_attempts integer not null default 0;
 alter table magic_links add column if not exists code_superseded_at timestamptz;
+alter table magic_links add column if not exists code_locked_at timestamptz;
 create index if not exists magic_links_email on magic_links (email);
 
 create index if not exists memberships_participant on memberships(participant_id);

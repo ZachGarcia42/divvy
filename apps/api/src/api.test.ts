@@ -920,6 +920,20 @@ describe('ledger API', () => {
       expect((await t.link(issued.devToken!)).status).toBe(200)
     })
 
+    it('treats a locked code as expired after Resend without burning a try on the new code', async () => {
+      const t = await make()
+      const first = await t.request('alex@example.com')
+      for (let i = 0; i < 5; i += 1) await t.code('alex@example.com', t.wrong(first.devCode!))
+      const second = await t.request('alex@example.com')
+      if (second.devCode === first.devCode) return // 1-in-a-million collision; nothing to distinguish
+      const old = await t.code('alex@example.com', first.devCode!)
+      expect(old.status).toBe(401)
+      expect(await old.json()).toMatchObject({ error: { code: 'CODE_EXPIRED' } })
+      const bad = await t.code('alex@example.com', t.wrong(second.devCode!) === first.devCode ? t.wrong(t.wrong(second.devCode!)) : t.wrong(second.devCode!))
+      expect(await bad.json()).toMatchObject({ error: { code: 'BAD_CODE', attemptsLeft: 4 } })
+      expect((await t.code('alex@example.com', second.devCode!)).status).toBe(200)
+    })
+
     it('expires codes after 10 minutes while the link lasts 15', async () => {
       const t = await make()
       const issued = await t.request('alex@example.com')
@@ -1032,5 +1046,45 @@ describe('ledger API', () => {
       const prod = await make({ dev: false })
       expect(await prod.request('tester@example.com')).toEqual({ ok: true })
     })
+  })
+
+  it('serves escaped landing pages for sign-in and invite links', async () => {
+    const sql = await createMemorySql()
+    const { app } = createApp(sql, { dev: true, rateFor: async () => '1' })
+    const token = 'abcDEF_123-xyz7890'
+    const invite = await app.request(`/invite/${token}`)
+    expect(invite.status).toBe(200)
+    expect(invite.headers.get('content-type')).toMatch(/text\/html/)
+    const html = await invite.text()
+    expect(html).toContain(`href="divvy://invite/${token}"`)
+    expect(html).toContain('Open in Divvy')
+    expect(html).toContain('Need the app? It’s in testing.')
+    const login = await (await app.request(`/login?token=${token}&next=${encodeURIComponent('/invite/abc')}`)).text()
+    expect(login).toContain(`href="divvy://login?token=${token}&amp;next=%2Finvite%2Fabc"`)
+    const evilNext = await (await app.request(`/login?token=${token}&next=${encodeURIComponent('//evil.com')}`)).text()
+    expect(evilNext).toContain(`href="divvy://login?token=${token}"`)
+    for (const path of ['/invite/short', `/invite/${encodeURIComponent('<script>alert(1)</script>aaaaaaaaaa')}`, '/login', `/login?token=${encodeURIComponent('"><b>xxxxxxxxxxxxxxxx')}`]) {
+      const response = await app.request(path)
+      expect(response.status, path).toBe(400)
+      const body = await response.text()
+      expect(body).not.toContain('<script>alert')
+      expect(body).not.toContain('<b>')
+      expect(body).not.toContain('divvy://')
+    }
+  })
+
+  it('sends RateLimit headers and Retry-After on 429', async () => {
+    const sql = await createMemorySql()
+    const { app } = createApp(sql, { dev: true, rateFor: async () => '1', devSigninEmails: null })
+    const send = () => app.request('/api/auth/magic-link', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'rl@example.com' }) })
+    const first = await send()
+    expect(first.headers.get('RateLimit-Limit')).toBe('5')
+    expect(first.headers.get('RateLimit-Remaining')).toBe('4')
+    expect(Number(first.headers.get('RateLimit-Reset'))).toBeGreaterThan(0)
+    for (let i = 0; i < 4; i += 1) await send()
+    const limited = await send()
+    expect(limited.status).toBe(429)
+    expect(Number(limited.headers.get('Retry-After'))).toBeGreaterThan(0)
+    expect(limited.headers.get('RateLimit-Remaining')).toBe('0')
   })
 })
