@@ -481,6 +481,8 @@ describe('expense labels', () => {
     expect(splitPhrase([{ minor: 500 }, { minor: 500 }])).toBe('split equally')
     expect(splitPhrase([{ minor: 700 }, { minor: 300 }])).toBe('custom split')
     expect(splitPhrase([])).toBe('split equally')
+    expect(splitPhrase([{ minor: 1000 }, { minor: 0 }])).toBe('custom split')
+    expect(splitPhrase([{ minor: 500 }, { minor: 500 }, { minor: 0 }])).toBe('custom split')
   })
   it('says how far off custom shares are', async () => {
     const { shareGapMessage } = await import('./index.ts')

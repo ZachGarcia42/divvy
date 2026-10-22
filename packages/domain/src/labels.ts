@@ -2,7 +2,7 @@ import { formatMoney } from './money.ts'
 
 /** "split equally" when the shares are an even split (at most one minor unit apart), else "custom split". */
 export function splitPhrase(shares: { minor: number }[]): 'split equally' | 'custom split' {
-  const amounts = shares.map((share) => share.minor).filter((minor) => minor !== 0)
+  const amounts = shares.map((share) => share.minor)
   if (amounts.length === 0) return 'split equally'
   return Math.max(...amounts) - Math.min(...amounts) <= 1 ? 'split equally' : 'custom split'
 }

@@ -37,8 +37,13 @@ export function resolveBuild(env: string | undefined = process.env.BUILD_SHA, fi
 
 const escapeHtml = (value: string) => value.replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch]!)
 
-/** Minimal page that tries to open the app via a divvy:// deep link. */
-export function linkPage(title: string, deepLink: string | null) {
+/** Removes bidi embedding/override/isolate controls so a name can't reorder surrounding text. */
+export const stripBidi = (value: string) => value.replace(/[\u202A-\u202E\u2066-\u2069]/g, '')
+/** Escaped, bidi-stripped user text wrapped in <bdi> for the page heading. */
+export const bdi = (value: string) => `<bdi>${escapeHtml(stripBidi(value))}</bdi>`
+
+/** Minimal page that tries to open the app via a divvy:// deep link. headingHtml must already be escaped. */
+export function linkPage(title: string, deepLink: string | null, headingHtml?: string) {
   const t = escapeHtml(title)
   const href = deepLink ? escapeHtml(deepLink) : null
   return `<!doctype html>
@@ -48,7 +53,7 @@ export function linkPage(title: string, deepLink: string | null) {
 <style>body{font-family:system-ui,sans-serif;max-width:28rem;margin:4rem auto;padding:0 1.5rem;text-align:center;color:#1a1a1a}a.button{display:inline-block;margin:1.5rem 0;padding:.9rem 1.6rem;border-radius:.75rem;background:#2f6f4f;color:#fff;text-decoration:none;font-weight:600}p{color:#555}</style>
 ${href ? `<meta http-equiv="refresh" content="0;url=${href}">` : ''}
 </head><body>
-<h1>${t}</h1>
+<h1>${headingHtml ?? t}</h1>
 ${href ? `<a class="button" href="${href}">Open in Divvy</a>` : '<p>Ask for a new link.</p>'}
 <p>Need the app? It’s in testing.</p>
 </body></html>`
@@ -196,13 +201,17 @@ export function createApp(sql: Sql, options?: {
     if (!isLinkToken(token)) return c.html(linkPage('That invite link isn’t valid', null), 400)
     const deepLink = `divvy://invite/${encodeURIComponent(token)}`
     let title = 'You’re invited to a Divvy group'
+    let heading: string | undefined
     try {
       const preview = await repo.publicInvitePreview(token)
       if (preview.status === 'valid' && preview.groupName) {
-        title = preview.inviterName ? `${preview.inviterName} invited you to ${preview.groupName}` : `You’re invited to ${preview.groupName}`
+        const group = stripBidi(preview.groupName)
+        const inviter = preview.inviterName ? stripBidi(preview.inviterName) : null
+        title = inviter ? `${inviter} invited you to ${group}` : `You’re invited to ${group}`
+        heading = inviter ? `${bdi(inviter)} invited you to ${bdi(group)}` : `You’re invited to ${bdi(group)}`
       }
     } catch {}
-    return c.html(linkPage(title, deepLink))
+    return c.html(linkPage(title, deepLink, heading))
   })
 
   app.get('/api/health', (c) => c.json({ ok: true, build }))
