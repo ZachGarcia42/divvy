@@ -415,6 +415,33 @@ describe('ledger API', () => {
     expect(detail.expenses).toHaveLength(0)
   })
 
+  it('returns 400 BAD_SPLIT, not 500, for malformed split shapes', async () => {
+    const sql = await createMemorySql()
+    const { app } = createApp(sql, { now: () => new Date('2026-09-26T15:00:00Z'), dev: true, rateFor: async () => '1' })
+    const alex = await sessionFor(app, 'alex@example.com')
+    const auth = { authorization: `Bearer ${alex.token}`, 'content-type': 'application/json' }
+    const created = await (await app.request('/api/groups', {
+      method: 'POST', headers: auth,
+      body: JSON.stringify({ name: 'Apartment', currency: 'USD', timezone: 'UTC' }),
+    })).json() as { group: { id: string }; members: { id: string }[] }
+    const groupId = created.group.id
+    const alexId = created.members[0]!.id
+    const splits: unknown[] = [
+      { type: 'exact' }, { type: 'exact', amounts: null }, { type: 'exact', amounts: 'x' },
+      { type: 'exact', amounts: [{ participantId: alexId, minor: '1000' }] },
+      { type: 'percent' }, { type: 'shares' }, { type: 'shares', parts: [null] },
+      { type: 'equal' }, { type: 'equal', participantIds: 'x' }, { type: 'zzz' }, 'equal', [1],
+    ]
+    for (const split of splits) {
+      const saved = await app.request(`/api/groups/${groupId}/expenses`, {
+        method: 'POST', headers: auth,
+        body: JSON.stringify({ description: 'Bad', originalMinor: 1000, originalCurrency: 'USD', payers: [{ participantId: alexId, minor: 1000 }], split }),
+      })
+      expect(saved.status, JSON.stringify(split)).toBe(400)
+      expect(await saved.json()).toMatchObject({ error: { code: 'BAD_SPLIT' } })
+    }
+  })
+
   it('splits $10 three ways as 334, 333, and 333 cents with the extra cent on the lowest id', async () => {
     const sql = await createMemorySql()
     const { app } = createApp(sql, { now: () => new Date('2026-09-26T15:00:00Z'), dev: true, rateFor: async () => '1' })

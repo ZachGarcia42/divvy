@@ -4,7 +4,7 @@ import { cors } from 'hono/cors'
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie'
 import { readFileSync } from 'node:fs'
 import type { Sql } from './db.ts'
-import { createVerifier, parseClientIds, type IdTokenVerifier } from './oauth.ts'
+import { createVerifier, googleMayLink, hashNonce, isPrivateRelay, parseClientIds, type IdTokenVerifier } from './oauth.ts'
 import { cleanNextPath, CodeError, normalizeEmail, Repo } from './repo.ts'
 
 const COOKIE = 'divvy_session'
@@ -75,10 +75,14 @@ export function createApp(sql: Sql, options?: {
   build?: string
   /** Allowed Google OAuth client ids (aud). Defaults to GOOGLE_CLIENT_IDS; empty means /api/auth/google is 503. */
   googleClientIds?: string[] | string | null
-  /** Allowed Apple client ids (aud). Defaults to APPLE_CLIENT_IDS, else app.divvy.ledger; empty means 503. */
+  /** Allowed Apple client ids (aud). Defaults to APPLE_CLIENT_IDS; unset/empty means Apple is off (503). */
   appleClientIds?: string[] | string | null
   /** Test hook: replace JWKS-backed verification (e.g. a locally signed key). */
   verifiers?: { google?: IdTokenVerifier; apple?: IdTokenVerifier }
+  /** Apple Service IDs (web flow aud). Defaults to APPLE_WEB_CLIENT_IDS. */
+  appleWebClientIds?: string[] | string | null
+  /** Per-provider nonce requirement. Defaults: apple true (APPLE_REQUIRE_NONCE), google false (GOOGLE_REQUIRE_NONCE). */
+  requireNonce?: { google?: boolean; apple?: boolean }
 }) {
   const build = options?.build ?? resolveBuild()
   const dev = options?.dev ?? process.env.NODE_ENV !== 'production'
@@ -173,7 +177,7 @@ export function createApp(sql: Sql, options?: {
         : error.code === 'NOT_CONFIGURED' ? 503
         : error.code === 'FORBIDDEN' || error.code === 'EMAIL_UNVERIFIED' || error.code === 'SUSPENDED' || error.code === 'BLOCKED' ? 403
         : error.code === 'NOT_FOUND' ? 404
-        : error.code === 'STALE' ? 409
+        : error.code === 'STALE' || error.code === 'EMAIL_IN_USE' ? 409
         : error.code === 'RATE_LIMITED' ? 429
         : error.code === 'ARCHIVED' ? 410
         : 400
@@ -277,7 +281,17 @@ export function createApp(sql: Sql, options?: {
   const clientIdsFor = (option: string[] | string | null | undefined, env: string | undefined, fallback?: string) =>
     parseClientIds(option !== undefined ? option : env !== undefined ? env : fallback)
   const googleIds = clientIdsFor(options?.googleClientIds, process.env.GOOGLE_CLIENT_IDS)
-  const appleIds = clientIdsFor(options?.appleClientIds, process.env.APPLE_CLIENT_IDS, 'app.divvy.ledger')
+  const appleIds = clientIdsFor(options?.appleClientIds, process.env.APPLE_CLIENT_IDS)
+  // Apple Service IDs (web/Android flow). When set, an Apple token's aud must match the caller's platform.
+  const appleWebIds = clientIdsFor(options?.appleWebClientIds, process.env.APPLE_WEB_CLIENT_IDS)
+  // Nonce is required for Apple (expo-apple-authentication takes one). The free google-signin SDK can't take a
+  // nonce, so Google requires it only when GOOGLE_REQUIRE_NONCE=true; a nonce that is sent is always checked.
+  const flag = (option: boolean | undefined, env: string | undefined, fallback: boolean) =>
+    option ?? (env === undefined || env === '' ? fallback : env === 'true')
+  const requireNonce = {
+    google: flag(options?.requireNonce?.google, process.env.GOOGLE_REQUIRE_NONCE, false),
+    apple: flag(options?.requireNonce?.apple, process.env.APPLE_REQUIRE_NONCE, true),
+  }
   const verifiers = {
     google: googleIds.length ? options?.verifiers?.google ?? createVerifier('google', googleIds, { now: options?.now }) : null,
     apple: appleIds.length ? options?.verifiers?.apple ?? createVerifier('apple', appleIds, { now: options?.now }) : null,
@@ -291,15 +305,30 @@ export function createApp(sql: Sql, options?: {
     const next = nextFromBody(body)
     throttle(c, null, clientIp(c), 'oauth')
     const identity = await verify(token)
+    const badToken = () => new LedgerError('BAD_TOKEN', 'That sign-in didn’t work. Try again.')
+    const raw = typeof body?.nonce === 'string' && body.nonce.length >= 16 && body.nonce.length <= 256 ? body.nonce : null
+    if (body?.nonce !== undefined && raw === null) throw badToken()
+    if (raw !== null || identity.nonce || requireNonce[provider]) {
+      if (raw === null || !identity.nonce || identity.nonce !== hashNonce(raw)) throw badToken()
+    }
+    const platform = body?.platform === 'web' || body?.platform === 'ios' || body?.platform === 'android' ? body.platform : null
+    if (provider === 'apple' && appleWebIds.length && platform && identity.aud) {
+      // Native iOS tokens carry the bundle id; the web/Android flow carries a Service ID.
+      const isService = appleWebIds.includes(identity.aud)
+      if ((platform === 'ios') === isService) throw badToken()
+    }
+    if (provider === 'google' && platform === 'web' && identity.azp && identity.azp !== identity.aud) throw badToken()
     if (provider === 'apple') {
       // Apple sends the name only on the very first authorization, from the device, not in the token.
+      const cap = (part: unknown) => typeof part === 'string' ? part.slice(0, 100) : undefined
       const full = body?.fullName as { givenName?: unknown; familyName?: unknown } | string | null | undefined
-      const name = typeof full === 'string' ? full
-        : full && typeof full === 'object' ? [full.givenName, full.familyName].filter((part): part is string => typeof part === 'string' && !!part.trim()).join(' ')
+      const name = typeof full === 'string' ? full.slice(0, 200)
+        : full && typeof full === 'object' ? [cap(full.givenName), cap(full.familyName)].filter((part): part is string => !!part?.trim()).join(' ')
         : ''
       identity.name = name.trim() || null
     }
-    const result = await repo.signInWithIdentity(identity, next)
+    const mayLink = provider === 'google' ? googleMayLink(identity) : !isPrivateRelay(identity.email)
+    const result = await repo.signInWithIdentity({ ...identity, mayLink }, next)
     setCookie(c, COOKIE, result.token, { httpOnly: true, sameSite: 'Lax', path: '/', maxAge: 60 * 60 * 24 * 30 })
     return c.json(result)
   })

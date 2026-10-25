@@ -84,11 +84,11 @@ function LoginPage() {
         <p className="lede">A shared ledger for rent, trips, and the dinners in between. It records who paid. It never moves the money.</p>
         <GoogleButton
           onError={setError}
-          onCredential={async (credential) => {
+          onCredential={async (credential, nonce) => {
             setError(null)
             try {
               const next = new URLSearchParams(location.search).get('next')
-              const result = await api<{ next?: string | null }>('/api/auth/google', { method: 'POST', body: JSON.stringify(next ? { idToken: credential, next } : { idToken: credential }) })
+              const result = await api<{ next?: string | null }>('/api/auth/google', { method: 'POST', body: JSON.stringify({ idToken: credential, nonce, platform: 'web', ...(next ? { next } : {}) }) })
               navigate(result.next && result.next.startsWith('/') && !result.next.startsWith('//') ? result.next : '/')
             } catch (reason) {
               setError(reason instanceof Error ? reason.message : 'Google sign-in didn’t work')

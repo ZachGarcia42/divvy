@@ -45,8 +45,30 @@ export type SplitSpec =
   | { type: 'percent'; parts: { participantId: string; bps: number }[] }
   | { type: 'shares'; parts: { participantId: string; weight: number }[] }
 
+const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
+const rowsOk = (rows: unknown, key: string, kind: 'string' | 'number') =>
+  Array.isArray(rows) && rows.every((row) => isObj(row) && typeof row.participantId === 'string' && typeof row[key] === kind)
+
+/** Rejects a split whose shape doesn't match its type (it comes straight from request JSON). */
+export function assertSplitShape(spec: unknown): asserts spec is SplitSpec {
+  const bad = () => new LedgerError('BAD_SPLIT', 'Choose how to split this')
+  if (!isObj(spec)) throw bad()
+  if (spec.type === 'equal') {
+    if (!Array.isArray(spec.participantIds) || !spec.participantIds.every((id) => typeof id === 'string')) throw bad()
+  } else if (spec.type === 'exact') {
+    if (!rowsOk(spec.amounts, 'minor', 'number')) throw bad()
+  } else if (spec.type === 'percent') {
+    if (!rowsOk(spec.parts, 'bps', 'number')) throw bad()
+  } else if (spec.type === 'shares') {
+    if (!rowsOk(spec.parts, 'weight', 'number')) throw bad()
+  } else {
+    throw bad()
+  }
+}
+
 export function computeShares(totalMinor: number, spec: SplitSpec): { participantId: string; minor: number }[] {
   assertMinor(totalMinor, 'Total')
+  assertSplitShape(spec)
   if (spec.type === 'equal') {
     if (spec.participantIds.length === 0) {
       throw new LedgerError('BAD_SPLIT', 'Choose at least one person')

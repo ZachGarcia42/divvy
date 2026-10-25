@@ -1,8 +1,22 @@
 import { LedgerError } from '@divvy/domain'
+import { createHash } from 'node:crypto'
 import { createRemoteJWKSet, jwtVerify, type JWTVerifyGetKey } from 'jose'
 
 export type Provider = 'google' | 'apple'
-export type VerifiedIdentity = { provider: Provider; sub: string; email: string | null; emailVerified: boolean; name: string | null }
+export type VerifiedIdentity = {
+  provider: Provider; sub: string; email: string | null; emailVerified: boolean; name: string | null
+  /** Token claims used for nonce, per-platform aud and linking checks (optional so test doubles stay small). */
+  nonce?: string | null; aud?: string | null; azp?: string | null; hd?: string | null
+}
+
+/** Apple's convention, used for every provider: the client hands sha256(raw nonce) as hex to the provider, sends raw to us. */
+export const hashNonce = (raw: string) => createHash('sha256').update(raw, 'utf8').digest('hex')
+
+/** Google may auto-link by email only when Google owns the address: @gmail.com or a Workspace (hd) account. */
+export const googleMayLink = (identity: Pick<VerifiedIdentity, 'email' | 'hd'>) =>
+  !!identity.hd || !!identity.email?.endsWith('@gmail.com')
+/** Apple private-relay addresses never auto-link (known limitation: invites to the real email won't attach). */
+export const isPrivateRelay = (email: string | null) => !!email?.endsWith('@privaterelay.appleid.com')
 
 export const GOOGLE_JWKS_URL = 'https://www.googleapis.com/oauth2/v3/certs'
 export const APPLE_JWKS_URL = 'https://appleid.apple.com/auth/keys'
@@ -39,6 +53,11 @@ export function createVerifier(provider: Provider, clientIds: string[], options?
     }
     const email = typeof payload.email === 'string' ? payload.email.trim().toLowerCase() : null
     const name = typeof payload.name === 'string' ? payload.name : null
-    return { provider, sub: String(payload.sub), email, emailVerified: truthy(payload.email_verified), name }
+    const str = (value: unknown) => typeof value === 'string' ? value : null
+    const aud = Array.isArray(payload.aud) ? payload.aud.find((id: string) => clientIds.includes(id)) ?? null : str(payload.aud)
+    return {
+      provider, sub: String(payload.sub), email, emailVerified: truthy(payload.email_verified), name,
+      nonce: str(payload.nonce), aud, azp: str(payload.azp), hd: str(payload.hd),
+    }
   }
 }

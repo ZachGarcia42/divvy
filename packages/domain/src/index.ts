@@ -9,7 +9,7 @@ export {
   formatMoney,
   parseMajor,
 } from './money.ts'
-export { allocateByWeights, assertPayers, computeShares, involvedIds, assertInvolved, type SplitSpec } from './allocate.ts'
+export { allocateByWeights, assertPayers, assertSplitShape, computeShares, involvedIds, assertInvolved, type SplitSpec } from './allocate.ts'
 export {
   canMove,
   canRemove,

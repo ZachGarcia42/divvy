@@ -223,13 +223,18 @@ export class Repo {
    * Sign in with a verified Google/Apple identity. Links by provider+sub; on first sign-in, matches an
    * existing user by verified email (or creates one). Returns the same shape as verifyMagicLink.
    */
-  async signInWithIdentity(identity: { provider: string; sub: string; email: string | null; emailVerified: boolean; name: string | null }, next: string | null) {
+  async signInWithIdentity(identity: { provider: string; sub: string; email: string | null; emailVerified: boolean; name: string | null; mayLink?: boolean }, next: string | null) {
     const linked = await this.one<{ user_id: string }>(`select user_id from user_identities where provider = $1 and sub = $2`, [identity.provider, identity.sub])
     let userId = linked?.user_id
     if (!userId) {
       if (!identity.email || !identity.emailVerified) throw new LedgerError('EMAIL_UNVERIFIED', 'Your account email isn’t verified. Verify it, then try again.')
       const email = normalizeEmail(identity.email)
       const name = identity.name?.trim() ? identity.name.trim().slice(0, 60) : undefined
+      if (identity.mayLink === false) {
+        // Not allowed to take over an existing account by email; a new account is fine when the email is free.
+        const taken = await this.one<{ id: string }>(`select id from users where email = $1`, [email])
+        if (taken) throw new LedgerError('EMAIL_IN_USE', 'An account already uses this email. Sign in the way you did before.')
+      }
       const user = await this.ensureUser(email, name)
       userId = user.id
       await this.sql.query(
@@ -240,6 +245,7 @@ export class Repo {
       userId = winner!.user_id
     }
     const user = await this.mustUser(userId)
+    if (user.suspended_at) throw new LedgerError('SUSPENDED', 'This account is suspended')
     const session = await this.createSession(user.id)
     const claims = await this.claimRows(user.email)
     return { token: session, user: publicUser(user), claims, next }

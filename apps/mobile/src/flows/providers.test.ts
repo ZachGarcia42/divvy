@@ -53,3 +53,12 @@ describe('provider sign-in', () => {
     expect(googleIosUrlScheme({ EXPO_PUBLIC_GOOGLE_IOS_URL_SCHEME: 'com.googleusercontent.apps.x', EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID: 'y' })).toBe('com.googleusercontent.apps.x')
   })
 })
+
+describe('nonce body', () => {
+  it('hex-encodes the nonce and sends nonce + platform', async () => {
+    const { nonceFromBytes, providerBody } = await import('./providers')
+    expect(nonceFromBytes(new Uint8Array([0, 15, 255]))).toBe('000fff')
+    expect(providerBody('apple', 't', null, undefined, { nonce: 'n', platform: 'ios' })).toEqual({ identityToken: 't', nonce: 'n', platform: 'ios' })
+    expect(providerBody('google', 't', null)).toEqual({ idToken: 't' })
+  })
+})

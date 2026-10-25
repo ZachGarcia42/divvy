@@ -36,9 +36,20 @@ export function appleFullName(name: { givenName?: string | null; familyName?: st
   return givenName || familyName ? { givenName, familyName } : undefined
 }
 
-export function providerBody(provider: 'google' | 'apple', token: string, next: string | null, fullName?: { givenName?: string; familyName?: string }) {
+/**
+ * Nonce: the provider gets sha256(raw) as hex (Apple's convention) and the API gets raw, then checks the token's
+ * nonce claim equals sha256(raw). Apple takes one; the free google-signin SDK (v16 signIn) has no nonce option,
+ * so Google on mobile sends none (the server only requires it for Google when GOOGLE_REQUIRE_NONCE=true).
+ */
+export function nonceFromBytes(bytes: Uint8Array) {
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')
+}
+
+export function providerBody(provider: 'google' | 'apple', token: string, next: string | null, fullName?: { givenName?: string; familyName?: string }, extra?: { nonce?: string; platform?: string }) {
   return {
     ...(provider === 'google' ? { idToken: token } : { identityToken: token }),
+    ...(extra?.nonce ? { nonce: extra.nonce } : {}),
+    ...(extra?.platform ? { platform: extra.platform } : {}),
     ...(next ? { next } : {}),
     ...(provider === 'apple' && fullName ? { fullName } : {}),
   }

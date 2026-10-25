@@ -9,6 +9,7 @@ import {
   monthlyTotals,
   checkVersion,
   computeShares,
+  assertSplitShape,
   convertMinor,
   directEdges,
   fillFromRate,
@@ -490,5 +491,16 @@ describe('expense labels', () => {
     expect(shareGapMessage(2500, 2000, 'USD')).toBe('Shares have to add up to the total. $5.00 over.')
     expect(shareGapMessage(2000, 2000, 'USD')).toBeNull()
     expect(shareGapMessage(0, 500, 'JPY')).toBe('Shares have to add up to the total. ¥500 left.')
+  })
+})
+
+describe('assertSplitShape', () => {
+  it('rejects malformed splits with BAD_SPLIT and accepts valid ones', () => {
+    for (const bad of [null, 'equal', { type: 'exact' }, { type: 'exact', amounts: null }, { type: 'percent' }, { type: 'shares', parts: {} }, { type: 'equal' }, { type: 'zzz' }]) {
+      expect(() => assertSplitShape(bad), JSON.stringify(bad)).toThrow(expect.objectContaining({ code: 'BAD_SPLIT' }))
+      expect(() => computeShares(1000, bad as never)).toThrow(expect.objectContaining({ code: 'BAD_SPLIT' }))
+    }
+    expect(() => assertSplitShape({ type: 'equal', participantIds: ['a'] })).not.toThrow()
+    expect(() => assertSplitShape({ type: 'percent', parts: [{ participantId: 'a', bps: 10000 }] })).not.toThrow()
   })
 })

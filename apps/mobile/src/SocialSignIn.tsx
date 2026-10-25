@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Platform, Pressable, StyleSheet, Text, View } from 'react-native'
-import { appleFullName, googleIds, providerBody, providerErrorMessage, visibleButtons, type Providers } from './flows/providers'
+import * as Crypto from 'expo-crypto'
+import { appleFullName, googleIds, nonceFromBytes, providerBody, providerErrorMessage, visibleButtons, type Providers } from './flows/providers'
 
 // Native modules are loaded lazily: Expo Go has neither, and a top-level import would crash the login screen there.
 type AppleModule = typeof import('expo-apple-authentication')
@@ -57,11 +58,14 @@ export function SocialSignIn({ providers, next, onSignIn, onError }: {
 
   const signInWithApple = () => run('apple', async () => {
     const apple = loadApple()!
+    const nonce = nonceFromBytes(Crypto.getRandomBytes(32))
+    const hashed = await Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, nonce, { encoding: Crypto.CryptoEncoding.HEX })
     const credential = await apple.signInAsync({
       requestedScopes: [apple.AppleAuthenticationScope.FULL_NAME, apple.AppleAuthenticationScope.EMAIL],
+      nonce: hashed,
     })
     if (!credential.identityToken) throw Object.assign(new Error('No token'), { code: 'BAD_TOKEN' })
-    return providerBody('apple', credential.identityToken, next, appleFullName(credential.fullName))
+    return providerBody('apple', credential.identityToken, next, appleFullName(credential.fullName), { nonce, platform: Platform.OS })
   })
 
   const signInWithGoogle = () => run('google', async () => {
@@ -70,7 +74,8 @@ export function SocialSignIn({ providers, next, onSignIn, onError }: {
     const response = await GoogleSignin.signIn()
     if (!isSuccessResponse(response)) return null // cancelled
     if (!response.data.idToken) throw Object.assign(new Error('No token'), { code: 'BAD_TOKEN' })
-    return providerBody('google', response.data.idToken, next)
+    // google-signin v16 has no nonce option; see providers.ts.
+    return providerBody('google', response.data.idToken, next, undefined, { platform: Platform.OS })
   })
 
   if (!shown.apple && !shown.google) return null
