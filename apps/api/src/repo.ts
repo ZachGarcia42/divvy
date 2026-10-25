@@ -1,7 +1,9 @@
 import {
   DEFAULT_CATEGORY_ID,
   LedgerError,
+  AMOUNT_ERROR,
   assertAmount,
+  assertExpenseCap,
   assertInvolved,
   assertNotFuture,
   assertPayers,
@@ -1743,7 +1745,9 @@ export class Repo {
     const originalCurrency = (input.originalCurrency ?? current?.original_currency ?? group.settlement_currency).toUpperCase()
     const originalMinor = input.originalMinor ?? current?.original_minor
     if (originalMinor === undefined) throw new LedgerError('BAD_AMOUNT', 'Enter an amount')
+    if (typeof originalMinor === 'number' && originalMinor <= 0) throw new LedgerError('BAD_AMOUNT', AMOUNT_ERROR)
     assertAmount(originalMinor, 'Amount')
+    assertExpenseCap(originalMinor, originalCurrency)
     const categoryId = input.categoryId ?? current?.category_id ?? DEFAULT_CATEGORY_ID
     await this.mustCategory(categoryId, groupId)
     const marketRate = originalCurrency === group.settlement_currency ? null : await this.deps.rateFor(originalCurrency, group.settlement_currency, date)
@@ -1774,7 +1778,7 @@ export class Repo {
       rateFor: () => marketRate,
     })
     let settlementMinor = fields.settlementMinor
-    let shares = input.split ? computeShares(settlementMinor, input.split) : current?.lines.filter((line) => line.role === 'share').map((line) => ({ participantId: line.participant_id, minor: line.minor }))
+    let shares = input.split ? computeShares(settlementMinor, input.split, group.settlement_currency) : current?.lines.filter((line) => line.role === 'share').map((line) => ({ participantId: line.participant_id, minor: line.minor }))
     let itemRows: { label: string; minor: number; participantIds: string[] }[] | null = null
     let extras = { taxMinor: input.taxMinor ?? 0, tipMinor: input.tipMinor ?? 0, discountMinor: input.discountMinor ?? 0 }
     if (input.items) {
@@ -2360,9 +2364,9 @@ function cleanName(value: unknown) {
 
 function cleanExpenseDescription(value: unknown) {
   if (value == null) return ''
-  if (typeof value !== 'string') throw new LedgerError('BAD_NAME', 'Use a name of 80 characters or fewer')
+  if (typeof value !== 'string') throw new LedgerError('BAD_DESCRIPTION', 'Description must be text')
   const name = value.trim()
-  if (name.length > 80) throw new LedgerError('BAD_NAME', 'Use a name of 80 characters or fewer')
+  if (name.length > 80) throw new LedgerError('BAD_DESCRIPTION', 'Use a description of 80 characters or fewer')
   return name
 }
 

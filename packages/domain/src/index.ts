@@ -8,6 +8,9 @@ export {
   exponentOf,
   formatMoney,
   parseMajor,
+  AMOUNT_ERROR,
+  assertExpenseCap,
+  maxExpenseMinor,
 } from './money.ts'
 export { allocateByWeights, assertPayers, assertSplitShape, computeShares, involvedIds, assertInvolved, type SplitSpec } from './allocate.ts'
 export {

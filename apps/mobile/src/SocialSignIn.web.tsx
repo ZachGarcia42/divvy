@@ -83,7 +83,7 @@ export function SocialSignIn({ providers, next, onSignIn, onError }: {
           }
         },
       })
-      gis.accounts.id.renderButton(host.current, { type: 'standard', theme: 'outline', size: 'large', text: 'signin_with', shape: 'rectangular', width: 320 })
+      gis.accounts.id.renderButton(host.current, { type: 'standard', theme: 'outline', size: 'large', text: 'signin_with', shape: 'rectangular', width: Math.max(200, Math.min(400, Math.floor((host.current as unknown as { getBoundingClientRect?: () => { width: number } }).getBoundingClientRect?.().width || 320))) })
     }).catch((reason) => { if (live) latest.current.onError(providerErrorMessage('google', reason)) })
     return () => { live = false; browser.google?.accounts?.id?.cancel() }
   }, [shown.google, round])

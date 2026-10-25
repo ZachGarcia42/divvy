@@ -1084,7 +1084,11 @@ describe('ledger API', () => {
     expect(invite.headers.get('content-type')).toMatch(/text\/html/)
     const html = await invite.text()
     expect(html).toContain(`href="divvy://invite/${token}"`)
-    expect(html).toContain('Open in Divvy')
+    expect(html).toContain('Open in the Divvy app')
+    expect(html).not.toContain('http-equiv="refresh"')
+    expect(html).toContain('#0f766e')
+    const mobile = await (await app.request(`/invite/${token}`, { headers: { 'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile/15E148' } })).text()
+    expect(mobile).toContain('http-equiv="refresh"')
     expect(html).toContain('Need the app? It’s in testing.')
     const login = await (await app.request(`/login?token=${token}&next=${encodeURIComponent('/invite/abc')}`)).text()
     expect(login).toContain(`href="divvy://login?token=${token}&amp;next=%2Finvite%2Fabc"`)
@@ -1159,5 +1163,29 @@ describe('ledger API', () => {
     expect(limited.status).toBe(429)
     expect(Number(limited.headers.get('Retry-After'))).toBeGreaterThan(0)
     expect(limited.headers.get('RateLimit-Remaining')).toBe('0')
+  })
+
+  it('caps expenses, treats blank exact shares as 0, and names the description', async () => {
+    const sql = await createMemorySql()
+    const { app } = createApp(sql, { dev: true, rateFor: async () => '1' })
+    const alex = await sessionFor(app, 'alex@example.com')
+    const auth = { authorization: `Bearer ${alex.token}`, 'content-type': 'application/json' }
+    const group = await (await app.request('/api/groups', { method: 'POST', headers: auth, body: JSON.stringify({ name: 'Trip', currency: 'USD', timezone: 'UTC' }) })).json() as { group: { id: string }; members: { id: string }[] }
+    const bobId = ((await (await app.request(`/api/groups/${group.group.id}/people`, { method: 'POST', headers: auth, body: JSON.stringify({ displayName: 'Bob' }) })).json()) as { participantId: string }).participantId
+    const alexId = group.members[0]!.id
+    const post = (body: Record<string, unknown>) => app.request(`/api/groups/${group.group.id}/expenses`, { method: 'POST', headers: auth, body: JSON.stringify({ description: 'Dinner', date: '2026-09-01', originalCurrency: 'USD', ...body }) })
+    const big = await post({ originalMinor: 10_000_001, payers: [{ participantId: alexId, minor: 10_000_001 }], split: { type: 'equal', participantIds: [alexId, bobId] } })
+    expect(big.status).toBe(400)
+    expect(JSON.stringify(await big.json())).toContain('at most $100,000.00')
+    const max = await post({ originalMinor: 10_000_000, payers: [{ participantId: alexId, minor: 10_000_000 }], split: { type: 'equal', participantIds: [alexId, bobId] } })
+    expect(max.status).toBe(200)
+    const zero = await post({ originalMinor: 0, payers: [{ participantId: alexId, minor: 0 }], split: { type: 'equal', participantIds: [alexId] } })
+    expect(JSON.stringify(await zero.json())).toContain('Enter an amount greater than 0')
+    const blank = await post({ originalMinor: 1000, payers: [{ participantId: alexId, minor: 1000 }], split: { type: 'exact', amounts: [{ participantId: alexId, minor: null }, { participantId: bobId, minor: null }] } })
+    expect(blank.status).toBe(400)
+    expect(JSON.stringify(await blank.json())).toContain('$10.00 left')
+    const long = await post({ description: 'x'.repeat(81), originalMinor: 1000, payers: [{ participantId: alexId, minor: 1000 }], split: { type: 'equal', participantIds: [alexId] } })
+    expect(long.status).toBe(400)
+    expect(JSON.stringify(await long.json())).toContain('description of 80 characters')
   })
 })

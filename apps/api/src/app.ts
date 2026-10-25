@@ -45,7 +45,10 @@ export const stripBidi = (value: string) => value.replace(/[\u202A-\u202E\u2066-
 export const bdi = (value: string) => `<bdi>${escapeHtml(stripBidi(value))}</bdi>`
 
 /** Minimal page that tries to open the app via a divvy:// deep link. headingHtml must already be escaped. */
-export function linkPage(title: string, deepLink: string | null, headingHtml?: string, webLink?: string | null) {
+/** Phones and tablets only: desktop browsers can't open divvy:// (Chrome shows an "Open xdg-open?" dialog). */
+export const isMobileUserAgent = (ua: string | undefined) => !!ua && /Android|iPhone|iPad|iPod|Mobile/i.test(ua)
+
+export function linkPage(title: string, deepLink: string | null, headingHtml?: string, webLink?: string | null, autoOpen = false) {
   const t = escapeHtml(title)
   const href = deepLink ? escapeHtml(deepLink) : null
   const web = webLink ? escapeHtml(webLink) : null
@@ -53,12 +56,13 @@ export function linkPage(title: string, deepLink: string | null, headingHtml?: s
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="referrer" content="no-referrer"><meta name="robots" content="noindex">
 <title>${t}</title>
-<style>body{font-family:system-ui,sans-serif;max-width:28rem;margin:4rem auto;padding:0 1.5rem;text-align:center;color:#1a1a1a}a.button{display:inline-block;margin:1.5rem 0;padding:.9rem 1.6rem;border-radius:.75rem;background:#2f6f4f;color:#fff;text-decoration:none;font-weight:600}p{color:#555}</style>
-${href ? `<meta http-equiv="refresh" content="0;url=${href}">` : ''}
+<style>html{background:#f6f7f4}body{font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;max-width:30rem;margin:0 auto;padding:4rem 1.5rem;text-align:center;color:#14221c;background:#f6f7f4}.brand{font-size:2.2rem;font-weight:800;margin:0 0 1.5rem}h1{font-size:1.5rem;font-weight:800}.actions{display:flex;flex-direction:column;gap:.75rem;margin:1.5rem auto;max-width:20rem}a.button{display:block;padding:.9rem 1.6rem;border-radius:.75rem;background:#0f766e;color:#fff;text-decoration:none;font-weight:700;border:1px solid #0f766e}a.button.secondary{background:#fff;color:#0f766e;border-color:#e4e8e2}p{color:#5d6b63}</style>
+${href && autoOpen ? `<meta http-equiv="refresh" content="0;url=${href}">` : ''}
 </head><body>
+<div class="brand">Divvy</div>
 <h1>${headingHtml ?? t}</h1>
-${href ? `<a class="button" href="${href}">Open in Divvy</a>` : '<p>Ask for a new link.</p>'}
-${web ? `<p><a href="${web}">Continue on the web</a></p>` : '<p>Need the app? It’s in testing.</p>'}
+${href || web ? `<div class="actions">${href ? `<a class="button" href="${href}">Open in the Divvy app</a>` : ''}${web ? `<a class="button${href ? ' secondary' : ''}" href="${web}">Continue on the web</a>` : ''}</div>` : '<p>Ask for a new link.</p>'}
+${web ? '' : href ? '<p>Need the app? It’s in testing.</p>' : ''}
 </body></html>`
 }
 
@@ -245,7 +249,7 @@ export function createApp(sql: Sql, options?: {
     if (!isLinkToken(token)) return c.html(linkPage('That sign-in link isn’t valid', null), 400)
     const next = safeNextPath(c.req.query('next'))
     const query = `token=${encodeURIComponent(token)}${next ? `&next=${encodeURIComponent(next)}` : ''}`
-    return c.html(linkPage('Sign in to Divvy', `divvy://login?${query}`, undefined, web.enabled ? `/app/login?${query}` : null))
+    return c.html(linkPage('Sign in to Divvy', `divvy://login?${query}`, undefined, web.enabled ? `/app/login?${query}` : null, isMobileUserAgent(c.req.header('user-agent'))))
   })
   app.get('/invite/:token', async (c) => {
     const token = c.req.param('token')
@@ -262,7 +266,7 @@ export function createApp(sql: Sql, options?: {
         heading = inviter ? `${bdi(inviter)} invited you to ${bdi(group)}` : `You’re invited to ${bdi(group)}`
       }
     } catch {}
-    return c.html(linkPage(title, deepLink, heading, web.enabled ? `/app/invite/${encodeURIComponent(token)}` : null))
+    return c.html(linkPage(title, deepLink, heading, web.enabled ? `/app/invite/${encodeURIComponent(token)}` : null, isMobileUserAgent(c.req.header('user-agent'))))
   })
 
   app.get('/api/health', (c) => c.json({ ok: true, build }))

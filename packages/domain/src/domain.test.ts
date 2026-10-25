@@ -1,3 +1,4 @@
+import { parseMajor as parseMajorX, computeShares as computeSharesX, assertSplitShape as assertSplitShapeX } from './index.ts'
 import { describe, expect, it } from 'vitest'
 import {
   startingSplit,
@@ -504,3 +505,21 @@ describe('assertSplitShape', () => {
     expect(() => assertSplitShape({ type: 'percent', parts: [{ participantId: 'a', bps: 10000 }] })).not.toThrow()
   })
 })
+
+describe('QA web pass guards', () => {
+  it('accepts thousands separators then enforces the $100,000 cap', () => {
+    expect(parseMajorX('1,000.50', 'USD')).toBe(100050)
+    expect(() => parseMajorX('1,000,000.00', 'USD')).toThrow('at most $100,000.00')
+    expect(parseMajorX('100000', 'USD')).toBe(10_000_000)
+  })
+  it('uses one wording for zero and negative amounts', () => {
+    expect(() => parseMajorX('0', 'USD')).toThrow('Enter an amount greater than 0')
+    expect(() => parseMajorX('-5', 'USD')).toThrow('Enter an amount greater than 0')
+  })
+  it('treats blank exact shares as 0 and reports the gap', () => {
+    const spec = { type: 'exact', amounts: [{ participantId: 'a', minor: null }, { participantId: 'b', minor: '' }] } as never
+    assertSplitShapeX(spec)
+    expect(() => computeSharesX(1000, spec, 'USD')).toThrow('$10.00 left')
+  })
+})
+

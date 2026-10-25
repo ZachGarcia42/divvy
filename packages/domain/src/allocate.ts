@@ -1,4 +1,5 @@
 import { LedgerError, assertMinor } from './money.ts'
+import { shareGapMessage } from './labels.ts'
 
 export type Weighted = { id: string; weight: number }
 
@@ -56,6 +57,11 @@ export function assertSplitShape(spec: unknown): asserts spec is SplitSpec {
   if (spec.type === 'equal') {
     if (!Array.isArray(spec.participantIds) || !spec.participantIds.every((id) => typeof id === 'string')) throw bad()
   } else if (spec.type === 'exact') {
+    // A blank share (null, missing or '') counts as 0, so it fails the add-up check with "$x left" instead.
+    if (!Array.isArray(spec.amounts)) throw bad()
+    for (const row of spec.amounts) {
+      if (isObj(row) && (row.minor === null || row.minor === undefined || row.minor === '')) row.minor = 0
+    }
     if (!rowsOk(spec.amounts, 'minor', 'number')) throw bad()
   } else if (spec.type === 'percent') {
     if (!rowsOk(spec.parts, 'bps', 'number')) throw bad()
@@ -66,7 +72,7 @@ export function assertSplitShape(spec: unknown): asserts spec is SplitSpec {
   }
 }
 
-export function computeShares(totalMinor: number, spec: SplitSpec): { participantId: string; minor: number }[] {
+export function computeShares(totalMinor: number, spec: SplitSpec, currency?: string): { participantId: string; minor: number }[] {
   assertMinor(totalMinor, 'Total')
   assertSplitShape(spec)
   if (spec.type === 'equal') {
@@ -86,7 +92,7 @@ export function computeShares(totalMinor: number, spec: SplitSpec): { participan
     })
     const sum = amounts.reduce((acc, row) => acc + row.minor, 0)
     if (sum !== totalMinor) {
-      throw new LedgerError('UNBALANCED', 'Exact shares must add up to the total')
+      throw new LedgerError('UNBALANCED', (currency && shareGapMessage(sum, totalMinor, currency)) || 'Exact shares must add up to the total')
     }
     assertUnique(amounts.map((row) => row.participantId))
     return amounts

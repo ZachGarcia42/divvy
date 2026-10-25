@@ -40,11 +40,26 @@ export function assertAmount(value: number, label: string): void {
   }
 }
 
+export const AMOUNT_ERROR = 'Enter an amount greater than 0'
+
+/** The most one expense can be: 100,000 major units (e.g. $100,000.00). */
+export function maxExpenseMinor(currency: string): number {
+  return 100_000 * 10 ** exponentOf(currency)
+}
+
+/** Rejects an expense amount over the per-expense cap, with a message naming the cap. */
+export function assertExpenseCap(minor: number, currency: string): void {
+  const cap = maxExpenseMinor(currency)
+  if (minor > cap) throw new LedgerError('TOO_LARGE', `An expense can be at most ${formatMoney(cap, currency)}`)
+}
+
 export function parseMajor(input: string, currency: string): number {
-  const trimmed = input.trim()
+  // Thousands separators are fine when well placed: 1,000,000.00
+  const raw = input.trim()
+  const trimmed = /^\d{1,3}(,\d{3})+(\.\d+)?$/.test(raw) ? raw.replace(/,/g, '') : raw
   const exp = exponentOf(currency)
   if (!/^\d+(\.\d+)?$/.test(trimmed)) {
-    throw new LedgerError('BAD_AMOUNT', 'Enter a positive amount')
+    throw new LedgerError('BAD_AMOUNT', AMOUNT_ERROR)
   }
   const [whole, frac = ''] = trimmed.split('.')
   if (frac.length > exp) {
@@ -52,6 +67,8 @@ export function parseMajor(input: string, currency: string): number {
   }
   const padded = frac.padEnd(exp, '0')
   const minor = Number(whole + padded)
+  if (minor <= 0) throw new LedgerError('BAD_AMOUNT', AMOUNT_ERROR)
+  assertExpenseCap(minor, currency)
   assertAmount(minor, 'Amount')
   return minor
 }

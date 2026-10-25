@@ -116,7 +116,8 @@ function majorString(minor: number, currency: string) {
 
 function parseShare(input: string, currency: string) {
   const trimmed = input.trim()
-  if (!trimmed) throw new Error('Enter each share')
+  // Blank counts as 0, so the add-up check reports what's left (never a silent equal split).
+  if (!trimmed) return 0
   if (/^0+(\.0+)?$/.test(trimmed)) return 0
   return parseMajor(trimmed, currency)
 }
@@ -171,7 +172,13 @@ function firstGroup(groups: HomeGroup[]) {
   return groups.find((group) => !group.archived)?.id ?? groups[0]?.id ?? null
 }
 
+/** On wide (desktop) web screens the app sits in a centered ~480px column; phones are unchanged. */
 export function App() {
+  if (Platform.OS !== 'web') return <AppScreens />
+  return <View style={styles.webOuter}><View style={styles.webColumn}><AppScreens /></View></View>
+}
+
+function AppScreens() {
   const [token, setTokenState] = useState<string | null>(null)
   const [booting, setBooting] = useState(true)
   const setToken = (next: string | null) => {
@@ -380,7 +387,9 @@ function SignIn({ onToken, pendingInvite, onDismissInvite, linkFailure, onClearL
   const [error, setError] = useState<string | null>(null)
   const [sending, setSending] = useState(false)
   const [sampleAvailable, setSampleAvailable] = useState(false)
-  const [providers, setProviders] = useState<Providers>(FALLBACK_PROVIDERS)
+  // null until /api/auth/providers answers, so the email form never flashes before we know it's offered.
+  const [loadedProviders, setProviders] = useState<Providers | null>(null)
+  const providers = loadedProviders ?? FALLBACK_PROVIDERS
   const [providerError, setProviderError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -513,15 +522,16 @@ function SignIn({ onToken, pendingInvite, onDismissInvite, linkFailure, onClearL
             </Pressable>
           </View>
         ) : (
-          <Text style={styles.copy}>{providers.email ? 'Split trips and bills with friends. We’ll email you a link to sign in.' : 'Split trips and bills with friends.'}</Text>
+          <Text style={[styles.copy, styles.centerText]}>{!loadedProviders ? ' ' : providers.email ? 'Split trips and bills with friends. We’ll email you a link to sign in.' : 'Split trips and bills with friends.'}</Text>
         )}
-        <SocialSignIn
+        {!loadedProviders && <View style={styles.providersPlaceholder} testID="sign-in-loading" accessibilityLabel="Loading sign-in options" />}
+        {loadedProviders && <SocialSignIn
           providers={providers}
           next={pendingInvite ? `/invite/${pendingInvite}` : null}
           onSignIn={signInWith}
           onError={setProviderError}
-        />
-        {providers.email && <>
+        />}
+        {loadedProviders && providers.email && <>
         <TextInput
           style={[styles.input, !!error && !offline && styles.inputBad]}
           autoCapitalize="none"
@@ -585,6 +595,7 @@ function Ledger({
   const [custom, setCustom] = useState(false)
   const [shares, setShares] = useState<Record<string, string>>({})
   const [sharesTouched, setSharesTouched] = useState(false)
+  const shareButton = useRef<View>(null)
   const [saving, setSaving] = useState(false)
   const [busyId, setBusyId] = useState<string | null>(null)
   const savingRef = useRef(false)
@@ -598,6 +609,8 @@ function Ledger({
   const [joinAttempt, setJoinAttempt] = useState(0)
   const [editingName, setEditingName] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
+  // A lasting "You're in <group>" confirmation after accepting a group link (cleared on dismiss).
+  const [welcome, setWelcome] = useState<{ groupId: string; text: string } | null>(null)
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const showToast = (text: string) => {
     if (toastTimer.current) clearTimeout(toastTimer.current)
@@ -695,6 +708,17 @@ function Ledger({
   }
 
   const active = (detail?.members ?? []).filter((member) => !member.removed)
+  // Live "Shares have to add up… $x left/over" while a custom split is open (blank shares count as 0).
+  const liveGap = (() => {
+    if (!custom || !detail) return null
+    try {
+      const total = parseMajor(amount, detail.currency)
+      const sum = active.reduce((acc, member) => acc + parseShare(shares[member.id] ?? '', detail.currency), 0)
+      return shareGapMessage(sum, total, detail.currency)
+    } catch {
+      return null
+    }
+  })()
 
   useEffect(() => {
     if (!custom || sharesTouched || !detail) return
@@ -719,6 +743,10 @@ function Ledger({
     setError(null)
     if (active.length < 2) {
       setError('An expense needs at least two people')
+      return
+    }
+    if (description.trim().length > 80) {
+      setError('Use a description of 80 characters or fewer')
       return
     }
     let minor: number
@@ -825,7 +853,9 @@ function Ledger({
       onInviteHandled()
       setGroupId(joined.group.id)
       setDetail(joined)
-      showToast(joinedWasAlreadyMember(joined.group.id, before) ? `You’re already in ${joined.group.name}.` : `You joined ${joined.group.name}`)
+      const already = joinedWasAlreadyMember(joined.group.id, before)
+      showToast(already ? `You’re already in ${joined.group.name}.` : `You’re in ${joined.group.name}`)
+      if (!already) setWelcome({ groupId: joined.group.id, text: `You’re in ${joined.group.name}` })
       setHome(await call<Home>(token, '/api/home'))
     } catch (reason) {
       const failure = joinFailure(reason)
@@ -870,7 +900,7 @@ function Ledger({
             </Pressable>
           </View>
 
-          {!join && home && home.groups.length > 0 && (
+          {!join && home && home.groups.length > 1 && (
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.strip}>
               {home.groups.map((group) => {
                 const on = group.id === groupId
@@ -897,6 +927,14 @@ function Ledger({
 
           {!join && detail && (
             <View style={styles.card}>
+              {welcome && welcome.groupId === detail.group.id && (
+                <View style={styles.inviteNote} testID="joined-banner" accessibilityLiveRegion="polite">
+                  <Text style={styles.copy}>🎉  <Text style={styles.strong}>{welcome.text}</Text>. Add an expense below or share the group link.</Text>
+                  <Pressable onPress={() => setWelcome(null)} accessibilityRole="button" accessibilityLabel="Dismiss" accessibilityState={{ disabled: false }}>
+                    <Text style={styles.signOut}>Dismiss</Text>
+                  </Pressable>
+                </View>
+              )}
               <Text style={styles.groupName}>{detail.group.name}</Text>
               <Text style={styles.balance} testID="group-balance">
                 {youNet === 0 ? 'Settled' : youNet > 0 ? `You are owed ${formatMoney(youNet, detail.currency)}` : `You owe ${formatMoney(Math.abs(youNet), detail.currency)}`}
@@ -924,6 +962,7 @@ function Ledger({
                 value={description}
                 onChangeText={setDescription}
                 placeholder="Description (optional)"
+                maxLength={120}
                 placeholderTextColor="#8aa099"
                 style={styles.description}
               />
@@ -964,6 +1003,7 @@ function Ledger({
                 </View>
               ))}
               {error && <Text style={styles.error} testID="composer-error">{error}</Text>}
+              {!error && liveGap && <Text style={styles.error} testID="share-gap" accessibilityLiveRegion="polite">{liveGap}</Text>}
 
               <Text style={styles.section}>Who pays whom</Text>
               {detail.payments.length === 0 && detail.settlements.length === 0 && <Text style={styles.muted}>This group is settled.</Text>}
@@ -1003,10 +1043,13 @@ function Ledger({
               ))}
 
               <Text style={styles.section}>Group link</Text>
-              <Text selectable style={styles.link} testID="group-link">{inviteUrl ?? 'Preparing a link…'}</Text>
+              <Text selectable numberOfLines={1} ellipsizeMode="middle" style={styles.link} testID="group-link">{inviteUrl ?? 'Preparing a link…'}</Text>
               <Text style={styles.muted}>Anyone already signed in can open this.</Text>
               {inviteUrl && (
-                <Pressable style={styles.secondary} onPress={() => { Share.share({ message: inviteUrl }).catch(() => undefined) }} accessibilityRole="button" accessibilityState={{ disabled: false }}>
+                <Pressable ref={shareButton} style={styles.secondary} onPress={() => {
+                  // When the share sheet closes, put focus back on the Share button (web focus otherwise drops to <body>).
+                  Share.share({ message: inviteUrl }).catch(() => undefined).finally(() => { (shareButton.current as unknown as { focus?: () => void } | null)?.focus?.() })
+                }} accessibilityRole="button" accessibilityState={{ disabled: false }}>
                   <Text style={styles.secondaryText}>Share</Text>
                 </Pressable>
               )}
@@ -1074,15 +1117,18 @@ function Ledger({
 
 const styles = StyleSheet.create({
   flex: { flex: 1 },
+  webOuter: { flex: 1, backgroundColor: '#f6f7f4', alignItems: 'center' },
+  webColumn: { flex: 1, width: '100%', maxWidth: 480 },
+  providersPlaceholder: { minHeight: 44 },
   screen: { flex: 1, backgroundColor: '#f6f7f4' },
   scroll: { padding: 16, gap: 12, paddingBottom: 40, maxWidth: '100%' },
   noSideways: { overflow: 'hidden' },
-  signIn: { flex: 1, padding: 20, justifyContent: 'center', gap: 10 },
+  signIn: { flex: 1, padding: 20, justifyContent: 'center', gap: 10, width: '100%', maxWidth: 420, alignSelf: 'center', alignItems: 'stretch' },
   header: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   wordmark: { fontSize: 22, fontWeight: '800', color: '#14221c' },
   you: { flex: 1, textAlign: 'right', color: '#3d4741', fontSize: 16 },
   signOut: { color: '#0f766e', fontWeight: '700' },
-  brand: { fontSize: 42, fontWeight: '800', color: '#14221c', marginBottom: 8 },
+  brand: { fontSize: 42, fontWeight: '800', color: '#14221c', marginBottom: 8, textAlign: 'center' },
   copy: { color: '#3d4741', fontSize: 16, marginBottom: 8 },
   strip: { gap: 8, paddingVertical: 2 },
   pill: { borderRadius: 999, paddingVertical: 8, paddingHorizontal: 14, backgroundColor: 'white', borderWidth: 1, borderColor: '#e4e8e2' },
@@ -1123,10 +1169,10 @@ const styles = StyleSheet.create({
   inputBad: { borderWidth: 1.5, borderColor: '#8d2f39', backgroundColor: '#fbeef0' },
   disabled: { opacity: 0.5 },
   centerText: { textAlign: 'center' },
-  chip: { flexDirection: 'row', alignItems: 'center', gap: 6, borderRadius: 999, borderWidth: 1, borderColor: '#e4e8e2', backgroundColor: 'white', paddingVertical: 4, paddingLeft: 4, paddingRight: 10 },
+  chip: { flexShrink: 1, minWidth: 0, maxWidth: 220, flexDirection: 'row', alignItems: 'center', gap: 6, borderRadius: 999, borderWidth: 1, borderColor: '#e4e8e2', backgroundColor: 'white', paddingVertical: 4, paddingLeft: 4, paddingRight: 10 },
   chipAvatar: { width: 22, height: 22, borderRadius: 11, backgroundColor: '#0f766e', alignItems: 'center', justifyContent: 'center' },
   chipAvatarText: { color: 'white', fontWeight: '800', fontSize: 12 },
-  chipText: { color: '#14221c', fontWeight: '700' },
+  chipText: { color: '#14221c', fontWeight: '700', maxWidth: 160, flexShrink: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } as object,
   spacer: { flex: 1 },
   centerItems: { alignItems: 'center', gap: 12 },
   verifyingTitle: { fontSize: 22, fontWeight: '800', color: '#14221c' },
