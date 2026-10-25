@@ -7,6 +7,7 @@ import { createVerifier, hashNonce } from './oauth.ts'
 const NOW = new Date('2026-10-25T15:00:00Z')
 let keys: ReturnType<typeof createLocalJWKSet>
 let sign: (claims: Record<string, unknown>, opts?: { iss?: string; aud?: string; exp?: number }) => Promise<string>
+let jtiSeq = 0
 let otherKey: CryptoKey
 
 beforeAll(async () => {
@@ -14,7 +15,7 @@ beforeAll(async () => {
   otherKey = (await generateKeyPair('RS256')).privateKey as CryptoKey
   const jwk = { ...(await exportJWK(publicKey)), kid: 'test', alg: 'RS256' }
   keys = createLocalJWKSet({ keys: [jwk] })
-  sign = (claims, opts = {}) => new SignJWT(claims)
+  sign = (claims, opts = {}) => new SignJWT({ jti: `jti-${++jtiSeq}`, ...claims })
     .setProtectedHeader({ alg: 'RS256', kid: 'test' })
     .setIssuer(opts.iss ?? 'https://accounts.google.com')
     .setAudience(opts.aud ?? 'web.apps.googleusercontent.com')
@@ -36,8 +37,12 @@ async function setup(extra: Parameters<typeof createApp>[1] = {}) {
     },
     ...extra,
   })
+  // Provider sign-in requires a platform; default it so older cases stay focused on what they test.
+  const withPlatform = (path: string, body: unknown) => path.startsWith('/api/auth/google') || path.startsWith('/api/auth/apple')
+    ? body && typeof body === 'object' && !('platform' in body) ? { ...body, platform: path.endsWith('apple') ? 'ios' : 'web' } : body
+    : body
   const post = (path: string, body: unknown) => created.app.request(path, {
-    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(withPlatform(path, body)),
   })
   return { ...created, post, sql }
 }
@@ -97,10 +102,11 @@ describe('Sign in with Google / Apple', () => {
     expect(viaGoogle.user.id).toBe(first.user.id)
     const renamed = await (await post('/api/auth/google', { idToken: await google('g-5', 'sam.new@example.com') })).json() as { user: { id: string } }
     expect(renamed.user.id).toBe(first.user.id)
-    // Apple with the same verified email links to the same person too.
+    // Apple never links by email (N1): the same verified email is a 409, not a takeover.
     const appleToken = await apple({ sub: 'a-5', email: 'sam@gmail.com', email_verified: 'true' })
-    const viaApple = await (await post('/api/auth/apple', { identityToken: appleToken, nonce: RAW })).json() as { user: { id: string } }
-    expect(viaApple.user.id).toBe(first.user.id)
+    const viaApple = await post('/api/auth/apple', { identityToken: appleToken, nonce: RAW })
+    expect(viaApple.status).toBe(409)
+    expect(((await viaApple.json()) as { error: { code: string } }).error.code).toBe('EMAIL_IN_USE')
   })
 
   it('saves the Apple name from the first sign-in and signs in later without an email', async () => {
@@ -135,9 +141,8 @@ describe('Sign in with Google / Apple', () => {
 
   it('rate-limits provider sign-in per IP (4x the link quota)', async () => {
     const { app } = await setup({ rateLimit: { max: 1, windowMs: 60_000 }, trustProxy: true })
-    const idToken = await google('g-9', 'r@example.com')
-    const from = (ip: string) => app.request('/api/auth/google', {
-      method: 'POST', headers: { 'content-type': 'application/json', 'x-forwarded-for': ip }, body: JSON.stringify({ idToken }),
+    const from = async (ip: string) => app.request('/api/auth/google', {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-forwarded-for': ip }, body: JSON.stringify({ idToken: await google('g-9', 'r@example.com'), platform: 'web' }),
     })
     for (let i = 0; i < 4; i++) expect((await from('203.0.113.1')).status).toBe(200)
     const limited = await from('203.0.113.1')
@@ -239,9 +244,8 @@ describe('Sign in with Google / Apple', () => {
 
   it('trusts X-Forwarded-For only from a loopback hop when TRUST_PROXY is unset', async () => {
     const { app } = await setup({ rateLimit: { max: 1, windowMs: 60_000 }, trustProxy: false })
-    const idToken = await google('g-lb', 'lb@gmail.com')
-    const from = (remoteAddress: string, xff: string) => app.request('/api/auth/google', {
-      method: 'POST', headers: { 'content-type': 'application/json', 'x-forwarded-for': xff }, body: JSON.stringify({ idToken }),
+    const from = async (remoteAddress: string, xff: string) => app.request('/api/auth/google', {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-forwarded-for': xff }, body: JSON.stringify({ idToken: await google('g-lb', 'lb@gmail.com'), platform: 'web' }),
     }, { incoming: { socket: { remoteAddress } } })
     // Behind Caddy (127.0.0.1): each forwarded client gets its own bucket.
     for (let i = 0; i < 4; i++) expect((await from('127.0.0.1', '203.0.113.5')).status).toBe(200)
@@ -250,5 +254,88 @@ describe('Sign in with Google / Apple', () => {
     // A direct (non-loopback) caller can't dodge its bucket by spoofing the header.
     for (let i = 0; i < 4; i++) expect((await from('198.51.100.9', `10.0.0.${i}`)).status).toBe(200)
     expect((await from('198.51.100.9', '10.0.0.99')).status).toBe(429)
+  })
+  it('N1: Apple never links an existing account by email, private relay or not', async () => {
+    const { post } = await setup()
+    const issued = await (await post('/api/auth/magic-link', { email: 'alex@corp.test' })).json() as { devToken: string }
+    await post('/api/auth/verify', { token: issued.devToken })
+    const res = await post('/api/auth/apple', { identityToken: await apple({ sub: 'a-new', email: 'alex@corp.test', email_verified: 'true' }), nonce: RAW })
+    expect(res.status).toBe(409)
+    expect(((await res.json()) as { error: { code: string } }).error.code).toBe('EMAIL_IN_USE')
+    // A free email still creates a fresh Apple account.
+    expect((await post('/api/auth/apple', { identityToken: await apple({ sub: 'a-free', email: 'free@corp.test', email_verified: 'true' }), nonce: RAW })).status).toBe(200)
+  })
+
+  it('N2: a Google hd links only when the email is on that domain', async () => {
+    const { post } = await setup()
+    const issued = await (await post('/api/auth/magic-link', { email: 'alex@corp.test' })).json() as { devToken: string }
+    const first = await (await post('/api/auth/verify', { token: issued.devToken })).json() as { user: { id: string } }
+    expect((await post('/api/auth/google', { idToken: await google('g-hd1', 'alex@corp.test', { hd: 'evil.test' }) })).status).toBe(409)
+    expect((await post('/api/auth/google', { idToken: await google('g-hd2', 'alex@corp.test', { hd: 'test' }) })).status).toBe(409)
+    const ok = await (await post('/api/auth/google', { idToken: await google('g-hd3', 'alex@corp.test', { hd: 'CORP.test' }) })).json() as { user: { id: string } }
+    expect(ok.user.id).toBe(first.user.id)
+  })
+
+  it('N3: the same ID token (with or without jti) only works once', async () => {
+    const { post } = await setup()
+    const appleToken = await apple({ sub: 'a-rp', email: 'rp@icloud.com', email_verified: 'true' })
+    expect((await post('/api/auth/apple', { identityToken: appleToken, nonce: RAW })).status).toBe(200)
+    const replay = await post('/api/auth/apple', { identityToken: appleToken, nonce: RAW })
+    expect(replay.status).toBe(401)
+    expect(replay.headers.get('set-cookie')).toBeNull()
+    const noJti = await google('g-rp', 'rp@gmail.com', { jti: undefined })
+    expect((await post('/api/auth/google', { idToken: noJti })).status).toBe(200)
+    expect((await post('/api/auth/google', { idToken: noJti })).status).toBe(401)
+    expect((await post('/api/auth/google', { idToken: await google('g-rp', 'rp@gmail.com') })).status).toBe(200)
+  })
+
+  it('N3: a used token is forgotten after it expires', async () => {
+    let now = NOW
+    const sql = await createMemorySql()
+    const { repo } = createApp(sql, { now: () => now, dev: true, rateFor: async () => '1', devSigninEmails: null })
+    const exp = Math.floor(NOW.getTime() / 1000) + 60
+    await repo.consumeIdToken('google', 'k', exp)
+    await expect(repo.consumeIdToken('google', 'k', exp)).rejects.toMatchObject({ code: 'BAD_TOKEN' })
+    now = new Date(NOW.getTime() + 120_000)
+    await repo.consumeIdToken('google', 'other', exp + 3600)
+    expect((await sql.query(`select token_key from used_id_tokens`)).map((r: any) => r.token_key)).toEqual(['other'])
+  })
+
+  it('N4: platform must be ios, android or web', async () => {
+    const { app } = await setup()
+    const raw = (path: string, body: unknown) => app.request(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+    for (const platform of [undefined, 'windows', 5, '']) {
+      const g = await raw('/api/auth/google', { idToken: await google('g-pf', 'pf@gmail.com'), ...(platform === undefined ? {} : { platform }) })
+      expect(g.status, String(platform)).toBe(400)
+      expect(((await g.json()) as { error: { code: string } }).error.code).toBe('BAD_PLATFORM')
+      expect((await raw('/api/auth/apple', { identityToken: await apple({ sub: 'a-pf', email: 'pf@icloud.com', email_verified: 'true' }), nonce: RAW, ...(platform === undefined ? {} : { platform }) })).status).toBe(400)
+    }
+    for (const platform of ['ios', 'android', 'web']) {
+      expect((await raw('/api/auth/google', { idToken: await google('g-pf', 'pf@gmail.com'), platform })).status).toBe(200)
+    }
+  })
+
+  it('N5: a suspended user gets no session or devToken from magic-link, verify or verify-code', async () => {
+    const { post, sql } = await setup()
+    const issued = await (await post('/api/auth/magic-link', { email: 'sus@example.com' })).json() as { devToken: string }
+    const first = await (await post('/api/auth/verify', { token: issued.devToken })).json() as { user: { id: string } }
+    const forLink = await (await post('/api/auth/magic-link', { email: 'sus@example.com' })).json() as { devToken: string }
+    const forCode = await (await post('/api/auth/magic-link', { email: 'sus@example.com' })).json() as { devCode: string }
+    expect(forCode.devCode).toMatch(/^\d{6}$/)
+    await sql.query(`update users set suspended_at = now() where id = $1`, [first.user.id])
+    for (const res of [await post('/api/auth/verify', { token: forLink.devToken }), await post('/api/auth/verify-code', { email: 'sus@example.com', code: forCode.devCode })]) {
+      expect(res.status).toBe(403)
+      expect(res.headers.get('set-cookie')).toBeNull()
+      expect(((await res.json()) as { error: { code: string } }).error.code).toBe('SUSPENDED')
+    }
+    expect(await (await post('/api/auth/magic-link', { email: 'sus@example.com' })).json()).toEqual({ ok: true })
+  })
+
+  it('N6: @googlemail.com counts as Gmail for linking', async () => {
+    const { post } = await setup()
+    const issued = await (await post('/api/auth/magic-link', { email: 'old@googlemail.com' })).json() as { devToken: string }
+    const first = await (await post('/api/auth/verify', { token: issued.devToken })).json() as { user: { id: string } }
+    const linked = await (await post('/api/auth/google', { idToken: await google('g-gm', 'old@googlemail.com') })).json() as { user: { id: string } }
+    expect(linked.user.id).toBe(first.user.id)
   })
 })

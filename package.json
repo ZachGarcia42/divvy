@@ -10,7 +10,7 @@
     "dev": "concurrently -n api,web -c green,blue \"npm run dev -w @divvy/api\" \"npm run dev -w @divvy/web\"",
     "dev:api": "npm run dev -w @divvy/api",
     "dev:web": "npm run dev -w @divvy/web",
-    "typecheck": "npm run typecheck -w @divvy/domain && npm run typecheck -w @divvy/client && npm run typecheck -w @divvy/api && npm run typecheck -w @divvy/web"
+    "typecheck": "npm run typecheck -w @divvy/domain && npm run typecheck -w @divvy/mobile && npm run typecheck -w @divvy/api && npm run typecheck -w @divvy/web"
   },
   "devDependencies": {
     "concurrently": "^9.2.1",

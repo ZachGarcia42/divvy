@@ -4,7 +4,7 @@ import { cors } from 'hono/cors'
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie'
 import { readFileSync } from 'node:fs'
 import type { Sql } from './db.ts'
-import { createVerifier, googleMayLink, hashNonce, isPrivateRelay, parseClientIds, type IdTokenVerifier } from './oauth.ts'
+import { createVerifier, googleMayLink, hashNonce, parseClientIds, type IdTokenVerifier } from './oauth.ts'
 import { cleanNextPath, CodeError, normalizeEmail, Repo } from './repo.ts'
 
 const COOKIE = 'divvy_session'
@@ -59,6 +59,9 @@ ${href ? `<a class="button" href="${href}">Open in Divvy</a>` : '<p>Ask for a ne
 <p>Need the app? It’s in testing.</p>
 </body></html>`
 }
+
+/** Landing pages use only an inline <style>, a meta refresh and a divvy:// link: no scripts, fonts or frames. */
+export const HTML_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
 
 export const isLoopback = (ip: string | null) =>
   !!ip && (ip === '::1' || ip.startsWith('127.') || ip.startsWith('::ffff:127.'))
@@ -159,9 +162,16 @@ export function createApp(sql: Sql, options?: {
   const repo = new Repo(sql, {
     now: options?.now ?? (() => new Date()),
     rateFor: options?.rateFor ?? ((from, to, date) => defaultRate(sql, from, to, date)),
-    webOrigin: options?.webOrigin ?? process.env.WEB_ORIGIN ?? 'http://localhost:5173',
+    webOrigin: (options?.webOrigin ?? process.env.WEB_ORIGIN ?? 'http://localhost:5173').trim().replace(/\/+$/, ''),
   })
   const app = new Hono()
+  app.use('*', async (c, next) => {
+    await next()
+    c.res.headers.set('Strict-Transport-Security', 'max-age=31536000')
+    c.res.headers.set('X-Content-Type-Options', 'nosniff')
+    c.res.headers.set('Referrer-Policy', 'no-referrer')
+    if (c.res.headers.get('content-type')?.startsWith('text/html')) c.res.headers.set('Content-Security-Policy', HTML_CSP)
+  })
   app.use('*', cors({
     origin: (process.env.CORS_ORIGIN ?? 'http://localhost:5173,http://localhost:8081').split(','),
     credentials: true,
@@ -258,7 +268,7 @@ export function createApp(sql: Sql, options?: {
     const body = { email: emailFromBody(raw), next: nextFromBody(raw) }
     throttle(c, body.email, clientIp(c))
     const issued = await repo.requestMagicLink(body.email, 'login', undefined, body.next)
-    const dev = devTokenFor(body.email)
+    const dev = devTokenFor(body.email) && !(await repo.isSuspendedEmail(body.email))
     return c.json({ ok: true, devToken: dev ? issued.token : undefined, devCode: dev && issued.code ? issued.code : undefined })
   })
 
@@ -317,6 +327,7 @@ export function createApp(sql: Sql, options?: {
       if (raw === null || !identity.nonce || identity.nonce !== hashNonce(raw)) throw badToken()
     }
     const platform = body?.platform === 'web' || body?.platform === 'ios' || body?.platform === 'android' ? body.platform : null
+    if (!platform) throw new LedgerError('BAD_PLATFORM', 'Send platform: ios, android or web')
     if (provider === 'apple' && appleWebIds.length && platform && identity.aud) {
       // Native iOS tokens carry the bundle id; the web/Android flow carries a Service ID.
       const isService = appleWebIds.includes(identity.aud)
@@ -332,7 +343,10 @@ export function createApp(sql: Sql, options?: {
         : ''
       identity.name = name.trim() || null
     }
-    const mayLink = provider === 'google' ? googleMayLink(identity) : !isPrivateRelay(identity.email)
+    // Apple never links to an existing account by email (an Apple ID can sit on any outside address).
+    const mayLink = provider === 'google' ? googleMayLink(identity) : false
+    // One use per token: remember it (jti, else the token's hash) until it expires.
+    await repo.consumeIdToken(provider, identity.jti ? `jti:${identity.jti}` : `tok:${hashNonce(token)}`, identity.exp ?? null)
     const result = await repo.signInWithIdentity({ ...identity, mayLink }, next)
     setCookie(c, COOKIE, result.token, { httpOnly: true, sameSite: 'Lax', path: '/', maxAge: 60 * 60 * 24 * 30 })
     return c.json(result)

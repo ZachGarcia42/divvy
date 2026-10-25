@@ -251,3 +251,10 @@ create table if not exists user_identities (
   primary key (provider, sub)
 );
 create index if not exists user_identities_user on user_identities (user_id);
+
+create table if not exists used_id_tokens (
+  provider text not null,
+  token_key text not null,
+  expires_at timestamptz not null,
+  primary key (provider, token_key)
+);

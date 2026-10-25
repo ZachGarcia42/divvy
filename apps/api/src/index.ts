@@ -1,6 +1,6 @@
 import { serve } from '@hono/node-server'
 import { createApp } from './app.ts'
-import { checkStartupEnv } from './config.ts'
+import { checkStartupEnv, listenOptions } from './config.ts'
 import { createSql } from './db.ts'
 
 const startup = checkStartupEnv(process.env)
@@ -12,10 +12,10 @@ for (const warning of startup.warnings) console.warn(`\n${'!'.repeat(72)}\n${war
 
 const sql = await createSql()
 const { app, repo } = createApp(sql)
-const port = Number(process.env.PORT ?? 8787)
+const listen = listenOptions(process.env)
 
-serve({ fetch: app.fetch, port }, () => {
-  console.log(`Divvy API listening on http://localhost:${port}`)
+serve({ fetch: app.fetch, ...listen }, () => {
+  console.log(`Divvy API listening on http://${listen.hostname ?? 'localhost'}:${listen.port}`)
 })
 
 const tick = () => {

@@ -19,3 +19,10 @@ export function checkStartupEnv(env: Record<string, string | undefined>): Startu
   }
   return { ok: true, warnings: [] }
 }
+
+/** Where to listen. HOST unset keeps the old behavior (all interfaces); HOST=127.0.0.1 keeps the API behind Caddy. */
+export function listenOptions(env: Record<string, string | undefined>): { port: number; hostname?: string } {
+  const port = Number(env.PORT ?? 8787)
+  const hostname = env.HOST?.trim()
+  return hostname ? { port, hostname } : { port }
+}

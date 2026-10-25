@@ -214,6 +214,7 @@ export class Repo {
       await this.sql.query(`update users set email = $1 where id = $2`, [link.email, link.user_id])
     }
     const user = await this.ensureUser(link.purpose === 'email_change' ? link.email : link.email, undefined, link.purpose === 'email_change' ? link.user_id! : undefined)
+    if (user.suspended_at) throw new LedgerError('SUSPENDED', 'This account is suspended')
     const session = await this.createSession(user.id)
     const claims = await this.claimRows(user.email)
     return { token: session, user: publicUser(user), claims, next: link.next_path ?? null }
@@ -249,6 +250,24 @@ export class Repo {
     const session = await this.createSession(user.id)
     const claims = await this.claimRows(user.email)
     return { token: session, user: publicUser(user), claims, next }
+  }
+
+  /** True when an account with this email exists and is suspended. */
+  async isSuspendedEmail(email: string) {
+    const row = await this.one<{ suspended_at: string | null }>(`select suspended_at from users where email = $1`, [normalizeEmail(email)])
+    return !!row?.suspended_at
+  }
+
+  /** Records a provider ID token as used until it expires; a second use is a replay (401 BAD_TOKEN). */
+  async consumeIdToken(provider: string, key: string, exp: number | null) {
+    const now = this.deps.now()
+    const expires = new Date(exp ? exp * 1000 : now.getTime() + 60 * 60 * 1000)
+    await this.sql.query(`delete from used_id_tokens where expires_at < $1`, [now.toISOString()])
+    const inserted = await this.sql.query(
+      `insert into used_id_tokens (provider, token_key, expires_at) values ($1,$2,$3) on conflict do nothing returning token_key`,
+      [provider, key, expires.toISOString()],
+    )
+    if (!inserted.length) throw new LedgerError('BAD_TOKEN', 'That sign-in didn’t work. Try again.')
   }
 
   async logout(token: string) {
