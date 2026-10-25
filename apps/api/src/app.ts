@@ -1,6 +1,7 @@
 import { LedgerError } from '@divvy/domain'
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
+import { createWebDist } from './web.ts'
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie'
 import { readFileSync } from 'node:fs'
 import type { Sql } from './db.ts'
@@ -44,9 +45,10 @@ export const stripBidi = (value: string) => value.replace(/[\u202A-\u202E\u2066-
 export const bdi = (value: string) => `<bdi>${escapeHtml(stripBidi(value))}</bdi>`
 
 /** Minimal page that tries to open the app via a divvy:// deep link. headingHtml must already be escaped. */
-export function linkPage(title: string, deepLink: string | null, headingHtml?: string) {
+export function linkPage(title: string, deepLink: string | null, headingHtml?: string, webLink?: string | null) {
   const t = escapeHtml(title)
   const href = deepLink ? escapeHtml(deepLink) : null
+  const web = webLink ? escapeHtml(webLink) : null
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="referrer" content="no-referrer"><meta name="robots" content="noindex">
@@ -56,7 +58,7 @@ ${href ? `<meta http-equiv="refresh" content="0;url=${href}">` : ''}
 </head><body>
 <h1>${headingHtml ?? t}</h1>
 ${href ? `<a class="button" href="${href}">Open in Divvy</a>` : '<p>Ask for a new link.</p>'}
-<p>Need the app? It’s in testing.</p>
+${web ? `<p><a href="${web}">Continue on the web</a></p>` : '<p>Need the app? It’s in testing.</p>'}
 </body></html>`
 }
 
@@ -70,6 +72,8 @@ export function createApp(sql: Sql, options?: {
   now?: () => Date
   rateFor?: (from: string, to: string, date: string) => Promise<string>
   webOrigin?: string
+  /** Directory of the Expo web export to serve (default WEB_DIST); null turns it off. */
+  webDist?: string | null
   dev?: boolean
   devSigninEmails?: string[] | string | null
   adminToken?: string | null
@@ -169,8 +173,9 @@ export function createApp(sql: Sql, options?: {
     await next()
     c.res.headers.set('Strict-Transport-Security', 'max-age=31536000')
     c.res.headers.set('X-Content-Type-Options', 'nosniff')
-    c.res.headers.set('Referrer-Policy', 'no-referrer')
-    if (c.res.headers.get('content-type')?.startsWith('text/html')) c.res.headers.set('Content-Security-Policy', HTML_CSP)
+    // The web app shell sets its own (wider) CSP and Referrer-Policy; everything else gets the strict ones.
+    if (!c.res.headers.has('Referrer-Policy')) c.res.headers.set('Referrer-Policy', 'no-referrer')
+    if (c.res.headers.get('content-type')?.startsWith('text/html') && !c.res.headers.has('Content-Security-Policy')) c.res.headers.set('Content-Security-Policy', HTML_CSP)
   })
   app.use('*', cors({
     origin: (process.env.CORS_ORIGIN ?? 'http://localhost:5173,http://localhost:8081').split(','),
@@ -218,12 +223,14 @@ export function createApp(sql: Sql, options?: {
     }
   }
 
+  const web = createWebDist(options?.webDist !== undefined ? options.webDist : process.env.WEB_DIST)
   // Landing pages for links in emails and shares (WEB_ORIGIN may be this API). Each opens the app.
   app.get('/login', (c) => {
     const token = c.req.query('token')
     if (!isLinkToken(token)) return c.html(linkPage('That sign-in link isn’t valid', null), 400)
     const next = safeNextPath(c.req.query('next'))
-    return c.html(linkPage('Sign in to Divvy', `divvy://login?token=${encodeURIComponent(token)}${next ? `&next=${encodeURIComponent(next)}` : ''}`))
+    const query = `token=${encodeURIComponent(token)}${next ? `&next=${encodeURIComponent(next)}` : ''}`
+    return c.html(linkPage('Sign in to Divvy', `divvy://login?${query}`, undefined, web.enabled ? `/app/login?${query}` : null))
   })
   app.get('/invite/:token', async (c) => {
     const token = c.req.param('token')
@@ -240,7 +247,7 @@ export function createApp(sql: Sql, options?: {
         heading = inviter ? `${bdi(inviter)} invited you to ${bdi(group)}` : `You’re invited to ${bdi(group)}`
       }
     } catch {}
-    return c.html(linkPage(title, deepLink, heading))
+    return c.html(linkPage(title, deepLink, heading, web.enabled ? `/app/invite/${encodeURIComponent(token)}` : null))
   })
 
   app.get('/api/health', (c) => c.json({ ok: true, build }))
@@ -523,6 +530,13 @@ export function createApp(sql: Sql, options?: {
     }
     await repo.suspend(c.req.param('id'))
     return c.json({ ok: true })
+  })
+
+  // The Expo web export (WEB_DIST): static files, then the SPA shell for any other non-/api GET.
+  app.get('*', async (c, next) => {
+    const found = await web.serve(new URL(c.req.url).pathname)
+    if (!found) return next()
+    return new Response(c.req.method === 'HEAD' ? null : found.body as unknown as ArrayBuffer, { status: found.status, headers: found.headers })
   })
 
   return { app, repo }

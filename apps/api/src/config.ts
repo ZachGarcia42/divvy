@@ -9,7 +9,7 @@ export function checkStartupEnv(env: Record<string, string | undefined>): Startu
       return {
         ok: false,
         error: 'WEB_ORIGIN is not set, but DEV_SIGNIN_EMAILS is (hosted mode). Group links and sign-in emails would point at '
-          + 'http://localhost:5173. Set WEB_ORIGIN to the public URL people open, for example WEB_ORIGIN=http://divvy.mooo.com:8787.',
+          + 'http://localhost:5173. Set WEB_ORIGIN to the public URL people open, for example WEB_ORIGIN=https://divvy.mooo.com.',
       }
     }
     return { ok: true, warnings: ['WARNING: WEB_ORIGIN is not set. Group links and sign-in emails will point at http://localhost:5173, which only works on this machine.'] }

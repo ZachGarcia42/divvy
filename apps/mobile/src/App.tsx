@@ -19,6 +19,7 @@ import {
 } from 'react-native'
 import { inviteFromNext, invitePath, isToken, parseDeepLink, parseInvitePreview, PENDING_INVITE_KEY, tokenFromInput, type InvitePreview } from './links'
 import { SocialSignIn } from './SocialSignIn'
+import { apiBase, webLinkUrl } from './flows/web'
 import { FALLBACK_PROVIDERS, parseProviders, type Providers } from './flows/providers'
 import { CheckEmail, ExpiredLink, JoinCard, NamePrompt, NameSheet, Toast } from './November'
 import { createOnce, joinFailure, joinedWasAlreadyMember, loadJoinView, type JoinView } from './flows/join'
@@ -26,7 +27,13 @@ import { checkStoredSession, createSessionExpiry, loadSession, saveSession, type
 import { nameAskedKey, shouldAskName } from './flows/names'
 import { createCooldowns, emailError, LAST_EMAIL_KEY, monotonicNow, normalizeEmail, sendErrorMessage, verifyFailure } from './flows/signin'
 
-const secureStore: KeyStore = {
+// expo-secure-store has no web implementation; the web build keeps the session in localStorage.
+const webStorage = (globalThis as unknown as { localStorage?: { getItem(k: string): string | null; setItem(k: string, v: string): void; removeItem(k: string): void } }).localStorage
+const secureStore: KeyStore = Platform.OS === 'web' ? {
+  get: async (key) => webStorage?.getItem(key) ?? null,
+  set: async (key, value) => { webStorage?.setItem(key, value) },
+  remove: async (key) => { webStorage?.removeItem(key) },
+} : {
   get: (key) => SecureStore.getItemAsync(key),
   set: (key, value) => SecureStore.setItemAsync(key, value),
   remove: (key) => SecureStore.deleteItemAsync(key),
@@ -36,7 +43,8 @@ const sessionExpiry = createSessionExpiry()
 // Resend cooldowns survive going back to the email field (keyed by normalized email), for this app run.
 const cooldowns = createCooldowns()
 
-const API = process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:8787'
+// Literal reads so Expo inlines them. On web the API serves the app, so calls are same-origin.
+const API = apiBase(Platform.OS, { api: process.env.EXPO_PUBLIC_API_URL, webApi: process.env.EXPO_PUBLIC_WEB_API_URL })
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
 type HomeGroup = { id: string; name: string; currency: string; yourNetMinor: number; archived: boolean }
@@ -246,7 +254,13 @@ export function App() {
         setVerifying(false)
       }
     }
-    Linking.getInitialURL().then(take).catch(() => undefined)
+    Linking.getInitialURL().then((url) => {
+      if (Platform.OS !== 'web') return take(url)
+      // Web: /app/login?token=... or /app/invite/<token>; drop the token from the address bar once read.
+      const mapped = webLinkUrl(url)
+      if (mapped !== url) (globalThis as unknown as { history?: { replaceState(a: unknown, b: string, c: string): void } }).history?.replaceState(null, '', '/')
+      return take(mapped)
+    }).catch(() => undefined)
     const subscription = Linking.addEventListener('url', (event) => { void take(event.url) })
     return () => subscription.remove()
   }, [])
