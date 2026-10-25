@@ -18,6 +18,8 @@ import {
   View,
 } from 'react-native'
 import { inviteFromNext, invitePath, isToken, parseDeepLink, parseInvitePreview, PENDING_INVITE_KEY, tokenFromInput, type InvitePreview } from './links'
+import { SocialSignIn } from './SocialSignIn'
+import { FALLBACK_PROVIDERS, parseProviders, type Providers } from './flows/providers'
 import { CheckEmail, ExpiredLink, JoinCard, NamePrompt, NameSheet, Toast } from './November'
 import { createOnce, joinFailure, joinedWasAlreadyMember, loadJoinView, type JoinView } from './flows/join'
 import { checkStoredSession, createSessionExpiry, loadSession, saveSession, type KeyStore } from './flows/session'
@@ -363,10 +365,13 @@ function SignIn({ onToken, pendingInvite, onDismissInvite, linkFailure, onClearL
   const [error, setError] = useState<string | null>(null)
   const [sending, setSending] = useState(false)
   const [sampleAvailable, setSampleAvailable] = useState(false)
+  const [providers, setProviders] = useState<Providers>(FALLBACK_PROVIDERS)
+  const [providerError, setProviderError] = useState<string | null>(null)
 
   useEffect(() => {
     // Only show "Open the sample apartment" when the API says dev seed is on.
     call<{ devSeed?: boolean }>(null, '/api/config').then((config) => setSampleAvailable(config.devSeed === true)).catch(() => setSampleAvailable(false))
+    call<unknown>(null, '/api/auth/providers').then((body) => setProviders(parseProviders(body))).catch(() => setProviders(FALLBACK_PROVIDERS))
     AsyncStorage.getItem(LAST_EMAIL_KEY).then((saved) => { if (saved) setSavedEmail(saved) }).catch(() => undefined)
   }, [])
 
@@ -463,7 +468,22 @@ function SignIn({ onToken, pendingInvite, onDismissInvite, linkFailure, onClearL
     )
   }
 
-  const shownError = error ?? (linkFailure?.kind === 'error' ? linkFailure.message : null)
+  const signInWith = async (provider: 'google' | 'apple', body: Record<string, unknown>) => {
+    const post = (payload: Record<string, unknown>) => call<{ token: string }>(null, `/api/auth/${provider}`, { method: 'POST', body: JSON.stringify(payload) })
+    let session: { token: string }
+    try {
+      session = await post(body)
+    } catch (reason) {
+      // Same as the email path: a refused return path drops the pending invite and signs in without it.
+      if (!body.next || (reason as { code?: string }).code !== 'BAD_NEXT') throw reason
+      onDismissInvite()
+      const { next: _dropped, ...rest } = body
+      session = await post(rest)
+    }
+    onToken(session.token)
+  }
+
+  const shownError = error ?? providerError ?? (linkFailure?.kind === 'error' ? linkFailure.message : null)
   const offline = !!error && error.startsWith('Couldn’t send')
   return (
     <SafeAreaView style={styles.screen}>
@@ -477,8 +497,15 @@ function SignIn({ onToken, pendingInvite, onDismissInvite, linkFailure, onClearL
             </Pressable>
           </View>
         ) : (
-          <Text style={styles.copy}>Split trips and bills with friends. We’ll email you a link to sign in.</Text>
+          <Text style={styles.copy}>{providers.email ? 'Split trips and bills with friends. We’ll email you a link to sign in.' : 'Split trips and bills with friends.'}</Text>
         )}
+        <SocialSignIn
+          providers={providers}
+          next={pendingInvite ? `/invite/${pendingInvite}` : null}
+          onSignIn={signInWith}
+          onError={setProviderError}
+        />
+        {providers.email && <>
         <TextInput
           style={[styles.input, !!error && !offline && styles.inputBad]}
           autoCapitalize="none"
@@ -500,6 +527,8 @@ function SignIn({ onToken, pendingInvite, onDismissInvite, linkFailure, onClearL
           <Text style={styles.primaryText}>{sending ? 'Sending…' : offline ? 'Try again' : 'Send link'}</Text>
         </Pressable>
         <Text style={[styles.muted, styles.centerText]}>No password. The link works for 15 minutes.</Text>
+        </>}
+        {!providers.email && shownError && <Text style={styles.error} testID="sign-in-error" accessibilityLiveRegion="polite" accessibilityRole="alert">{shownError}</Text>}
         {sampleAvailable && (
           <Pressable style={styles.secondary} accessibilityRole="button" accessibilityState={{ disabled: false }} onPress={async () => {
             try {

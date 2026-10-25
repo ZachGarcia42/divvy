@@ -4,6 +4,7 @@ import { cors } from 'hono/cors'
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie'
 import { readFileSync } from 'node:fs'
 import type { Sql } from './db.ts'
+import { createVerifier, parseClientIds, type IdTokenVerifier } from './oauth.ts'
 import { cleanNextPath, CodeError, normalizeEmail, Repo } from './repo.ts'
 
 const COOKIE = 'divvy_session'
@@ -72,6 +73,12 @@ export function createApp(sql: Sql, options?: {
   trustProxy?: boolean
   /** Build id reported by /api/health (defaults to resolveBuild()). */
   build?: string
+  /** Allowed Google OAuth client ids (aud). Defaults to GOOGLE_CLIENT_IDS; empty means /api/auth/google is 503. */
+  googleClientIds?: string[] | string | null
+  /** Allowed Apple client ids (aud). Defaults to APPLE_CLIENT_IDS, else app.divvy.ledger; empty means 503. */
+  appleClientIds?: string[] | string | null
+  /** Test hook: replace JWKS-backed verification (e.g. a locally signed key). */
+  verifiers?: { google?: IdTokenVerifier; apple?: IdTokenVerifier }
 }) {
   const build = options?.build ?? resolveBuild()
   const dev = options?.dev ?? process.env.NODE_ENV !== 'production'
@@ -109,17 +116,19 @@ export function createApp(sql: Sql, options?: {
    * Throws RATE_LIMITED (429) if this email or IP already used its quota in the window; otherwise records the hit.
    * Code checks use their own buckets ('code') with twice the quota, so a few typos plus a Resend still fit.
    */
-  const throttle = (c: { header: (name: string, value: string) => void }, email: string, ip: string | null, bucket: 'link' | 'code' = 'link', request?: string | null) => {
+  const throttle = (c: { header: (name: string, value: string) => void }, email: string | null, ip: string | null, bucket: 'link' | 'code' | 'oauth' = 'link', request?: string | null) => {
     if (!limit) return
     const now = clock()
-    const prefix = bucket === 'code' ? 'code-' : ''
-    const max = bucket === 'code' ? limit.max * 2 : limit.max
+    const prefix = bucket === 'link' ? '' : `${bucket}-`
+    // Provider sign-in is per IP only (there's no email before the token is verified), with 4x the quota.
+    const max = bucket === 'code' ? limit.max * 2 : bucket === 'oauth' ? limit.max * 4 : limit.max
     // Code checks are limited per email *and current request*, so someone who only knows your email can't
     // burn your attempts for the whole window: a Resend starts a fresh bucket. The per-IP limit is unchanged.
     // Residual risk: they can still lock each new code (5 tries) and trigger Resends, but Resends are capped by
     // the link limit (5 per email per 15 min) and the magic link keeps working even when the code is locked.
-    const emailKey = `${prefix}email:${email.trim().toLowerCase()}${bucket === 'code' ? `:${request ?? 'none'}` : ''}`
-    const keys = [emailKey, ...(ip ? [`${prefix}ip:${ip}`] : [])]
+    const emailKey = `${prefix}email:${(email ?? '').trim().toLowerCase()}${bucket === 'code' ? `:${request ?? 'none'}` : ''}`
+    const keys = [...(email === null ? [] : [emailKey]), ...(ip ? [`${prefix}ip:${ip}`] : [])]
+    if (!keys.length) return
     const recent = keys.map((key) => (hits.get(key) ?? []).filter((at) => now - at < limit.windowMs))
     keys.forEach((key, index) => hits.set(key, recent[index]!))
     // IETF RateLimit headers: the tightest of this request's buckets.
@@ -161,7 +170,8 @@ export function createApp(sql: Sql, options?: {
     }
     if (error instanceof LedgerError) {
       const status = error.code === 'UNAUTHENTICATED' || error.code === 'BAD_TOKEN' ? 401
-        : error.code === 'FORBIDDEN' || error.code === 'SUSPENDED' || error.code === 'BLOCKED' ? 403
+        : error.code === 'NOT_CONFIGURED' ? 503
+        : error.code === 'FORBIDDEN' || error.code === 'EMAIL_UNVERIFIED' || error.code === 'SUSPENDED' || error.code === 'BLOCKED' ? 403
         : error.code === 'NOT_FOUND' ? 404
         : error.code === 'STALE' ? 409
         : error.code === 'RATE_LIMITED' ? 429
@@ -262,6 +272,41 @@ export function createApp(sql: Sql, options?: {
     setCookie(c, COOKIE, result.token, { httpOnly: true, sameSite: 'Lax', path: '/', maxAge: 60 * 60 * 24 * 30 })
     return c.json(result)
   })
+
+  // Sign in with Google / Apple. Each provider is off (503) until its client ids are configured.
+  const clientIdsFor = (option: string[] | string | null | undefined, env: string | undefined, fallback?: string) =>
+    parseClientIds(option !== undefined ? option : env !== undefined ? env : fallback)
+  const googleIds = clientIdsFor(options?.googleClientIds, process.env.GOOGLE_CLIENT_IDS)
+  const appleIds = clientIdsFor(options?.appleClientIds, process.env.APPLE_CLIENT_IDS, 'app.divvy.ledger')
+  const verifiers = {
+    google: googleIds.length ? options?.verifiers?.google ?? createVerifier('google', googleIds, { now: options?.now }) : null,
+    apple: appleIds.length ? options?.verifiers?.apple ?? createVerifier('apple', appleIds, { now: options?.now }) : null,
+  }
+  const providerSignIn = (provider: 'google' | 'apple', tokenField: 'idToken' | 'identityToken') => app.post(`/api/auth/${provider}`, async (c) => {
+    const verify = verifiers[provider]
+    if (!verify) throw new LedgerError('NOT_CONFIGURED', `Sign in with ${provider === 'google' ? 'Google' : 'Apple'} isn’t set up on this server`)
+    const body = await readBody(c)
+    const token = body?.[tokenField]
+    if (typeof token !== 'string' || !token || token.length > 8192) throw new LedgerError('BAD_TOKEN', 'That sign-in didn’t work. Try again.')
+    const next = nextFromBody(body)
+    throttle(c, null, clientIp(c), 'oauth')
+    const identity = await verify(token)
+    if (provider === 'apple') {
+      // Apple sends the name only on the very first authorization, from the device, not in the token.
+      const full = body?.fullName as { givenName?: unknown; familyName?: unknown } | string | null | undefined
+      const name = typeof full === 'string' ? full
+        : full && typeof full === 'object' ? [full.givenName, full.familyName].filter((part): part is string => typeof part === 'string' && !!part.trim()).join(' ')
+        : ''
+      identity.name = name.trim() || null
+    }
+    const result = await repo.signInWithIdentity(identity, next)
+    setCookie(c, COOKIE, result.token, { httpOnly: true, sameSite: 'Lax', path: '/', maxAge: 60 * 60 * 24 * 30 })
+    return c.json(result)
+  })
+  providerSignIn('google', 'idToken')
+  providerSignIn('apple', 'identityToken')
+  // What the login screen should offer. `email` is the tester email path (on when any devToken can be issued).
+  app.get('/api/auth/providers', (c) => c.json({ google: !!verifiers.google, apple: !!verifiers.apple, email: dev && (!restricted || allowList.length > 0) }))
 
   app.post('/api/auth/logout', async (c) => {
     const token = tokenOf(c)

@@ -219,6 +219,32 @@ export class Repo {
     return { token: session, user: publicUser(user), claims, next: link.next_path ?? null }
   }
 
+  /**
+   * Sign in with a verified Google/Apple identity. Links by provider+sub; on first sign-in, matches an
+   * existing user by verified email (or creates one). Returns the same shape as verifyMagicLink.
+   */
+  async signInWithIdentity(identity: { provider: string; sub: string; email: string | null; emailVerified: boolean; name: string | null }, next: string | null) {
+    const linked = await this.one<{ user_id: string }>(`select user_id from user_identities where provider = $1 and sub = $2`, [identity.provider, identity.sub])
+    let userId = linked?.user_id
+    if (!userId) {
+      if (!identity.email || !identity.emailVerified) throw new LedgerError('EMAIL_UNVERIFIED', 'Your account email isn’t verified. Verify it, then try again.')
+      const email = normalizeEmail(identity.email)
+      const name = identity.name?.trim() ? identity.name.trim().slice(0, 60) : undefined
+      const user = await this.ensureUser(email, name)
+      userId = user.id
+      await this.sql.query(
+        `insert into user_identities (provider, sub, user_id, email) values ($1,$2,$3,$4) on conflict (provider, sub) do nothing`,
+        [identity.provider, identity.sub, userId, email],
+      )
+      const winner = await this.one<{ user_id: string }>(`select user_id from user_identities where provider = $1 and sub = $2`, [identity.provider, identity.sub])
+      userId = winner!.user_id
+    }
+    const user = await this.mustUser(userId)
+    const session = await this.createSession(user.id)
+    const claims = await this.claimRows(user.email)
+    return { token: session, user: publicUser(user), claims, next }
+  }
+
   async logout(token: string) {
     await this.sql.query(`delete from sessions where token_hash = $1`, [hashToken(token)])
   }

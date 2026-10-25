@@ -241,3 +241,13 @@ create index if not exists magic_links_email on magic_links (email);
 create index if not exists memberships_participant on memberships(participant_id);
 create index if not exists expenses_group on expenses(group_id);
 create index if not exists activity_group on activity(group_id, created_at);
+
+create table if not exists user_identities (
+  provider text not null,
+  sub text not null,
+  user_id text not null references users(id),
+  email text,
+  created_at timestamptz not null default now(),
+  primary key (provider, sub)
+);
+create index if not exists user_identities_user on user_identities (user_id);

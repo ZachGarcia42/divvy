@@ -4,6 +4,7 @@ import { Link, NavLink, Navigate, Route, Routes, useNavigate, useParams, useSear
 import { api, ApiError, type GroupDetail } from './api.ts'
 import { SpendingChart, categoryColor, entriesOf, type ChartResponse } from './charts.tsx'
 import { DebtFlow } from './debt-flow.tsx'
+import { GoogleButton } from './google.tsx'
 import { chooseTheme, themeChoice, type ThemeChoice } from './theme.ts'
 
 type Me = { userId: string; email: string; participantId: string; displayName: string; homeCurrency: string }
@@ -81,6 +82,19 @@ function LoginPage() {
       }}>
         <h1><span className="brand-mark" aria-hidden="true">D</span>Divvy</h1>
         <p className="lede">A shared ledger for rent, trips, and the dinners in between. It records who paid. It never moves the money.</p>
+        <GoogleButton
+          onError={setError}
+          onCredential={async (credential) => {
+            setError(null)
+            try {
+              const next = new URLSearchParams(location.search).get('next')
+              const result = await api<{ next?: string | null }>('/api/auth/google', { method: 'POST', body: JSON.stringify(next ? { idToken: credential, next } : { idToken: credential }) })
+              navigate(result.next && result.next.startsWith('/') && !result.next.startsWith('//') ? result.next : '/')
+            } catch (reason) {
+              setError(reason instanceof Error ? reason.message : 'Google sign-in didn’t work')
+            }
+          }}
+        />
         <label>Email<input value={email} onChange={(event) => setEmail(event.target.value)} type="email" required /></label>
         {error && <div className="error">{error}</div>}
         <button className="primary" type="submit">Email me a sign-in link</button>
