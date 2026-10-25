@@ -91,6 +91,8 @@ describe('web app static serving', () => {
     const html = await invite.text()
     expect(html).toContain(`href="divvy://invite/${T}"`)
     expect(html).toContain(`href="/app/invite/${T}"`)
+    expect(html).toContain(`<a class="button secondary" href="/app/invite/${T}">Continue on the web</a>`)
+    expect(html).toContain("a.button.secondary{background:#f3faf7")
     const login = await (await app.request(`/login?token=${T}&next=${encodeURIComponent('/invite/abc')}`)).text()
     expect(login).toContain(`href="/app/login?token=${T}&amp;next=%2Finvite%2Fabc"`)
     expect((await app.request('/invite/x')).status).toBe(400)

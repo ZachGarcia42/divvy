@@ -270,7 +270,7 @@ export function NameSheet({ initial, onSave, onSaved, onClose }: {
   return (
     <Modal transparent animationType="slide" onRequestClose={onClose} visible>
       <Pressable style={s.scrim} onPress={onClose} accessibilityRole="button" accessibilityLabel="Close without saving" />
-      <View style={s.sheet} testID="name-sheet">
+      <View style={[s.sheet, Platform.OS === 'web' && s.sheetWeb]} testID="name-sheet">
         <View style={s.grabber} accessible={false} importantForAccessibility="no" />
         <Text style={s.sheetTitle} accessibilityRole="header">Your name</Text>
         <Text style={s.muted}>Friends see this in every group.</Text>
@@ -388,6 +388,8 @@ const s = StyleSheet.create({
   fieldInput: { flex: 1, paddingVertical: 12, fontSize: 16, color: C.ink },
   counter: { fontSize: 12, fontWeight: '700', color: C.muted },
   scrim: { flex: 1, backgroundColor: 'rgba(20,34,28,0.35)' },
+  // Web: stay inside the app's centered 480px column instead of spanning the window.
+  sheetWeb: { width: '100%', maxWidth: 480, alignSelf: 'center' },
   sheet: { backgroundColor: 'white', borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20, paddingBottom: 32, gap: 10 },
   grabber: { alignSelf: 'center', width: 40, height: 5, borderRadius: 3, backgroundColor: C.line, marginBottom: 4 },
   sheetTitle: { fontSize: 20, fontWeight: '800', color: C.ink },

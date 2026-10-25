@@ -1,4 +1,5 @@
 // Web build: Sign in with Google through Google Identity Services (the rendered button), with a nonce.
+import { SIGN_IN_WIDTH } from './flows/web'
 // Apple on web needs a Services ID on the Apple team first, so it is not offered here.
 import { useEffect, useRef, useState } from 'react'
 import { StyleSheet, Text, View } from 'react-native'
@@ -83,7 +84,7 @@ export function SocialSignIn({ providers, next, onSignIn, onError }: {
           }
         },
       })
-      gis.accounts.id.renderButton(host.current, { type: 'standard', theme: 'outline', size: 'large', text: 'signin_with', shape: 'rectangular', width: Math.max(200, Math.min(400, Math.floor((host.current as unknown as { getBoundingClientRect?: () => { width: number } }).getBoundingClientRect?.().width || 320))) })
+      gis.accounts.id.renderButton(host.current, { type: 'standard', theme: 'outline', size: 'large', text: 'signin_with', shape: 'rectangular', width: Math.max(200, Math.min(SIGN_IN_WIDTH, Math.floor((host.current as unknown as { getBoundingClientRect?: () => { width: number } }).getBoundingClientRect?.().width || SIGN_IN_WIDTH))) })
     }).catch((reason) => { if (live) latest.current.onError(providerErrorMessage('google', reason)) })
     return () => { live = false; browser.google?.accounts?.id?.cancel() }
   }, [shown.google, round])
@@ -99,6 +100,6 @@ export function SocialSignIn({ providers, next, onSignIn, onError }: {
 
 const styles = StyleSheet.create({
   stack: { gap: 10, alignItems: 'center' },
-  google: { minHeight: 44, width: '100%', alignItems: 'center' },
+  google: { minHeight: 44, width: '100%', maxWidth: SIGN_IN_WIDTH, alignSelf: 'center', alignItems: 'center' },
   busy: { fontSize: 14, color: '#4b5a53' },
 })

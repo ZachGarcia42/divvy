@@ -1,4 +1,5 @@
 import { computeShares, exponentOf, formatMoney, parseMajor, shareGapMessage, splitPhrase } from '@divvy/domain'
+import { joinedFeedback, liveShareGap, middleEllipsis, parseShare, pickGroup } from './flows/composer'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import * as SecureStore from 'expo-secure-store'
 import { useEffect, useRef, useState } from 'react'
@@ -19,7 +20,7 @@ import {
 } from 'react-native'
 import { inviteFromNext, invitePath, isToken, parseDeepLink, parseInvitePreview, PENDING_INVITE_KEY, tokenFromInput, type InvitePreview } from './links'
 import { SocialSignIn } from './SocialSignIn'
-import { apiBase, webLinkUrl } from './flows/web'
+import { apiBase, SIGN_IN_WIDTH, webLinkUrl } from './flows/web'
 import { FALLBACK_PROVIDERS, parseProviders, type Providers } from './flows/providers'
 import { CheckEmail, ExpiredLink, JoinCard, NamePrompt, NameSheet, Toast } from './November'
 import { createOnce, joinFailure, joinedWasAlreadyMember, loadJoinView, type JoinView } from './flows/join'
@@ -114,13 +115,6 @@ function majorString(minor: number, currency: string) {
   return `${minor < 0 ? '-' : ''}${whole}${fraction}`
 }
 
-function parseShare(input: string, currency: string) {
-  const trimmed = input.trim()
-  // Blank counts as 0, so the add-up check reports what's left (never a silent equal split).
-  if (!trimmed) return 0
-  if (/^0+(\.0+)?$/.test(trimmed)) return 0
-  return parseMajor(trimmed, currency)
-}
 
 function equalShareText(amount: string, members: { id: string }[], currency: string) {
   try {
@@ -167,6 +161,8 @@ function settlementLabel(detail: GroupDetail, settlement: Settlement) {
   if (settlement.toId === detail.yourParticipantId) return `${settlement.fromName} paid you`
   return `${settlement.fromName} paid ${settlement.toName}`
 }
+
+const LAST_GROUP_KEY = 'divvy.lastGroup'
 
 function firstGroup(groups: HomeGroup[]) {
   return groups.find((group) => !group.archived)?.id ?? groups[0]?.id ?? null
@@ -596,6 +592,11 @@ function Ledger({
   const [shares, setShares] = useState<Record<string, string>>({})
   const [sharesTouched, setSharesTouched] = useState(false)
   const shareButton = useRef<View>(null)
+  const refocusShare = () => {
+    const doc = (globalThis as unknown as { document?: { getElementById(id: string): { focus?: () => void } | null } }).document
+    const el = doc?.getElementById('share-group-link') ?? (shareButton.current as unknown as { focus?: () => void } | null)
+    el?.focus?.()
+  }
   const [saving, setSaving] = useState(false)
   const [busyId, setBusyId] = useState<string | null>(null)
   const savingRef = useRef(false)
@@ -623,17 +624,33 @@ function Ledger({
     if (inviteToken) setJoinToken(inviteToken)
   }, [inviteToken])
 
+  // Load your groups right after sign-in (any method) and open the last group you had open, else the first.
+  // If none show up yet (e.g. a just-linked Google account), look again shortly and when the tab regains focus.
+  const [homeAttempt, setHomeAttempt] = useState(0)
   useEffect(() => {
     let cancelled = false
-    call<Home>(token, '/api/home')
-      .then((next) => {
+    Promise.all([call<Home>(token, '/api/home'), AsyncStorage.getItem(LAST_GROUP_KEY).catch(() => null)])
+      .then(([next, last]) => {
         if (cancelled) return
         setHome(next)
-        setGroupId((current) => current && next.groups.some((group) => group.id === current) ? current : firstGroup(next.groups))
+        setGroupId((current) => pickGroup(next.groups, current, last))
       })
       .catch((reason: Error) => { if (!cancelled) setError(reason.message) })
     return () => { cancelled = true }
-  }, [token])
+  }, [token, homeAttempt])
+  useEffect(() => {
+    if (!home || home.groups.length > 0 || homeAttempt >= 2) return
+    const timer = setTimeout(() => setHomeAttempt((n) => n + 1), 1500)
+    return () => clearTimeout(timer)
+  }, [home, homeAttempt])
+  useEffect(() => {
+    if (Platform.OS !== 'web') return
+    const w = globalThis as unknown as { addEventListener?: (e: string, f: () => void) => void; removeEventListener?: (e: string, f: () => void) => void }
+    const onFocus = () => setHomeAttempt((n) => n + 1)
+    w.addEventListener?.('focus', onFocus)
+    return () => w.removeEventListener?.('focus', onFocus)
+  }, [])
+  useEffect(() => { if (groupId) AsyncStorage.setItem(LAST_GROUP_KEY, groupId).catch(() => undefined) }, [groupId])
 
   useEffect(() => {
     if (!groupId) {
@@ -709,16 +726,9 @@ function Ledger({
 
   const active = (detail?.members ?? []).filter((member) => !member.removed)
   // Live "Shares have to add up… $x left/over" while a custom split is open (blank shares count as 0).
-  const liveGap = (() => {
-    if (!custom || !detail) return null
-    try {
-      const total = parseMajor(amount, detail.currency)
-      const sum = active.reduce((acc, member) => acc + parseShare(shares[member.id] ?? '', detail.currency), 0)
-      return shareGapMessage(sum, total, detail.currency)
-    } catch {
-      return null
-    }
-  })()
+  const liveGap = custom && detail ? liveShareGap(amount, shares, active.map((member) => member.id), detail.currency) : null
+  // Any edit to the amount or shares retires the last Add error, so the live line below is never stale.
+  useEffect(() => { setError(null) }, [amount, shares, custom])
 
   useEffect(() => {
     if (!custom || sharesTouched || !detail) return
@@ -854,8 +864,9 @@ function Ledger({
       setGroupId(joined.group.id)
       setDetail(joined)
       const already = joinedWasAlreadyMember(joined.group.id, before)
-      showToast(already ? `You’re already in ${joined.group.name}.` : `You’re in ${joined.group.name}`)
-      if (!already) setWelcome({ groupId: joined.group.id, text: `You’re in ${joined.group.name}` })
+      const feedback = joinedFeedback(joined.group.name, already)
+      showToast(feedback.toast)
+      if (feedback.banner) setWelcome({ groupId: joined.group.id, text: feedback.banner })
       setHome(await call<Home>(token, '/api/home'))
     } catch (reason) {
       const failure = joinFailure(reason)
@@ -920,8 +931,8 @@ function Ledger({
 
           {!join && !detail && (
             <View style={styles.card}>
-              <Text style={styles.groupName}>{home ? 'No group open' : 'Loading…'}</Text>
-              {error ? <Text style={styles.error}>{error}</Text> : <Text style={styles.copy}>Open a group link from a friend, or use the sample apartment from the sign-in screen.</Text>}
+              <Text style={styles.groupName}>{!home || groupId ? 'Loading…' : 'No groups yet'}</Text>
+              {error ? <Text style={styles.error}>{error}</Text> : home && !groupId && <Text style={styles.copy} testID="no-groups">You’re not in a group yet. Ask a friend for their group link and open it here.</Text>}
             </View>
           )}
 
@@ -1043,12 +1054,12 @@ function Ledger({
               ))}
 
               <Text style={styles.section}>Group link</Text>
-              <Text selectable numberOfLines={1} ellipsizeMode="middle" style={styles.link} testID="group-link">{inviteUrl ?? 'Preparing a link…'}</Text>
+              <Text selectable numberOfLines={1} style={styles.link} testID="group-link" accessibilityLabel={inviteUrl ?? undefined}>{inviteUrl ? middleEllipsis(inviteUrl, 36) : 'Preparing a link…'}</Text>
               <Text style={styles.muted}>Anyone already signed in can open this.</Text>
               {inviteUrl && (
-                <Pressable ref={shareButton} style={styles.secondary} onPress={() => {
+                <Pressable ref={shareButton} nativeID="share-group-link" testID="share-group-link" focusable style={styles.secondary} onPress={() => {
                   // When the share sheet closes, put focus back on the Share button (web focus otherwise drops to <body>).
-                  Share.share({ message: inviteUrl }).catch(() => undefined).finally(() => { (shareButton.current as unknown as { focus?: () => void } | null)?.focus?.() })
+                  Share.share({ message: inviteUrl }).catch(() => undefined).finally(() => setTimeout(refocusShare, 0))
                 }} accessibilityRole="button" accessibilityState={{ disabled: false }}>
                   <Text style={styles.secondaryText}>Share</Text>
                 </Pressable>
@@ -1123,7 +1134,7 @@ const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: '#f6f7f4' },
   scroll: { padding: 16, gap: 12, paddingBottom: 40, maxWidth: '100%' },
   noSideways: { overflow: 'hidden' },
-  signIn: { flex: 1, padding: 20, justifyContent: 'center', gap: 10, width: '100%', maxWidth: 420, alignSelf: 'center', alignItems: 'stretch' },
+  signIn: { flex: 1, padding: 20, justifyContent: 'center', gap: 10, width: '100%', maxWidth: SIGN_IN_WIDTH + 40, alignSelf: 'center', alignItems: 'stretch' },
   header: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   wordmark: { fontSize: 22, fontWeight: '800', color: '#14221c' },
   you: { flex: 1, textAlign: 'right', color: '#3d4741', fontSize: 16 },

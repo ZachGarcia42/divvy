@@ -56,12 +56,12 @@ export function linkPage(title: string, deepLink: string | null, headingHtml?: s
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="referrer" content="no-referrer"><meta name="robots" content="noindex">
 <title>${t}</title>
-<style>html{background:#f6f7f4}body{font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;max-width:30rem;margin:0 auto;padding:4rem 1.5rem;text-align:center;color:#14221c;background:#f6f7f4}.brand{font-size:2.2rem;font-weight:800;margin:0 0 1.5rem}h1{font-size:1.5rem;font-weight:800}.actions{display:flex;flex-direction:column;gap:.75rem;margin:1.5rem auto;max-width:20rem}a.button{display:block;padding:.9rem 1.6rem;border-radius:.75rem;background:#0f766e;color:#fff;text-decoration:none;font-weight:700;border:1px solid #0f766e}a.button.secondary{background:#fff;color:#0f766e;border-color:#e4e8e2}p{color:#5d6b63}</style>
+<style>html{background:#f6f7f4}body{font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;max-width:30rem;margin:0 auto;padding:4rem 1.5rem;text-align:center;color:#14221c;background:#f6f7f4}.brand{font-size:2.2rem;font-weight:800;margin:0 0 1.5rem}h1{font-size:1.5rem;font-weight:800}.actions{display:flex;flex-direction:column;gap:.75rem;margin:1.5rem auto;max-width:20rem}a.button{display:block;box-sizing:border-box;width:100%;padding:.8rem 1.4rem;border-radius:999px;background:#0f766e;color:#fff;text-decoration:none;font-weight:700;border:1px solid #0f766e}a.button:hover{background:#0b5e58}a.button.secondary{background:#f3faf7;color:#0f766e;border:1px solid #cfe3db}a.button.secondary:hover{background:#e6f4ef}a.button:focus-visible{outline:3px solid #99d5c9;outline-offset:2px}p{color:#5d6b63}</style>
 ${href && autoOpen ? `<meta http-equiv="refresh" content="0;url=${href}">` : ''}
 </head><body>
 <div class="brand">Divvy</div>
 <h1>${headingHtml ?? t}</h1>
-${href || web ? `<div class="actions">${href ? `<a class="button" href="${href}">Open in the Divvy app</a>` : ''}${web ? `<a class="button${href ? ' secondary' : ''}" href="${web}">Continue on the web</a>` : ''}</div>` : '<p>Ask for a new link.</p>'}
+${href || web ? `<div class="actions">${href ? `<a class="button" href="${href}">Open in the Divvy app</a>` : ''}${web ? `<a class="button secondary" href="${web}">Continue on the web</a>` : ''}</div>` : '<p>Ask for a new link.</p>'}
 ${web ? '' : href ? '<p>Need the app? It’s in testing.</p>' : ''}
 </body></html>`
 }

@@ -18,3 +18,6 @@ export async function sha256Hex(value: string, subtle: { digest(algorithm: strin
   const digest = await subtle.digest('SHA-256', new TextEncoder().encode(value))
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
 }
+
+/** One shared width for the sign-in column: the Google button is rendered at this width and app buttons/fields stretch to it. */
+export const SIGN_IN_WIDTH = 320
