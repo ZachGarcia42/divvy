@@ -7,7 +7,7 @@ export const APP_CSP = [
   "default-src 'self'",
   "script-src 'self' https://accounts.google.com/gsi/client",
   "style-src 'self' 'unsafe-inline' https://accounts.google.com/gsi/style",
-  "img-src 'self' data: https:",
+  "img-src 'self' data: https://lh3.googleusercontent.com",
   "font-src 'self' data:",
   "connect-src 'self' https://accounts.google.com/gsi/",
   "frame-src https://accounts.google.com/gsi/",
@@ -45,6 +45,10 @@ export function createWebDist(dir: string | null | undefined) {
     let decoded: string
     try { decoded = decodeURIComponent(pathname) } catch { return notFound() }
     if (decoded.includes('\0') || decoded.includes('\\')) return notFound()
+    // No dotfiles/dot-dirs (/.env, /.git/...) and no traversal segments, raw or encoded.
+    const segments = decoded.split('/')
+    if (segments.some((part) => part.startsWith('.'))) return notFound()
+    if (pathname.split('/').some((part) => part.startsWith('.') || /^%2e/i.test(part))) return notFound()
     const file = normalize(join(root, decoded))
     if (file !== root && !file.startsWith(root + sep)) return notFound()
     const ext = extname(decoded).toLowerCase()
@@ -61,6 +65,8 @@ export function createWebDist(dir: string | null | undefined) {
     }
     // A missing file with an extension (or anything under the hashed dirs) is a real 404, not the app shell.
     if (ext || HASHED.test(decoded)) return notFound()
+    // The SPA shell only for clean app routes: letters, digits, - _ and / (e.g. /app/groups/abc-123).
+    if (!/^\/[A-Za-z0-9_\-\/]*$/.test(decoded) || decoded.includes('//')) return notFound()
     return indexHtml()
   }
   return { enabled: !!root, serve, indexHtml }

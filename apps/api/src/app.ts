@@ -112,6 +112,21 @@ export function createApp(sql: Sql, options?: {
     return typeof email === 'string' && allowList.includes(email.trim().toLowerCase())
   }
   const devRoutes = dev && !restricted
+  // Dev tester sign-in is for the native tester builds only, never a browser (the hosted web app is public).
+  // Native builds send x-divvy-platform: ios|android; older native builds send nothing and no browser headers.
+  const fromBrowser = (c: { req: { header: (name: string) => string | undefined } }) => {
+    const platform = c.req.header('x-divvy-platform')?.trim().toLowerCase()
+    if (platform === 'ios' || platform === 'android') return false
+    if (platform) return true
+    return !!(c.req.header('origin') || c.req.header('sec-fetch-site') || c.req.header('sec-fetch-mode'))
+  }
+  // Tokens handed out as devTokens, so /api/auth/verify can refuse them from a browser too.
+  const devIssued = new Set<string>()
+  const rememberDev = (token: string) => {
+    devIssued.add(token)
+    if (devIssued.size > 1000) devIssued.delete(devIssued.values().next().value as string)
+    return token
+  }
   const adminToken = (options?.adminToken !== undefined ? options.adminToken : process.env.ADMIN_TOKEN) || ''
   const limit = options?.rateLimit === undefined ? { max: 5, windowMs: 15 * 60 * 1000 } : options.rateLimit
   const trustProxy = options?.trustProxy ?? process.env.TRUST_PROXY === '1'
@@ -180,7 +195,7 @@ export function createApp(sql: Sql, options?: {
   app.use('*', cors({
     origin: (process.env.CORS_ORIGIN ?? 'http://localhost:5173,http://localhost:8081').split(','),
     credentials: true,
-    allowHeaders: ['content-type', 'authorization', 'x-admin-token'],
+    allowHeaders: ['content-type', 'authorization', 'x-admin-token', 'x-divvy-platform'],
   }))
   app.onError((error, c) => {
     if (error instanceof CodeError) {
@@ -275,14 +290,15 @@ export function createApp(sql: Sql, options?: {
     const body = { email: emailFromBody(raw), next: nextFromBody(raw) }
     throttle(c, body.email, clientIp(c))
     const issued = await repo.requestMagicLink(body.email, 'login', undefined, body.next)
-    const dev = devTokenFor(body.email) && !(await repo.isSuspendedEmail(body.email))
-    return c.json({ ok: true, devToken: dev ? issued.token : undefined, devCode: dev && issued.code ? issued.code : undefined })
+    const dev = !fromBrowser(c) && devTokenFor(body.email) && !(await repo.isSuspendedEmail(body.email))
+    return c.json({ ok: true, devToken: dev ? rememberDev(issued.token) : undefined, devCode: dev && issued.code ? issued.code : undefined })
   })
 
   app.post('/api/auth/verify', async (c) => {
     const body = await c.req.json().catch(() => null) as { token?: unknown } | null
     const token = body && typeof body === 'object' ? body.token : undefined
     if (typeof token !== 'string' || !token) throw new LedgerError('BAD_TOKEN', 'That sign-in link is no longer valid')
+    if (devIssued.has(token) && fromBrowser(c)) throw new LedgerError('BAD_TOKEN', 'That sign-in link is no longer valid')
     const result = await repo.verifyMagicLink(token)
     setCookie(c, COOKIE, result.token, { httpOnly: true, sameSite: 'Lax', path: '/', maxAge: 60 * 60 * 24 * 30 })
     return c.json(result)
@@ -361,7 +377,7 @@ export function createApp(sql: Sql, options?: {
   providerSignIn('google', 'idToken')
   providerSignIn('apple', 'identityToken')
   // What the login screen should offer. `email` is the tester email path (on when any devToken can be issued).
-  app.get('/api/auth/providers', (c) => c.json({ google: !!verifiers.google, apple: !!verifiers.apple, email: dev && (!restricted || allowList.length > 0) }))
+  app.get('/api/auth/providers', (c) => c.json({ google: !!verifiers.google, apple: !!verifiers.apple, email: dev && (!restricted || allowList.length > 0) && !fromBrowser(c) }))
 
   app.post('/api/auth/logout', async (c) => {
     const token = tokenOf(c)
@@ -386,7 +402,7 @@ export function createApp(sql: Sql, options?: {
     const body = { email: emailFromBody(await readBody(c)) }
     throttle(c, body.email, clientIp(c))
     const issued = await repo.requestMagicLink(body.email, 'email_change', current.userId)
-    return c.json({ ok: true, devToken: devTokenFor(body.email) ? issued.token : undefined })
+    return c.json({ ok: true, devToken: !fromBrowser(c) && devTokenFor(body.email) ? rememberDev(issued.token) : undefined })
   })
   app.get('/api/claims', async (c) => c.json(await repo.claims(await actor(c))))
   app.post('/api/claims/:id', async (c) => {
@@ -532,9 +548,21 @@ export function createApp(sql: Sql, options?: {
     return c.json({ ok: true })
   })
 
+  // Anything else under /api is a JSON 404 in the usual error shape (never the SPA shell or plain text).
+  const apiNotFound = (c: { json: Function }) => c.json({ error: { code: 'NOT_FOUND', message: 'Not found' } }, 404)
+  app.all('/api', apiNotFound as never)
+  app.all('/api/*', apiNotFound as never)
+
   // The Expo web export (WEB_DIST): static files, then the SPA shell for any other non-/api GET.
   app.get('*', async (c, next) => {
-    const found = await web.serve(new URL(c.req.url).pathname)
+    // Judge the raw request target (the node adapter's URL parsing already collapsed /%2e%2e/ and /../).
+    const raw = (c.env as { incoming?: { url?: string } } | undefined)?.incoming?.url
+    const rawPath = typeof raw === 'string' && raw.startsWith('/') ? (raw.split(/[?#]/)[0] ?? raw) : null
+    const pathname = new URL(c.req.url).pathname
+    if (rawPath !== null && rawPath !== pathname && rawPath.split('/').some((part) => part.startsWith('.') || /^%2e/i.test(part))) {
+      return new Response('Not found', { status: 404, headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-cache' } })
+    }
+    const found = await web.serve(rawPath ?? pathname)
     if (!found) return next()
     return new Response(c.req.method === 'HEAD' ? null : found.body as unknown as ArrayBuffer, { status: found.status, headers: found.headers })
   })

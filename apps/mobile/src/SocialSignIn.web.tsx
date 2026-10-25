@@ -61,10 +61,13 @@ export function SocialSignIn({ providers, next, onSignIn, onError }: {
       if (!live || !host.current) return
       gis.accounts.id.initialize({
         client_id: WEB_CLIENT_ID,
+        // GIS has only a top-level nonce option; GIS itself builds the FedCM navigator.credentials.get call, so
+        // Chrome's "nonce should be in params" console warning comes from Google's library, not this code.
         nonce: hashed,
         ux_mode: 'popup',
         auto_select: false,
         itp_support: true,
+        // Button only (no One Tap prompt is ever shown, so use_fedcm_for_prompt is irrelevant and left unset).
         use_fedcm_for_button: true,
         callback: async (response: { credential?: string }) => {
           const { next: target, onSignIn: send, onError: report } = latest.current

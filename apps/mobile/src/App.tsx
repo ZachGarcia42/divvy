@@ -82,6 +82,7 @@ async function call<T>(token: string | null, path: string, init?: RequestInit): 
       headers: {
         ...(init?.body ? { 'content-type': 'application/json' } : {}),
         ...(token ? { authorization: `Bearer ${token}` } : {}),
+        'x-divvy-platform': Platform.OS,
         ...(init?.headers ?? {}),
       },
     })
@@ -407,7 +408,8 @@ function SignIn({ onToken, pendingInvite, onDismissInvite, linkFailure, onClearL
     cooldowns.mark(address, monotonicNow())
     setSavedEmail(address)
     AsyncStorage.setItem(LAST_EMAIL_KEY, address).catch(() => undefined)
-    if (issued.devToken) {
+    // Never on web: the server refuses browsers anyway, and the hosted app must not have a tester shortcut.
+    if (issued.devToken && Platform.OS !== 'web') {
       // Tester builds: an allowlisted email gets a devToken, so verify right away and skip Check your email.
       const session = await call<{ token: string }>(null, '/api/auth/verify', { method: 'POST', body: JSON.stringify({ token: issued.devToken }) })
       onToken(session.token)

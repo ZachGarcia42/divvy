@@ -37,7 +37,7 @@ describe('web app static serving', () => {
     expect(csp).toContain('frame-src https://accounts.google.com/gsi/')
     expect(csp).toContain("connect-src 'self' https://accounts.google.com/gsi/")
     expect(csp).toContain("style-src 'self' 'unsafe-inline'")
-    expect(csp).toContain("img-src 'self' data: https:")
+    expect(csp).toContain("img-src 'self' data: https://lh3.googleusercontent.com;")
     expect(csp).toContain("frame-ancestors 'none'")
     expect(csp).not.toContain('unsafe-eval')
     expect(res.headers.get('referrer-policy')).toBe('strict-origin-when-cross-origin')
@@ -100,5 +100,72 @@ describe('web app static serving', () => {
     const app = await setup(null)
     expect((await app.request('/')).status).toBe(404)
     expect(await (await app.request(`/invite/${T}`)).text()).not.toContain('/app/invite/')
+  })
+})
+
+describe('web hardening (QA bcde11a)', () => {
+  it('404s dotfiles, traversal (raw and encoded) and odd paths instead of the SPA shell', async () => {
+    const dir = dist()
+    writeFileSync(join(dir, '.env'), 'SECRET=x')
+    const { createWebDist } = await import('./web.ts')
+    const web = createWebDist(dir)
+    for (const path of ['/.env', '/.git/config', '/app/.hidden', '/../etc/passwd', '/%2e%2e/%2e%2e/etc/passwd', '/%2E%2E/secret-divvy-web.txt', '/..%2fsecret-divvy-web.txt', '/a%20b', '/app//x', '/~root']) {
+      const found = await web.serve(path)
+      expect(found?.status, path).toBe(404)
+    }
+    for (const path of ['/', '/app', '/app/groups/abc-123', '/invite/Ab_12']) expect((await web.serve(path))?.status, path).toBe(200)
+    const app = await setup(dir)
+    expect((await app.request('/.env')).status).toBe(404)
+    // As served by @hono/node-server: the raw target arrives in env.incoming.url while c.req.url is normalized.
+    for (const raw of ['/%2e%2e/%2e%2e/etc/passwd', '/../etc/passwd', '/app/../.env']) {
+      expect((await app.request(raw, {}, { incoming: { url: raw } })).status, raw).toBe(404)
+    }
+    expect((await app.request('/app/groups/x', {}, { incoming: { url: '/app/groups/x?a=1' } })).status).toBe(200)
+  })
+  it('answers /api, /api/ and unknown /api/* with a JSON 404', async () => {
+    const app = await setup()
+    for (const path of ['/api', '/api/', '/api/nope', '/api/nope/deeper']) {
+      for (const method of ['GET', 'POST']) {
+        const res = await app.request(path, { method })
+        expect(res.status, `${method} ${path}`).toBe(404)
+        expect(res.headers.get('content-type')).toContain('application/json')
+        expect(await res.json()).toEqual({ error: { code: 'NOT_FOUND', message: 'Not found' } })
+      }
+    }
+    expect((await app.request('/api/health')).status).toBe(200)
+  })
+  it('narrows img-src to self, data: and the Google avatar host', () => {
+    expect(APP_CSP).toContain("img-src 'self' data: https://lh3.googleusercontent.com;")
+    expect(APP_CSP).not.toMatch(/img-src[^;]*https:(?!\/\/lh3)/)
+  })
+})
+
+describe('dev tester sign-in is native-only', () => {
+  const post = (app: Awaited<ReturnType<typeof setup>>, path: string, body: unknown, headers: Record<string, string> = {}) =>
+    app.request(path, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) })
+  const make = async () => createApp(await createMemorySql(), { dev: true, rateFor: async () => '1', devSigninEmails: 'tester@example.com', rateLimit: false }).app
+  it('never issues a devToken to a browser or web platform request', async () => {
+    const app = await make()
+    for (const headers of [{ 'x-divvy-platform': 'web' }, { origin: 'https://divvy.mooo.com' }, { 'sec-fetch-site': 'same-origin' }, { 'x-divvy-platform': 'bogus' }] as Record<string, string>[]) {
+      const body = await (await post(app, '/api/auth/magic-link', { email: 'tester@example.com' }, headers)).json() as { devToken?: string }
+      expect(body.devToken, JSON.stringify(headers)).toBeUndefined()
+    }
+    const providers = await (await app.request('/api/auth/providers', { headers: { 'x-divvy-platform': 'web' } })).json() as { email: boolean }
+    expect(providers.email).toBe(false)
+  })
+  it('still issues and verifies for ios/android (and legacy native with no headers)', async () => {
+    const app = await make()
+    for (const headers of [{ 'x-divvy-platform': 'ios' }, { 'x-divvy-platform': 'android' }, {}] as Record<string, string>[]) {
+      const issued = await (await post(app, '/api/auth/magic-link', { email: 'tester@example.com' }, headers)).json() as { devToken?: string }
+      expect(issued.devToken).toBeTruthy()
+      expect((await post(app, '/api/auth/verify', { token: issued.devToken }, headers)).status).toBe(200)
+    }
+    expect(((await (await app.request('/api/auth/providers', { headers: { 'x-divvy-platform': 'ios' } })).json()) as { email: boolean }).email).toBe(true)
+  })
+  it('refuses a dev-issued token presented from a browser', async () => {
+    const app = await make()
+    const issued = await (await post(app, '/api/auth/magic-link', { email: 'tester@example.com' }, { 'x-divvy-platform': 'android' })).json() as { devToken: string }
+    expect((await post(app, '/api/auth/verify', { token: issued.devToken }, { 'x-divvy-platform': 'web' })).status).toBe(401)
+    expect((await post(app, '/api/auth/verify', { token: issued.devToken }, { origin: 'https://divvy.mooo.com' })).status).toBe(401)
   })
 })
