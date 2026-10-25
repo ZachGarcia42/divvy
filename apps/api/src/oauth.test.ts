@@ -236,4 +236,19 @@ describe('Sign in with Google / Apple', () => {
       if (saved !== undefined) process.env.APPLE_CLIENT_IDS = saved
     }
   })
+
+  it('trusts X-Forwarded-For only from a loopback hop when TRUST_PROXY is unset', async () => {
+    const { app } = await setup({ rateLimit: { max: 1, windowMs: 60_000 }, trustProxy: false })
+    const idToken = await google('g-lb', 'lb@gmail.com')
+    const from = (remoteAddress: string, xff: string) => app.request('/api/auth/google', {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-forwarded-for': xff }, body: JSON.stringify({ idToken }),
+    }, { incoming: { socket: { remoteAddress } } })
+    // Behind Caddy (127.0.0.1): each forwarded client gets its own bucket.
+    for (let i = 0; i < 4; i++) expect((await from('127.0.0.1', '203.0.113.5')).status).toBe(200)
+    expect((await from('127.0.0.1', '203.0.113.5')).status).toBe(429)
+    expect((await from('::ffff:127.0.0.1', 'spoof, 203.0.113.6')).status).toBe(200)
+    // A direct (non-loopback) caller can't dodge its bucket by spoofing the header.
+    for (let i = 0; i < 4; i++) expect((await from('198.51.100.9', `10.0.0.${i}`)).status).toBe(200)
+    expect((await from('198.51.100.9', '10.0.0.99')).status).toBe(429)
+  })
 })

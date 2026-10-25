@@ -60,6 +60,9 @@ ${href ? `<a class="button" href="${href}">Open in Divvy</a>` : '<p>Ask for a ne
 </body></html>`
 }
 
+export const isLoopback = (ip: string | null) =>
+  !!ip && (ip === '::1' || ip.startsWith('127.') || ip.startsWith('::ffff:127.'))
+
 export function createApp(sql: Sql, options?: {
   now?: () => Date
   rateFor?: (from: string, to: string, date: string) => Promise<string>
@@ -108,13 +111,15 @@ export function createApp(sql: Sql, options?: {
   const clock = () => (options?.now ?? (() => new Date()))().getTime()
   const hits = new Map<string, number[]>()
   const clientIp = (c: { req: { header: (name: string) => string | undefined }; env?: unknown }) => {
-    if (trustProxy) {
+    const env = c.env as { incoming?: { socket?: { remoteAddress?: string } } } | undefined
+    const remote = env?.incoming?.socket?.remoteAddress ?? null
+    // Trust X-Forwarded-For when TRUST_PROXY=1, or when the hop is loopback (Caddy on the same machine).
+    if (trustProxy || isLoopback(remote)) {
       // The last entry is the one our own proxy appended; earlier entries are client-controlled.
       const forwarded = c.req.header('x-forwarded-for')?.split(',').at(-1)?.trim()
       if (forwarded) return forwarded
     }
-    const env = c.env as { incoming?: { socket?: { remoteAddress?: string } } } | undefined
-    return env?.incoming?.socket?.remoteAddress ?? null
+    return remote
   }
   /**
    * Throws RATE_LIMITED (429) if this email or IP already used its quota in the window; otherwise records the hit.
