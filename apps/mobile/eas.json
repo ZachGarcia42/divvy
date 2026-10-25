@@ -1,20 +1,37 @@
 {
-  "cli": { "version": ">= 16.0.0", "appVersionSource": "remote" },
+  "cli": {
+    "version": ">= 16.0.0",
+    "appVersionSource": "remote"
+  },
   "build": {
     "development": {
       "developmentClient": true,
       "distribution": "internal",
-      "env": { "EXPO_PUBLIC_API_URL": "https://divvy.mooo.com" }
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://divvy.mooo.com"
+      }
     },
     "preview": {
       "distribution": "internal",
-      "android": { "buildType": "apk" },
-      "env": { "EXPO_PUBLIC_API_URL": "https://divvy.mooo.com" }
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://divvy.mooo.com",
+        "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID": "597758345543-juuqoo27cqi9t58cnhupi6h2jej8hu3o.apps.googleusercontent.com",
+        "EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID": "597758345543-p0up3ub89kntintmefi4mjjr25kfc3bi.apps.googleusercontent.com"
+      }
     },
     "production": {
       "autoIncrement": true,
-      "env": { "EXPO_PUBLIC_API_URL": "https://divvy.mooo.com" }
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://divvy.mooo.com",
+        "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID": "597758345543-juuqoo27cqi9t58cnhupi6h2jej8hu3o.apps.googleusercontent.com",
+        "EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID": "597758345543-p0up3ub89kntintmefi4mjjr25kfc3bi.apps.googleusercontent.com"
+      }
     }
   },
-  "submit": { "production": {} }
+  "submit": {
+    "production": {}
+  }
 }
