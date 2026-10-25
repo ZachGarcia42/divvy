@@ -16,6 +16,12 @@
     },
     "plugins": [
       "expo-secure-store"
-    ]
+    ],
+    "owner": "divvy-zag",
+    "extra": {
+      "eas": {
+        "projectId": "3568ac6b-d831-42df-bcb3-3056c17a6f37"
+      }
+    }
   }
 }
