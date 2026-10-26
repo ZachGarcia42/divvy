@@ -1197,4 +1197,14 @@ describe('ledger API', () => {
     const html = await res.text()
     for (const text of ['Privacy policy', 'October 26, 2026', 'mailto:octovalve42@gmail.com', 'no in-app payments', 'HTTPS', '#0f766e']) expect(html).toContain(text)
   })
+
+  it('serves the delete-account page and links it from /privacy', async () => {
+    const { app } = createApp(await createMemorySql(), { dev: true, rateFor: async () => '1' })
+    const res = await app.request('/delete-account')
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toMatch(/text\/html/)
+    const html = await res.text()
+    for (const text of ['Delete your Divvy account', 'octovalve42@gmail.com', 'Delete my Divvy account', 'subject=Delete%20my%20Divvy%20account', 'within 30 days'.replace('w', 'W'), 'anonymized', '#0f766e']) expect(html).toContain(text)
+    expect(await (await app.request('/privacy')).text()).toContain('href="/delete-account"')
+  })
 })

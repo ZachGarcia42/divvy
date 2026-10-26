@@ -71,7 +71,29 @@ export function privacyPage() {
 <h2>Storage and security</h2>
 <p>Your data is kept on our server and is always sent over HTTPS.</p>
 <h2>Deleting your data</h2>
-<p>To have your account and data deleted, email <a href="mailto:${PRIVACY_CONTACT}">${PRIVACY_CONTACT}</a>.</p>
+<p>To have your account and data deleted, email <a href="mailto:${PRIVACY_CONTACT}">${PRIVACY_CONTACT}</a>. See <a href="/delete-account">how to delete your Divvy account</a>.</p>
+</div>
+</body></html>`
+}
+
+/** How to delete an account (Google Play "Delete account URL"). */
+export function deleteAccountPage() {
+  const subject = 'Delete my Divvy account'
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Delete your Divvy account</title>
+<style>${LANDING_CSS}.policy{text-align:left}.policy h2{font-size:1.1rem;margin:1.5rem 0 .4rem}.policy p,.policy li{color:#33433b;line-height:1.5}a{color:#0f766e}</style>
+</head><body>
+<div class="brand">Divvy</div>
+<h1>Delete your Divvy account</h1>
+<div class="policy">
+<h2>How to ask</h2>
+<p>Email <a href="mailto:${PRIVACY_CONTACT}?subject=${encodeURIComponent(subject)}">${PRIVACY_CONTACT}</a> from the email address you signed in to Divvy with, using the subject <strong>“${subject}”</strong>.</p>
+<h2>What we delete</h2>
+<p>Within 30 days we delete your account, your sign-in identities (Google or Apple) and your personal data, including your name and email address.</p>
+<h2>What may be kept</h2>
+<p>Expenses and settlements you shared with other people in a group may be kept so their balances stay correct, but they are anonymized and no longer linked to you.</p>
+<p>See also our <a href="/privacy">privacy policy</a>.</p>
 </div>
 </body></html>`
 }
@@ -273,6 +295,7 @@ export function createApp(sql: Sql, options?: {
   const web = createWebDist(options?.webDist !== undefined ? options.webDist : process.env.WEB_DIST)
   // Landing pages for links in emails and shares (WEB_ORIGIN may be this API). Each opens the app.
   app.get('/privacy', (c) => c.html(privacyPage()))
+  app.get('/delete-account', (c) => c.html(deleteAccountPage()))
   app.get('/login', (c) => {
     const token = c.req.query('token')
     if (!isLinkToken(token)) return c.html(linkPage('That sign-in link isn’t valid', null), 400)
