@@ -44,3 +44,26 @@ export function joinedFeedback(groupName: string, alreadyMember: boolean) {
     ? { toast: `You’re already in ${groupName}.`, banner: null }
     : { toast: `You’re in ${groupName}`, banner: `You’re in ${groupName}` }
 }
+
+type MouseLike = { preventDefault(): void; currentTarget: { select?: () => void; ownerDocument?: { activeElement?: unknown } | null } }
+
+/**
+ * Web only: make the click that focuses a field select all of it. Browsers clear the select-on-focus
+ * selection on mouseup, so we note a mousedown on an unfocused field and, on that first mouseup,
+ * cancel the default and select all. Later clicks (field already focused) place the cursor normally.
+ */
+export function selectAllOnFirstClick() {
+  let pending = false
+  return {
+    onMouseDown: (event: MouseLike) => {
+      const el = event.currentTarget
+      pending = el.ownerDocument?.activeElement !== el
+    },
+    onMouseUp: (event: MouseLike) => {
+      if (!pending) return
+      pending = false
+      event.preventDefault()
+      event.currentTarget.select?.()
+    },
+  }
+}

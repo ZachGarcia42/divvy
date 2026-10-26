@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { joinedFeedback, liveShareGap, middleEllipsis, parseShare, pickGroup } from './composer'
+import { joinedFeedback, liveShareGap, middleEllipsis, parseShare, pickGroup, selectAllOnFirstClick } from './composer'
 
 describe('composer live share gap', () => {
   const ids = ['a', 'b', 'c']
@@ -43,5 +43,30 @@ describe('joining a group', () => {
   it('shows a lasting "You’re in" banner to a new member only', () => {
     expect(joinedFeedback('Ski trip', false)).toEqual({ toast: 'You’re in Ski trip', banner: 'You’re in Ski trip' })
     expect(joinedFeedback('Ski trip', true)).toEqual({ toast: 'You’re already in Ski trip.', banner: null })
+  })
+})
+
+describe('select all on first click (web)', () => {
+  const field = () => {
+    const doc: { activeElement?: unknown } = {}
+    const el = { ownerDocument: doc, selected: 0, select() { this.selected++ } }
+    const ev = () => { const e = { prevented: false, currentTarget: el, preventDefault() { e.prevented = true } }; return e }
+    return { doc, el, ev }
+  }
+  it('selects all on the click that focuses the field, then lets later clicks place the cursor', () => {
+    const { doc, el, ev } = field()
+    const h = selectAllOnFirstClick()
+    h.onMouseDown(ev()); doc.activeElement = el
+    const up = ev(); h.onMouseUp(up)
+    expect(up.prevented).toBe(true); expect(el.selected).toBe(1)
+    h.onMouseDown(ev()); const up2 = ev(); h.onMouseUp(up2)
+    expect(up2.prevented).toBe(false); expect(el.selected).toBe(1)
+  })
+  it('leaves clicks alone after keyboard focus', () => {
+    const { doc, el, ev } = field()
+    const h = selectAllOnFirstClick()
+    doc.activeElement = el
+    h.onMouseDown(ev()); const up = ev(); h.onMouseUp(up)
+    expect(up.prevented).toBe(false); expect(el.selected).toBe(0)
   })
 })

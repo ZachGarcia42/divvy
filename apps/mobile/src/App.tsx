@@ -1,5 +1,5 @@
 import { computeShares, exponentOf, formatMoney, parseMajor, shareGapMessage, splitPhrase } from '@divvy/domain'
-import { joinedFeedback, liveShareGap, middleEllipsis, parseShare, pickGroup } from './flows/composer'
+import { joinedFeedback, liveShareGap, middleEllipsis, parseShare, pickGroup, selectAllOnFirstClick } from './flows/composer'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import * as SecureStore from 'expo-secure-store'
 import { useEffect, useRef, useState } from 'react'
@@ -592,6 +592,8 @@ function Ledger({
   const [shares, setShares] = useState<Record<string, string>>({})
   const [sharesTouched, setSharesTouched] = useState(false)
   const shareButton = useRef<View>(null)
+  // Web: per-field handlers so the click that focuses a share field selects all of it (see flows/composer).
+  const shareClickSelect = useRef<Record<string, ReturnType<typeof selectAllOnFirstClick>>>({})
   const refocusShare = () => {
     const doc = (globalThis as unknown as { document?: { getElementById(id: string): { focus?: () => void } | null } }).document
     const el = doc?.getElementById('share-group-link') ?? (shareButton.current as unknown as { focus?: () => void } | null)
@@ -1011,6 +1013,7 @@ function Ledger({
                     placeholderTextColor="#8aa099"
                     style={styles.shareInput}
                     selectTextOnFocus
+                    {...(Platform.OS === 'web' ? (shareClickSelect.current[member.id] ??= selectAllOnFirstClick()) as object : {})}
                   />
                 </View>
               ))}
