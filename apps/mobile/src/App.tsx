@@ -1010,6 +1010,7 @@ function Ledger({
                     placeholder="0.00"
                     placeholderTextColor="#8aa099"
                     style={styles.shareInput}
+                    selectTextOnFocus
                   />
                 </View>
               ))}

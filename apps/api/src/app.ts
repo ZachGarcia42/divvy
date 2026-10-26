@@ -48,6 +48,34 @@ export const bdi = (value: string) => `<bdi>${escapeHtml(stripBidi(value))}</bdi
 /** Phones and tablets only: desktop browsers can't open divvy:// (Chrome shows an "Open xdg-open?" dialog). */
 export const isMobileUserAgent = (ua: string | undefined) => !!ua && /Android|iPhone|iPad|iPod|Mobile/i.test(ua)
 
+/** Shared look for the server-rendered pages (link landing pages, privacy policy). */
+const LANDING_CSS = `html{background:#f6f7f4}body{font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;max-width:30rem;margin:0 auto;padding:4rem 1.5rem;text-align:center;color:#14221c;background:#f6f7f4}.brand{font-size:2.2rem;font-weight:800;margin:0 0 1.5rem}h1{font-size:1.5rem;font-weight:800}.actions{display:flex;flex-direction:column;gap:.75rem;margin:1.5rem auto;max-width:20rem}a.button{display:block;box-sizing:border-box;width:100%;padding:.8rem 1.4rem;border-radius:999px;background:#0f766e;color:#fff;text-decoration:none;font-weight:700;border:1px solid #0f766e}a.button:hover{background:#0b5e58}a.button.secondary{background:#f3faf7;color:#0f766e;border:1px solid #cfe3db}a.button.secondary:hover{background:#e6f4ef}a.button:focus-visible{outline:3px solid #99d5c9;outline-offset:2px}p{color:#5d6b63}`
+
+/** Plain privacy policy (linked from Google Play). */
+export const PRIVACY_CONTACT = 'octovalve42@gmail.com'
+export function privacyPage() {
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Divvy privacy policy</title>
+<style>${LANDING_CSS}.policy{text-align:left}.policy h2{font-size:1.1rem;margin:1.5rem 0 .4rem}.policy p,.policy li{color:#33433b;line-height:1.5}a{color:#0f766e}</style>
+</head><body>
+<div class="brand">Divvy</div>
+<h1>Privacy policy</h1>
+<p>Last updated: October 26, 2026</p>
+<div class="policy">
+<h2>What we collect</h2>
+<ul><li>Your name and email address, from Sign in with Google or Sign in with Apple.</li>
+<li>The groups, expenses and settlements you and your friends enter in Divvy.</li></ul>
+<h2>How we use it</h2>
+<p>Only to run the app: to sign you in and to show and split shared expenses with the people in your groups. We don’t show ads, we don’t sell your data, and we don’t share it with third parties. Divvy has no in-app payments.</p>
+<h2>Storage and security</h2>
+<p>Your data is kept on our server and is always sent over HTTPS.</p>
+<h2>Deleting your data</h2>
+<p>To have your account and data deleted, email <a href="mailto:${PRIVACY_CONTACT}">${PRIVACY_CONTACT}</a>.</p>
+</div>
+</body></html>`
+}
+
 export function linkPage(title: string, deepLink: string | null, headingHtml?: string, webLink?: string | null, autoOpen = false) {
   const t = escapeHtml(title)
   const href = deepLink ? escapeHtml(deepLink) : null
@@ -56,7 +84,7 @@ export function linkPage(title: string, deepLink: string | null, headingHtml?: s
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="referrer" content="no-referrer"><meta name="robots" content="noindex">
 <title>${t}</title>
-<style>html{background:#f6f7f4}body{font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;max-width:30rem;margin:0 auto;padding:4rem 1.5rem;text-align:center;color:#14221c;background:#f6f7f4}.brand{font-size:2.2rem;font-weight:800;margin:0 0 1.5rem}h1{font-size:1.5rem;font-weight:800}.actions{display:flex;flex-direction:column;gap:.75rem;margin:1.5rem auto;max-width:20rem}a.button{display:block;box-sizing:border-box;width:100%;padding:.8rem 1.4rem;border-radius:999px;background:#0f766e;color:#fff;text-decoration:none;font-weight:700;border:1px solid #0f766e}a.button:hover{background:#0b5e58}a.button.secondary{background:#f3faf7;color:#0f766e;border:1px solid #cfe3db}a.button.secondary:hover{background:#e6f4ef}a.button:focus-visible{outline:3px solid #99d5c9;outline-offset:2px}p{color:#5d6b63}</style>
+<style>${LANDING_CSS}</style>
 ${href && autoOpen ? `<meta http-equiv="refresh" content="0;url=${href}">` : ''}
 </head><body>
 <div class="brand">Divvy</div>
@@ -244,6 +272,7 @@ export function createApp(sql: Sql, options?: {
 
   const web = createWebDist(options?.webDist !== undefined ? options.webDist : process.env.WEB_DIST)
   // Landing pages for links in emails and shares (WEB_ORIGIN may be this API). Each opens the app.
+  app.get('/privacy', (c) => c.html(privacyPage()))
   app.get('/login', (c) => {
     const token = c.req.query('token')
     if (!isLinkToken(token)) return c.html(linkPage('That sign-in link isn’t valid', null), 400)

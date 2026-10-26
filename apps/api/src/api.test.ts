@@ -1188,4 +1188,13 @@ describe('ledger API', () => {
     expect(long.status).toBe(400)
     expect(JSON.stringify(await long.json())).toContain('description of 80 characters')
   })
+
+  it('serves the privacy policy page', async () => {
+    const { app } = createApp(await createMemorySql(), { dev: true, rateFor: async () => '1' })
+    const res = await app.request('/privacy')
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toMatch(/text\/html/)
+    const html = await res.text()
+    for (const text of ['Privacy policy', 'October 26, 2026', 'mailto:octovalve42@gmail.com', 'no in-app payments', 'HTTPS', '#0f766e']) expect(html).toContain(text)
+  })
 })
