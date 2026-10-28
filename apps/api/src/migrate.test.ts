@@ -131,8 +131,8 @@ describe('migration to split storage (design v2)', () => {
       const sql = wrap(db)
       await migrateSplitStorage(sql)
       const { app } = createApp(sql, { now: () => new Date('2026-10-27T15:00:00Z'), dev: true, rateFor: async () => '1' })
-      const started = await (await app.request('/api/auth/magic-link', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'alex@example.com' }) })).json() as { devToken: string }
-      const verified = await (await app.request('/api/auth/verify', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ token: started.devToken }) })).json() as { token: string }
+      const started = await (await app.request('/api/auth/magic-link', { method: 'POST', headers: { 'content-type': 'application/json', 'x-divvy-platform': 'ios' }, body: JSON.stringify({ email: 'alex@example.com' }) })).json() as { devToken: string }
+      const verified = await (await app.request('/api/auth/verify', { method: 'POST', headers: { 'content-type': 'application/json', 'x-divvy-platform': 'ios' }, body: JSON.stringify({ token: started.devToken }) })).json() as { token: string }
       const headers = { authorization: `Bearer ${verified.token}`, 'content-type': 'application/json' }
       const detail = await (await app.request('/api/groups/g1/expenses/equal3', { headers })).json() as { expense: { splitMethod: string; version: number; shares: { minor: number }[] }; history: { kind: string }[] }
       expect(detail.expense.splitMethod).toBe('equal')
