@@ -6,6 +6,7 @@
 // `animationType="slide"` Modal slides everything, scrim included, which shows as a dark band above the panel).
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Animated, Dimensions, Easing, KeyboardAvoidingView, Modal, PanResponder, Platform, Pressable, StyleSheet, View, type StyleProp, type ViewStyle } from 'react-native'
+import { basePaddingBottom, useBottomInset } from './insets'
 import { dragOffset, dragOutcome, type SheetSnap } from './flows/sheet'
 
 const web = Platform.OS === 'web'
@@ -21,6 +22,7 @@ export function BottomSheet({ onClose, panelStyle, pillColor, resizable = false,
   const live = useRef({ snap, onClose })
   live.current = { snap, onClose }
   const native = !web
+  const inset = useBottomInset()
 
   useEffect(() => {
     const run = Animated.parallel([
@@ -55,13 +57,13 @@ export function BottomSheet({ onClose, panelStyle, pillColor, resizable = false,
   }), [resizable, fixedHeight, drag, native])
 
   return (
-    <Modal transparent animationType="none" visible onRequestClose={onClose}>
+    <Modal transparent animationType="none" visible onRequestClose={onClose} statusBarTranslucent navigationBarTranslucent>
       <View style={styles.root}>
         <Animated.View style={[StyleSheet.absoluteFill, styles.scrim, { opacity: fade }]} pointerEvents="none" />
         <Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityRole="button" accessibilityLabel="Close" tabIndex={-1} />
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.wrap} pointerEvents="box-none">
           <Animated.View
-            style={[panelStyle, !fixedHeight && snap === 'tall' && styles.tall, { transform: [{ translateY: Animated.add(enter, drag) }] }]}
+            style={[panelStyle, !fixedHeight && snap === 'tall' && styles.tall, inset ? { paddingBottom: basePaddingBottom(panelStyle) + inset } : null, { transform: [{ translateY: Animated.add(enter, drag) }] }]}
             testID={testID}
           >
             <View

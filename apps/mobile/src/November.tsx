@@ -1,7 +1,9 @@
 // November screens: check your email, expired link, name sheet / first-run prompt, join card, toast.
 // All decisions live in ./flows so they can be unit-tested; these components only render them.
 import { useEffect, useRef, useState } from 'react'
-import { AccessibilityInfo, ActivityIndicator, Modal, Platform, Pressable, SafeAreaView, StyleSheet, Text, TextInput, View } from 'react-native'
+import { AccessibilityInfo, ActivityIndicator, Modal, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native'
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
+import { useBottomInset } from './insets'
 import { DEAD_TITLE, deadCopy, type JoinView } from './flows/join'
 import { checkName, saveNameError } from './flows/names'
 import { cooldownAnnouncement, resendButton, sendErrorMessage } from './flows/signin'
@@ -159,7 +161,7 @@ export function CheckEmail({ email, pendingInvite, lastSentAt, now: clock, onRes
     }
   }, [left])
   return (
-    <SafeAreaView style={s.screen}>
+    <SafeAreaView style={s.screen} edges={['top', 'left', 'right', 'bottom']}>
       <View style={s.center} testID="check-email">
         <View style={s.badge}><Glyph text="✉" style={s.badgeText} /></View>
         <Text style={s.title} accessibilityRole="header">Check your email</Text>
@@ -196,7 +198,7 @@ export function ExpiredLink({ hasEmail, onSendNew, onBack }: { hasEmail: boolean
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   return (
-    <SafeAreaView style={s.screen}>
+    <SafeAreaView style={s.screen} edges={['top', 'left', 'right', 'bottom']}>
       <View style={s.center} testID="expired-link">
         <View style={[s.badge, s.badgeRed]}><Glyph text="!" style={[s.badgeText, { color: C.red }]} /></View>
         <Text style={s.title} accessibilityRole="header">That link has expired</Text>
@@ -267,10 +269,11 @@ export function NameSheet({ initial, onSave, onSaved, onClose }: {
   initial: string; onSave: (name: string) => Promise<void>; onSaved: (name: string) => void; onClose: () => void
 }) {
   const form = useNameForm(initial, onSave, onSaved)
+  const inset = useBottomInset()
   return (
-    <Modal transparent animationType="slide" onRequestClose={onClose} visible>
+    <Modal transparent animationType="slide" onRequestClose={onClose} visible statusBarTranslucent navigationBarTranslucent>
       <Pressable style={s.scrim} onPress={onClose} accessibilityRole="button" accessibilityLabel="Close without saving" />
-      <View style={[s.sheet, Platform.OS === 'web' && s.sheetWeb]} testID="name-sheet">
+      <View style={[s.sheet, Platform.OS === 'web' && s.sheetWeb, { paddingBottom: 32 + inset }]} testID="name-sheet">
         <View style={s.grabber} accessible={false} importantForAccessibility="no" />
         <Text style={s.sheetTitle} accessibilityRole="header">Your name</Text>
         <Text style={s.muted}>Friends see this in every group.</Text>
@@ -287,7 +290,7 @@ export function NameSheet({ initial, onSave, onSaved, onClose }: {
 export function NamePrompt({ current, onSave, onDone }: { current: string; onSave: (name: string) => Promise<void>; onDone: (name: string | null) => void }) {
   const form = useNameForm(current, onSave, (name) => onDone(name))
   return (
-    <SafeAreaView style={s.screen}>
+    <SafeAreaView style={s.screen} edges={['top', 'left', 'right', 'bottom']}>
       <View style={s.top} testID="name-firstrun">
         <Text style={s.wordmark}>Divvy</Text>
         <Text style={s.title} accessibilityRole="header">What should friends call you?</Text>
@@ -356,7 +359,8 @@ export function Toast({ text }: { text: string | null }) {
 
 function ToastBody({ text }: { text: string }) {
   useAnnounce(text)
-  return <View style={s.toast} testID="toast" pointerEvents="none"><Text style={s.toastText} accessibilityLiveRegion="polite">{text}</Text></View>
+  const insets = useSafeAreaInsets()
+  return <View style={[s.toast, { bottom: 24 + insets.bottom }]} testID="toast" pointerEvents="none"><Text style={s.toastText} accessibilityLiveRegion="polite">{text}</Text></View>
 }
 
 const s = StyleSheet.create({

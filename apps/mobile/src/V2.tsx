@@ -8,7 +8,9 @@ import {
   breakdown, groupByDate, historyLines, methodPhrase, monthDay, netTone, NET_WORDS, overallUsd, paidPhrase, peopleCount,
   signedMoney, groupIcon, PICKER_EMOJIS, DEFAULT_EMOJI, updatedPhrase, yourPosition, type HistoryEntry,
 } from './flows/view'
+import { amountWidth } from './flows/amount'
 import { middleEllipsis } from './flows/composer'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { SelectInput } from './SelectInput'
 import { BottomSheet } from './BottomSheet'
 import { DateChip } from './DatePicker'
@@ -68,7 +70,8 @@ export function TabBar({ tab, onTab }: { tab: Tab; onTab: (tab: Tab) => void }) 
       <Text style={[k.tabLabel, tab === id && k.tabOn]}>{label}</Text>
     </Pressable>
   )
-  return <View style={k.tabBar}>{item('groups', '◫', 'Groups')}{item('account', '☺', 'Account')}</View>
+  const insets = useSafeAreaInsets()
+  return <View style={[k.tabBar, { paddingBottom: Math.max(14, insets.bottom + 4) }]}>{item('groups', '◫', 'Groups')}{item('account', '☺', 'Account')}</View>
 }
 
 function Eyebrow({ children }: { children: ReactNode }) { return <Text style={k.eye}>{children}</Text> }
@@ -399,7 +402,7 @@ export function AddSheet({ members, youId, currency, groupName, initial, onClose
           </View>, body: <ScrollView key="body" style={ord(0)} keyboardShouldPersistTaps="handled" contentContainerStyle={{ paddingBottom: 12 }}>
             <View style={k.bigRow}>
               <Text style={k.bigC}>{symbolOf(currency)}</Text>
-              <TextInput testID="expense-amount" autoFocus value={amountText} onChangeText={(text) => { setError(null); setAmount(text) }} placeholder="0.00" placeholderTextColor="#ffffff40" keyboardType="decimal-pad" inputMode="decimal" style={[k.big, noOutline]} accessibilityLabel="Amount" />
+              <TextInput testID="expense-amount" autoFocus value={amountText} onChangeText={(text) => { setError(null); setAmount(text) }} placeholder="0.00" placeholderTextColor="#ffffff40" keyboardType="decimal-pad" inputMode="decimal" style={[k.big, noOutline, { width: amountWidth(amountText, '0.00', 54) }]} accessibilityLabel="Amount" />
             </View>
             <TextInput testID="expense-description" value={description} onChangeText={setDescription} maxLength={80} placeholder="What was it for?" placeholderTextColor="#ffffff59" style={[k.desc, noOutline]} accessibilityLabel="Description" />
             <View style={k.pick}>
@@ -633,8 +636,8 @@ export function SettleScreen({ detail, busyKey, onBack, onRecord, onUndo }: {
   // Shown as currency at rest (48,862.24); the plain digits only while it is being edited.
   const heroPlain = amountText ?? majorStringLocal(current?.minor ?? 0, detail.currency)
   const heroText = heroFocused || (amountText !== null && amountError !== null) ? heroPlain : amountText === null ? groupedMajor(current?.minor ?? 0, detail.currency) : groupedMajor(minor, detail.currency)
-  // On web an <input> is ~20 characters wide by default, which pushed the $ out of the card; size it to what it shows.
-  const heroWidth = [...heroText].reduce((w, ch) => w + (/\d/.test(ch) ? 25 : 12), 14)
+  // Sized to what it shows: an <input> is ~20 characters wide by default (pushed the $ out of the card) and a stretched Android field strands the caret.
+  const heroWidth = amountWidth(heroText, '0.00', 44)
   const busy = busyKey !== null
   const label = (s: Settlement) => `${s.fromId === detail.yourParticipantId ? 'You' : s.fromName} paid ${s.toId === detail.yourParticipantId ? 'You' : s.toName}`
   return (
@@ -654,7 +657,7 @@ export function SettleScreen({ detail, busyKey, onBack, onRecord, onUndo }: {
           <Text style={k.t}>{name(current.fromId)} {current.fromId === detail.yourParticipantId ? 'pay' : 'paid'} {name(current.toId)}</Text>
           <View style={k.settleAmtRow}>
             <Text style={k.settleC}>{symbolOf(detail.currency)}</Text>
-            <SelectInput testID="settle-amount" value={heroText} onChangeText={setAmountText} onFocus={() => setHeroFocused(true)} onBlur={() => setHeroFocused(false)} keyboardType="decimal-pad" inputMode="decimal" style={[k.settleAmt, noOutline, web ? { width: heroWidth } : null]} accessibilityLabel="Amount to record" />
+            <SelectInput testID="settle-amount" value={heroText} onChangeText={setAmountText} onFocus={() => setHeroFocused(true)} onBlur={() => setHeroFocused(false)} keyboardType="decimal-pad" inputMode="decimal" style={[k.settleAmt, noOutline, { width: heroWidth }]} accessibilityLabel="Amount to record" />
           </View>
           <Text style={k.m}>{amountText === null ? 'Full balance · tap to change' : amountError ?? 'Part payment'}</Text>
         </View>
@@ -819,7 +822,7 @@ const k = StyleSheet.create({
   inkSaveOff: { color: '#ffffff40' },
   bigRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginTop: 8 },
   bigC: { color: '#7fa597', fontSize: 34, fontWeight: '900', position: 'absolute', left: 22 },
-  big: { color: 'white', fontSize: 54, fontWeight: '900', letterSpacing: -2, flex: 1, minWidth: 0, textAlign: 'center', padding: 0, paddingHorizontal: 44 },
+  big: { color: 'white', fontSize: 54, fontWeight: '900', letterSpacing: -2, flexShrink: 1, minWidth: 0, marginHorizontal: 44, textAlign: 'center', padding: 0 },
   desc: { marginHorizontal: 18, marginTop: 6, textAlign: 'center', fontSize: 17, fontWeight: '700', color: '#e6efe9', borderBottomWidth: 1, borderBottomColor: '#ffffff26', paddingTop: 8, paddingBottom: 12 },
   pick: { flexDirection: 'row', gap: 8, paddingHorizontal: 18, paddingTop: 12, paddingBottom: 4, justifyContent: 'center', flexWrap: 'wrap' },
   payerList: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingHorizontal: 18, paddingTop: 4, justifyContent: 'center' },
@@ -886,7 +889,7 @@ const k = StyleSheet.create({
   pairArrow: { fontSize: 22, color: T.hint, fontWeight: '800' },
   settleAmtRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', maxWidth: '100%' },
   settleC: { fontSize: 28, fontWeight: '900', color: T.hint, marginRight: 4, flexShrink: 0 },
-  settleAmt: { fontSize: 44, fontWeight: '900', letterSpacing: -1.5, color: T.ink, minWidth: 120, flexShrink: 1, textAlign: 'center', padding: 0 },
+  settleAmt: { fontSize: 44, fontWeight: '900', letterSpacing: -1.5, color: T.ink, flexShrink: 1, textAlign: 'center', padding: 0 },
   notice: { marginTop: 14, backgroundColor: T.amberS, borderWidth: 1, borderColor: '#f0dcb4', borderRadius: 14, padding: 12 },
   noticeText: { color: T.amber, fontWeight: '700', fontSize: 13, lineHeight: 18 },
   undo: { borderRadius: 999, paddingVertical: 6, paddingHorizontal: 12, borderWidth: 1, borderColor: T.mint, backgroundColor: T.soft },

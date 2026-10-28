@@ -14,7 +14,6 @@ import {
   Linking,
   Platform,
   Pressable,
-  SafeAreaView,
   ScrollView,
   Share,
   StyleSheet,
@@ -22,6 +21,8 @@ import {
   TextInput,
   View,
 } from 'react-native'
+import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context'
+import { StatusBar } from 'expo-status-bar'
 import { inviteFromNext, invitePath, isToken, parseDeepLink, parseInvitePreview, PENDING_INVITE_KEY, tokenFromInput, type InvitePreview } from './links'
 import { SocialSignIn } from './SocialSignIn'
 import type { Expense, GroupDetail, Home, HomeGroup, Payment, Settlement } from './types'
@@ -93,12 +94,21 @@ async function call<T>(token: string | null, path: string, init?: RequestInit): 
 }
 
 
+const TOP_EDGES = ['top', 'left', 'right'] as const
+const ALL_EDGES = ['top', 'left', 'right', 'bottom'] as const
 const LAST_GROUP_KEY = 'divvy.lastGroup'
 
 /** On wide (desktop) web screens the app sits in a centered ~480px column; phones are unchanged. */
 export function App() {
-  if (Platform.OS !== 'web') return <AppScreens />
-  return <View style={styles.webOuter}><View style={styles.webColumn}><AppScreens /></View></View>
+  // Android 15+/Expo 54 draw edge to edge, so every screen sits inside SafeAreaProvider and pads its own top (and, without a
+  // tab bar, bottom) inset. The status bar is transparent with dark icons over the light screens.
+  const screens = <AppScreens />
+  return (
+    <SafeAreaProvider>
+      <StatusBar style="dark" />
+      {Platform.OS !== 'web' ? screens : <View style={styles.webOuter}><View style={styles.webColumn}>{screens}</View></View>}
+    </SafeAreaProvider>
+  )
 }
 
 function AppScreens() {
@@ -197,7 +207,7 @@ function AppScreens() {
   }, [])
 
   if (booting && !token) {
-    return <SafeAreaView style={styles.screen}><View style={styles.signIn}><Text style={styles.brand} accessibilityRole="header">Divvy</Text></View></SafeAreaView>
+    return <SafeAreaView style={styles.screen} edges={ALL_EDGES}><View style={styles.signIn}><Text style={styles.brand} accessibilityRole="header">Divvy</Text></View></SafeAreaView>
   }
   if (!token) {
     return (
@@ -274,7 +284,7 @@ function SignedIn({ onSessionExpired, ...props }: { token: string; inviteToken: 
 /** 1e: spinner, "Signing you in…", and the email under it when we know it. */
 function SigningIn({ email }: { email: string | null }) {
   return (
-    <SafeAreaView style={styles.screen}>
+    <SafeAreaView style={styles.screen} edges={ALL_EDGES}>
       <View style={[styles.signIn, styles.centerItems]} testID="verifying" accessibilityLiveRegion="polite">
         <ActivityIndicator size="large" color="#0f766e" accessibilityLabel="Signing you in" />
         <Text style={styles.verifyingTitle} accessibilityRole="header">Signing you in…</Text>
@@ -434,7 +444,7 @@ function SignIn({ onToken, pendingInvite, onDismissInvite, linkFailure, onClearL
   const shownError = error ?? providerError ?? (linkFailure?.kind === 'error' ? linkFailure.message : null)
   const offline = !!error && error.startsWith('Couldn’t send')
   return (
-    <SafeAreaView style={styles.screen}>
+    <SafeAreaView style={styles.screen} edges={ALL_EDGES}>
       <View style={styles.signIn}>
         <Text style={styles.brand}>Divvy</Text>
         {pendingInvite ? (
@@ -993,7 +1003,7 @@ function Ledger({
   }
 
   return (
-    <SafeAreaView style={styles.screen}>
+    <SafeAreaView style={styles.screen} edges={showTabs ? TOP_EDGES : ALL_EDGES}>
       <View style={styles.flex}>
         <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={v2scroll} style={styles.noSideways} horizontal={false} alwaysBounceHorizontal={false} showsHorizontalScrollIndicator={false}>
           {body}
