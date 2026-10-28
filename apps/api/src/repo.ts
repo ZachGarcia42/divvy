@@ -1072,7 +1072,7 @@ export class Repo {
            where el.expense_id = e.id and p.display_name ilike $2
          )
        )
-       order by e.expense_date desc
+       order by e.expense_date desc, e.created_at desc, e.id desc
        limit 50`,
       [actor.participantId, like],
     )
@@ -1949,9 +1949,11 @@ export class Repo {
 
   private async loadLedger(groupId: string) {
     const expenses = await this.sql.query(
-      `select * from expenses where group_id = $1`,
+      // Newest day first; within a day, newest created first, then id as the tiebreaker (the client sorts the same way).
+      `select * from expenses where group_id = $1 order by expense_date desc, created_at desc, id desc`,
       [groupId],
     )
+    const createdAtOf = new Map(expenses.map((row) => [String(row.id), row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at)]))
     const lines = await this.sql.query<{ expense_id: string; participant_id: string; role: string; minor: number }>(
       `select el.expense_id, el.participant_id, el.role, el.minor
        from expense_lines el join expenses e on e.id = el.expense_id
@@ -2006,6 +2008,7 @@ export class Repo {
       views: raw.map((expense) => ({
         id: expense.id,
         date: expense.expense_date,
+        createdAt: createdAtOf.get(expense.id) ?? null,
         description: expense.description,
         categoryId: expense.category_id,
         kind: expense.kind,

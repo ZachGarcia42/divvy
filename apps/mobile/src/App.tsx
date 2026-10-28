@@ -1,7 +1,7 @@
 import { formatMoney, splitFromStored } from '@divvy/domain'
 import { joinedFeedback } from './flows/composer'
 import { draftFromSpec, majorString } from './flows/split'
-import { startScreen, groupIcon, type HistoryEntry } from './flows/view'
+import { SNACK_MS, snackOwner, snackStays, startScreen, groupIcon, type HistoryEntry } from './flows/view'
 import { AccountScreen, AddSheet, CreateGroupSheet, ExpenseDetail, Fab, GroupsHome, GroupView, InviteCard, PasteCard, SettleScreen, Snack, SwitcherSheet, TabBar, todayIso, type SheetSave, type Tab } from './V2'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import * as SecureStore from 'expo-secure-store'
@@ -497,7 +497,7 @@ function SignIn({ onToken, pendingInvite, onDismissInvite, linkFailure, onClearL
 }
 
 type Screen = 'groups' | 'group' | 'expense' | 'settle' | 'account'
-type Snackbar = { text: string; action?: string; run?: () => void }
+type Snackbar = { text: string; action?: string; run?: () => void; owner?: string }
 
 const deviceZone = () => {
   try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' } catch { return 'UTC' }
@@ -562,8 +562,12 @@ function Ledger({
   const showSnack = (next: Snackbar | null) => {
     if (snackTimer.current) clearTimeout(snackTimer.current)
     setSnack(next)
-    if (next) snackTimer.current = setTimeout(() => setSnack(null), 7000)
+    if (next) snackTimer.current = setTimeout(() => setSnack(null), SNACK_MS)
   }
+  // An Undo snackbar only makes sense where it was raised: moving to another screen or group clears it.
+  useEffect(() => {
+    setSnack((current) => (current && !snackStays(current.owner, screen, groupId) ? null : current))
+  }, [screen, groupId])
   useEffect(() => () => {
     if (toastTimer.current) clearTimeout(toastTimer.current)
     if (snackTimer.current) clearTimeout(snackTimer.current)
@@ -778,7 +782,7 @@ function Ledger({
       await refresh(gid)
       setScreen('group')
       setExpenseId(null)
-      showSnack({ text: `Deleted ${expense.description.trim() || 'expense'}`, action: 'Undo', run: () => { void restoreExpense(expense.id, gid) } })
+      showSnack({ owner: snackOwner('group', gid), text: `Deleted ${expense.description.trim() || 'expense'}`, action: 'Undo', run: () => { void restoreExpense(expense.id, gid) } })
     } catch (reason) {
       if (isStale(reason)) { await handleStale(gid); return }
       showToast(reason instanceof Error ? reason.message : 'Could not delete that')
@@ -799,7 +803,7 @@ function Ledger({
       })
       await refresh(detail.group.id)
       const who = (id: string) => (id === detail.yourParticipantId ? 'You' : detail.members.find((m) => m.id === id)?.name ?? 'Someone')
-      showSnack({ text: `Recorded ${who(payment.fromId)} → ${who(payment.toId)} ${formatMoney(payment.minor, detail.currency)}`, action: 'Undo', run: () => { void undo(made.id, true) } })
+      showSnack({ owner: snackOwner('settle', detail.group.id), text: `Recorded ${who(payment.fromId)} → ${who(payment.toId)} ${formatMoney(payment.minor, detail.currency)}`, action: 'Undo', run: () => { void undo(made.id, true) } })
     } catch (reason) {
       showToast(reason instanceof Error ? reason.message : 'Could not record that')
     } finally {

@@ -98,6 +98,7 @@ export function peopleCount(n: number) { return `${n} ${n === 1 ? 'person' : 'pe
 export type ExpenseLike = {
   id: string
   date: string
+  createdAt?: string | null
   description: string
   settlementMinor: number
   splitMethod?: string
@@ -133,9 +134,14 @@ export function paidPhrase(expense: ExpenseLike, youId: string, currency: string
   return `${who} ${formatMoney(expense.settlementMinor, currency)}`
 }
 
+const createdMs = (expense: { createdAt?: string | null }) => {
+  const ms = expense.createdAt ? Date.parse(expense.createdAt) : NaN
+  return Number.isFinite(ms) ? ms : 0
+}
+
 /** Newest first, grouped by date, each group newest first. */
 export function groupByDate<T extends ExpenseLike>(expenses: T[], todayIso: string) {
-  const sorted = [...expenses].sort((a, b) => b.date.localeCompare(a.date) || b.id.localeCompare(a.id))
+  const sorted = [...expenses].sort((a, b) => b.date.localeCompare(a.date) || createdMs(b) - createdMs(a) || (a.id === b.id ? 0 : a.id < b.id ? 1 : -1))
   const out: { date: string; heading: string; items: T[] }[] = []
   for (const expense of sorted) {
     const last = out[out.length - 1]
@@ -207,3 +213,10 @@ export function startScreen(groups: { id: string; archived?: boolean }[], last: 
   if (last && groups.some((group) => group.id === last && !group.archived)) return { screen: 'group', groupId: last }
   return { screen: 'groups', groupId: null }
 }
+
+/** How long an Undo snackbar stays up. */
+export const SNACK_MS = 6000
+
+/** A snackbar belongs to the screen (and group) it was raised for; it goes away when either changes. */
+export const snackOwner = (screen: string, groupId: string | null) => `${screen}:${groupId ?? ''}`
+export const snackStays = (owner: string | undefined, screen: string, groupId: string | null) => owner === snackOwner(screen, groupId)

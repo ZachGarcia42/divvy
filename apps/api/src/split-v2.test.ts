@@ -178,3 +178,51 @@ describe('split storage (design v2)', () => {
     expect(res.status).toBeLessThan(500)
   })
 })
+
+describe('percent split carrying its cents (API)', () => {
+  it('stores the carried cents and rejects ones that are not a rounding of the percents', async () => {
+    const { call, groupId, ids } = await groupOf(['Maya', 'Leo', 'Priya'])
+    const [you, maya, leo, priya] = ids as [string, string, string, string]
+    const parts = [
+      { participantId: you, bps: 2508, minor: 251 },
+      { participantId: maya, bps: 3497, minor: 350 },
+      { participantId: leo, bps: 2497, minor: 250 },
+      { participantId: priya, bps: 1498, minor: 150 },
+    ]
+    const body = (split: unknown) => ({ ...base, originalMinor: 1001, payers: [{ participantId: you, minor: 1001 }], split, rounding: 'payer' })
+    const ok = await call('POST', `/api/groups/${groupId}/expenses`, body({ type: 'percent', parts }))
+    expect(ok.status).toBe(200)
+    const { json } = await call('GET', `/api/groups/${groupId}`)
+    const shares = Object.fromEntries(json.expenses[0].shares.map((s: any) => [s.participantId, s.minor]))
+    expect(shares).toEqual({ [you]: 251, [maya]: 350, [leo]: 250, [priya]: 150 })
+    const moved = parts.map((p, i) => (i === 0 ? { ...p, minor: 252 } : i === 1 ? { ...p, minor: 349 } : p))
+    expect((await call('POST', `/api/groups/${groupId}/expenses`, body({ type: 'percent', parts: moved }))).status).toBe(400)
+    const short = parts.map((p, i) => (i === 0 ? { ...p, minor: 250 } : p))
+    expect((await call('POST', `/api/groups/${groupId}/expenses`, body({ type: 'percent', parts: short }))).status).toBe(400)
+  })
+})
+
+describe('same-day expenses sort by created time, then id (API)', () => {
+  it('lists newest day first, then newest created, then id', async () => {
+    const { call, groupId, ids, sql } = await groupOf(['Maya'])
+    const [you, maya] = ids as [string, string]
+    const add = async (description: string, date: string) => {
+      const res = await call('POST', `/api/groups/${groupId}/expenses`, { ...base, description, date, originalMinor: 1000, payers: [{ participantId: you, minor: 1000 }], split: { type: 'equal', participantIds: [you, maya] } })
+      expect(res.status).toBe(200)
+      return res.json.id as string
+    }
+    const a = await add('first', '2026-10-20')
+    const b = await add('second', '2026-10-20')
+    const c = await add('third', '2026-10-20')
+    const old = await add('older day', '2026-10-19')
+    const stamp = async (id: string, iso: string) => { await sql.query(`update expenses set created_at = $2 where id = $1`, [id, iso]) }
+    await stamp(a, '2026-10-20T10:00:00Z')
+    await stamp(b, '2026-10-20T12:00:00Z')
+    await stamp(c, '2026-10-20T12:00:00Z')
+    await stamp(old, '2026-10-21T00:00:00Z')
+    const { json } = await call('GET', `/api/groups/${groupId}`)
+    const tie = [b, c].sort().reverse()
+    expect(json.expenses.map((e: any) => e.id)).toEqual([...tie, a, old])
+    expect(json.expenses.every((e: any) => typeof e.createdAt === 'string')).toBe(true)
+  })
+})

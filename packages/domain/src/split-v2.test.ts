@@ -102,3 +102,24 @@ describe('split methods (design v2)', () => {
     expect(splitFromStored('zzz', '{}')).toBeNull()
   })
 })
+
+describe('percent split carrying its cents', () => {
+  const parts = [
+    { participantId: 'a', bps: 2507, minor: 251 },
+    { participantId: 'b', bps: 3497, minor: 350 },
+    { participantId: 'c', bps: 2498, minor: 250 },
+    { participantId: 'd', bps: 1498, minor: 150 },
+  ]
+  it('uses the carried cents when they round the percents', () => {
+    expect(computeShares(1001, { type: 'percent', parts }, 'USD', { payerId: 'a' }).map((r) => r.minor)).toEqual([251, 350, 250, 150])
+  })
+  it('without them the payer-first rounding is unchanged', () => {
+    const plain = parts.map(({ minor: _m, ...rest }) => rest)
+    expect(computeShares(1001, { type: 'percent', parts: plain }, 'USD', { payerId: 'a' }).map((r) => r.minor)).toEqual([251, 351, 250, 149])
+  })
+  it('refuses cents that do not add up, are a different split, or are only on some people', () => {
+    expect(() => computeShares(1001, { type: 'percent', parts: parts.map((p, i) => (i === 0 ? { ...p, minor: 250 } : p)) }, 'USD')).toThrow()
+    expect(() => computeShares(1001, { type: 'percent', parts: parts.map((p, i) => (i === 0 ? { ...p, minor: 351 } : i === 1 ? { ...p, minor: 250 } : p)) }, 'USD')).toThrow()
+    expect(() => computeShares(1001, { type: 'percent', parts: parts.map((p, i) => (i === 0 ? { participantId: p.participantId, bps: p.bps } : p)) }, 'USD')).toThrow()
+  })
+})

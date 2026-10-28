@@ -16,6 +16,13 @@ class RateLimitError extends LedgerError {
   }
 }
 
+/** USD is the only currency for now. A missing value is fine (callers default it); anything else is a 400 BAD_CURRENCY. Existing non-USD groups stay readable. */
+function onlyUsd(body: unknown, field: string): string | undefined {
+  const value = body && typeof body === 'object' ? (body as Record<string, unknown>)[field] : undefined
+  if (value === undefined) return undefined
+  if (typeof value !== 'string' || value.trim().toUpperCase() !== 'USD') throw new LedgerError('BAD_CURRENCY', 'Only USD is supported right now')
+  return 'USD'
+}
 const LINK_TOKEN = /^[A-Za-z0-9_-]{16,128}$/
 const isLinkToken = (value: unknown): value is string => typeof value === 'string' && LINK_TOKEN.test(value)
 const safeNextPath = (next: string | undefined) => {
@@ -473,9 +480,16 @@ export function createApp(sql: Sql, options?: {
   })
 
   app.get('/api/home', async (c) => c.json(await repo.home(await actor(c))))
-  app.post('/api/groups', async (c) => c.json(await repo.createGroup(await actor(c), await c.req.json())))
+  app.post('/api/groups', async (c) => {
+    const body = await c.req.json()
+    return c.json(await repo.createGroup(await actor(c), { ...body, currency: onlyUsd(body, 'currency') ?? 'USD' }))
+  })
   app.get('/api/groups/:id', async (c) => c.json(await repo.groupDetail(await actor(c), c.req.param('id'))))
-  app.patch('/api/groups/:id', async (c) => c.json(await repo.updateGroup(await actor(c), c.req.param('id'), await c.req.json())))
+  app.patch('/api/groups/:id', async (c) => {
+    const body = await c.req.json()
+    onlyUsd(body, 'currency')
+    return c.json(await repo.updateGroup(await actor(c), c.req.param('id'), body))
+  })
   app.post('/api/groups/:id/archive', async (c) => c.json(await repo.archive(await actor(c), c.req.param('id'), true)))
   app.post('/api/groups/:id/unarchive', async (c) => c.json(await repo.archive(await actor(c), c.req.param('id'), false)))
   app.delete('/api/groups/:id', async (c) => {
@@ -502,10 +516,16 @@ export function createApp(sql: Sql, options?: {
     await repo.deleteCategory(await actor(c), c.req.param('id'), c.req.param('categoryId'))
     return c.json({ ok: true })
   })
-  app.post('/api/groups/:id/expenses', async (c) => c.json(await repo.createExpense(await actor(c), c.req.param('id'), await c.req.json())))
+  app.post('/api/groups/:id/expenses', async (c) => {
+    const body = await c.req.json()
+    onlyUsd(body, 'originalCurrency')
+    return c.json(await repo.createExpense(await actor(c), c.req.param('id'), body))
+  })
   app.get('/api/groups/:id/expenses/:expenseId', async (c) => c.json(await repo.expenseDetail(await actor(c), c.req.param('id'), c.req.param('expenseId'))))
   app.patch('/api/groups/:id/expenses/:expenseId', async (c) => {
-    await repo.updateExpense(await actor(c), c.req.param('id'), c.req.param('expenseId'), await c.req.json())
+    const body = await c.req.json()
+    onlyUsd(body, 'originalCurrency')
+    await repo.updateExpense(await actor(c), c.req.param('id'), c.req.param('expenseId'), body)
     return c.json({ ok: true })
   })
   app.delete('/api/groups/:id/expenses/:expenseId', async (c) => {

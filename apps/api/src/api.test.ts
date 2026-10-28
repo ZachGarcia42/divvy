@@ -146,10 +146,8 @@ describe('ledger API', () => {
         { participantId: bobId, weight: 40 },
       ] }),
     })
-    const hotel = await early.app.request(`/api/groups/${groupId}/expenses`, {
-      method: 'POST',
-      headers: auth,
-      body: JSON.stringify({
+    // The HTTP API only takes USD now (see the BAD_CURRENCY test); the repo still converts, which is what a legacy group relies on.
+    const hotel = await early.repo.createExpense((await early.repo.actorFromToken(alex.token))!, groupId, {
         description: 'Hotel',
         date: '2026-09-01',
         originalMinor: 20000,
@@ -159,9 +157,8 @@ describe('ledger API', () => {
           { participantId: alexId, bps: 6000 },
           { participantId: bobId, bps: 4000 },
         ] },
-      }),
     })
-    expect(hotel.status).toBe(200)
+    expect(hotel).toBeTruthy()
     const detail = await (await early.app.request(`/api/groups/${groupId}`, { headers: auth })).json() as {
       expenses: { description: string; settlementMinor: number; shares: { participantId: string; minor: number }[] }[]
       members: { id: string; defaultWeight: number | null }[]
@@ -209,7 +206,7 @@ describe('ledger API', () => {
 
   it('converts an itemized foreign receipt and only charges the people on each line', async () => {
     const sql = await createMemorySql()
-    const { app } = createApp(sql, {
+    const { app, repo } = createApp(sql, {
       now: () => new Date('2026-09-26T16:00:00Z'),
       rateFor: async () => '1.08',
       dev: true,
@@ -228,10 +225,7 @@ describe('ledger API', () => {
       headers: auth,
       body: JSON.stringify({ displayName: 'Bob' }),
     })).json()) as { participantId: string }).participantId
-    const saved = await app.request(`/api/groups/${groupId}/expenses`, {
-      method: 'POST',
-      headers: auth,
-      body: JSON.stringify({
+    const saved = await repo.createExpense((await repo.actorFromToken(alex.token))!, groupId, {
         description: 'Itemized dinner',
         date: '2026-09-26',
         originalMinor: 1,
@@ -244,9 +238,8 @@ describe('ledger API', () => {
         taxMinor: 200,
         tipMinor: 0,
         discountMinor: 0,
-      }),
     })
-    expect(saved.status).toBe(200)
+    expect(saved).toBeTruthy()
     const detail = await (await app.request(`/api/groups/${groupId}`, { headers: auth })).json() as {
       expenses: {
         description: string

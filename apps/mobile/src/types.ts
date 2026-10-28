@@ -14,6 +14,8 @@ export type Member = { id: string; name: string; removed: boolean }
 export type Expense = {
   id: string
   date: string
+  /** When it was added (ISO); same-day expenses sort by it, then id. */
+  createdAt?: string | null
   description: string
   settlementMinor: number
   originalMinor?: number

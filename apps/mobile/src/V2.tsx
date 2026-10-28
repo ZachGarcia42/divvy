@@ -3,7 +3,7 @@
 import { formatMoney, parseMajor, type SplitMethod, type SplitSpec } from '@divvy/domain'
 import { useMemo, useState, type ReactNode } from 'react'
 import { KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native'
-import { evaluate, majorString, METHOD_LABELS, METHODS, newDraft, switchMethod, type Draft } from './flows/split'
+import { evaluate, groupedMajor, majorString, METHOD_LABELS, METHODS, newDraft, switchMethod, type Draft } from './flows/split'
 import {
   breakdown, groupByDate, historyLines, methodPhrase, monthDay, netTone, NET_WORDS, overallUsd, paidPhrase, peopleCount,
   signedMoney, groupIcon, PICKER_EMOJIS, DEFAULT_EMOJI, TEMPLATES, templateName, updatedPhrase, yourPosition, type HistoryEntry,
@@ -18,6 +18,17 @@ export const T = {
 }
 const AVATARS = [['#d9efe9', '#0f766e'], ['#fde8d4', '#a15c07'], ['#e4e1fb', '#4b3fa8'], ['#fbe1e5', '#b4323f'], ['#e1eefb', '#245a9c']] as const
 const web = Platform.OS === 'web'
+/** Web only: CSS `order`, so the DOM (keyboard) order can differ from the look. */
+const ord = (n: number) => (web ? { order: n } : undefined) as object | undefined
+// Web: a visible keyboard focus ring on every interactive control (buttons, links, inputs, anything tabbable). The inline
+// `outlineStyle: none` on the inputs would hide it, hence !important. Drawn inside the box so clipping parents can't cut it.
+const doc = (globalThis as unknown as { document?: { getElementById(id: string): unknown; createElement(tag: string): { id: string; textContent: string }; head: { appendChild(node: unknown): void } } }).document
+if (web && doc && !doc.getElementById('divvy-focus-ring')) {
+  const style = doc.createElement('style')
+  style.id = 'divvy-focus-ring'
+  style.textContent = `a:focus-visible, button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible, [role="button"]:focus-visible, [role="tab"]:focus-visible, [role="checkbox"]:focus-visible, [role="link"]:focus-visible, [tabindex]:not([tabindex="-1"]):focus-visible { outline: 3px solid #2f9e78 !important; outline-offset: -3px !important; }`
+  doc.head.appendChild(style)
+}
 const noOutline = (web ? { outlineStyle: 'none' } : {}) as object
 
 export function Avatar({ name, index = 0, size = 34 }: { name: string; index?: number; size?: number }) {
@@ -155,7 +166,7 @@ export function CreateGroupSheet({ initialTemplate, busy, error, onCreate, onClo
   const valid = name.trim().length > 0 && name.trim().length <= 80 && /^[A-Za-z]{3}$/.test(currency)
   return (
     <Modal transparent animationType="slide" visible onRequestClose={onClose}>
-      <Pressable style={k.scrim} onPress={onClose} accessibilityRole="button" accessibilityLabel="Close" />
+      <Pressable style={k.scrim} onPress={onClose} accessibilityRole="button" accessibilityLabel="Close" tabIndex={-1} />
       <View style={[k.lightSheet, web && k.sheetWeb]} testID="create-group-sheet">
         <View style={k.grabberDark} />
         <Text style={k.sheetTitle} accessibilityRole="header">Create a group</Text>
@@ -198,7 +209,7 @@ export function SwitcherSheet({ groups, currentId, onPick, onAll, onClose }: {
 }) {
   return (
     <Modal transparent animationType="slide" visible onRequestClose={onClose}>
-      <Pressable style={k.scrim} onPress={onClose} accessibilityRole="button" accessibilityLabel="Close" />
+      <Pressable style={k.scrim} onPress={onClose} accessibilityRole="button" accessibilityLabel="Close" tabIndex={-1} />
       <View style={[k.lightSheet, web && k.sheetWeb]} testID="switcher">
         <View style={k.grabberDark} />
         <Text style={k.sheetTitle} accessibilityRole="header">Switch group</Text>
@@ -397,18 +408,19 @@ export function AddSheet({ members, youId, currency, groupName, initial, onClose
   const title = initial ? 'Edit expense' : `New expense · ${groupName}`
   return (
     <Modal transparent animationType="slide" visible onRequestClose={tryClose}>
-      <Pressable style={k.scrim} onPress={tryClose} accessibilityRole="button" accessibilityLabel="Close" />
+      <Pressable style={k.scrim} onPress={tryClose} accessibilityRole="button" accessibilityLabel="Close" tabIndex={-1} />
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={k.inkWrap} pointerEvents="box-none">
         <View style={[k.ink, web && k.sheetWeb]} testID="add-sheet">
-          <View style={k.grabber} />
-          <View style={k.sheetHead}>
+          {/* On web the keyboard order follows the DOM: amount … inputs, Save, then Cancel. The header is last in the DOM and
+              the CSS `order` puts everything back where it looks right. Native keeps the plain top-to-bottom order. */}
+          {(web ? ['body', 'foot', 'grabber', 'head'] : ['grabber', 'head', 'body', 'foot']).map((part) => ({
+            grabber: <View key="grabber" style={[k.grabber, ord(-2)]} />, head: <View key="head" style={[k.sheetHead, ord(-1)]}>
             <Pressable onPress={tryClose} accessibilityRole="button" testID="sheet-cancel"><Text style={k.inkCancel}>Cancel</Text></Pressable>
             <Text style={k.inkTitle} numberOfLines={1} accessibilityRole="header">{title}</Text>
-            <Pressable onPress={save} disabled={!canSave} accessibilityRole="button" accessibilityState={{ disabled: !canSave }} testID="sheet-save">
+            <Pressable onPress={save} disabled={!canSave} accessibilityRole="button" accessibilityState={{ disabled: !canSave }} tabIndex={-1} testID="sheet-save">
               <Text style={[k.inkSave, !canSave && k.inkSaveOff]}>{saving ? 'Saving…' : 'Save'}</Text>
             </Pressable>
-          </View>
-          <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ paddingBottom: 12 }}>
+          </View>, body: <ScrollView key="body" style={ord(0)} keyboardShouldPersistTaps="handled" contentContainerStyle={{ paddingBottom: 12 }}>
             <View style={k.bigRow}>
               <Text style={k.bigC}>{symbolOf(currency)}</Text>
               <TextInput testID="expense-amount" autoFocus value={amountText} onChangeText={(text) => { setError(null); setAmount(text) }} placeholder="0.00" placeholderTextColor="#ffffff40" keyboardType="decimal-pad" inputMode="decimal" style={[k.big, noOutline]} accessibilityLabel="Amount" />
@@ -480,7 +492,7 @@ export function AddSheet({ members, youId, currency, groupName, initial, onClose
                 const bad = overField === m.id
                 const field = (
                   <View style={[k.inpWrap, focused === m.id && k.inpF, bad && k.inpBad]}>
-                    {key === 'exact' && <Text style={k.inpPre}>$</Text>}
+                    {key === 'exact' && <Text style={k.inpPre}>{symbolOf(currency)}</Text>}
                     <TextInput
                       testID={`${key}-${m.id}`}
                       value={key === 'adjust' ? value.replace(/^[+\-−]/, '') : value}
@@ -517,12 +529,12 @@ export function AddSheet({ members, youId, currency, groupName, initial, onClose
               <Text style={[k.valText, ev.bar.tone === 'ok' ? { color: T.ok } : barBad ? { color: T.bad } : { color: '#b9c9c1' }]}>{alone ? '' : ev.bar.right}</Text>
             </View>
             {error && <Text style={k.inkError} testID="sheet-error">{error}</Text>}
-          </ScrollView>
-          <View style={k.foot}>
+          </ScrollView>, foot: <View key="foot" style={[k.foot, ord(1)]}>
             <Pressable style={[k.inkBtn, !canSave && k.inkBtnOff]} disabled={!canSave} onPress={save} accessibilityRole="button" accessibilityState={{ disabled: !canSave, busy: saving }} testID="sheet-cta">
               <Text style={[k.inkBtnText, !canSave && k.inkBtnTextOff]}>{saving ? 'Saving…' : alone ? 'Needs two people' : initial && ev.cta === 'Add expense' ? 'Save changes' : ev.cta}</Text>
             </Pressable>
-          </View>
+          </View>,
+          })[part])}
           {confirmDiscard && (
             <View style={k.discardWrap} testID="discard-confirm">
               <View style={k.discard}>
@@ -604,7 +616,7 @@ export function ExpenseDetail({ detail, expense, history, canEdit, whyNoEdit, bu
         {lines && lines.length === 0 && <Text style={k.m}>No history yet.</Text>}
         {lines && lines.map((line, i) => (
           <View key={line.id} style={[k.histRow, i > 0 && k.rowLine]}>
-            <Text style={[k.histText, k.grow]}>{line.text}</Text>
+            <Text style={k.histText}>{line.text}</Text>
             <Text style={k.histTime}>{line.time}</Text>
           </View>
         ))}
@@ -633,6 +645,7 @@ export function SettleScreen({ detail, busyKey, onBack, onRecord, onUndo }: {
   const payments = [...detail.payments].sort((a, b) => b.minor - a.minor)
   const [selKey, setSel] = useState<string | null>(null)
   const [amountText, setAmountText] = useState<string | null>(null)
+  const [heroFocused, setHeroFocused] = useState(false)
   const keyOf = (p: Payment) => `${p.fromId}:${p.toId}`
   const current = payments.find((p) => keyOf(p) === selKey) ?? payments[0] ?? null
   const others = payments.filter((p) => p !== current)
@@ -645,6 +658,9 @@ export function SettleScreen({ detail, busyKey, onBack, onRecord, onUndo }: {
       if (minor > current.minor) amountError = `That is more than the ${formatMoney(current.minor, detail.currency)} owed`
     } catch (reason) { amountError = reason instanceof Error ? reason.message : 'Enter an amount' }
   }
+  // Shown as currency at rest (48,862.24); the plain digits only while it is being edited.
+  const heroPlain = amountText ?? majorStringLocal(current?.minor ?? 0, detail.currency)
+  const heroText = heroFocused || (amountText !== null && amountError !== null) ? heroPlain : amountText === null ? groupedMajor(current?.minor ?? 0, detail.currency) : groupedMajor(minor, detail.currency)
   const busy = busyKey !== null
   const label = (s: Settlement) => `${s.fromId === detail.yourParticipantId ? 'You' : s.fromName} paid ${s.toId === detail.yourParticipantId ? 'You' : s.toName}`
   return (
@@ -663,8 +679,8 @@ export function SettleScreen({ detail, busyKey, onBack, onRecord, onUndo }: {
           </View>
           <Text style={k.t}>{name(current.fromId)} {current.fromId === detail.yourParticipantId ? 'pay' : 'paid'} {name(current.toId)}</Text>
           <View style={k.settleAmtRow}>
-            <Text style={k.settleC}>$</Text>
-            <TextInput testID="settle-amount" value={amountText ?? majorStringLocal(current.minor, detail.currency)} onChangeText={setAmountText} keyboardType="decimal-pad" inputMode="decimal" selectTextOnFocus style={[k.settleAmt, noOutline]} accessibilityLabel="Amount to record" />
+            <Text style={k.settleC}>{symbolOf(detail.currency)}</Text>
+            <TextInput testID="settle-amount" value={heroText} onChangeText={setAmountText} onFocus={() => setHeroFocused(true)} onBlur={() => setHeroFocused(false)} keyboardType="decimal-pad" inputMode="decimal" selectTextOnFocus style={[k.settleAmt, noOutline]} accessibilityLabel="Amount to record" />
           </View>
           <Text style={k.m}>{amountText === null ? 'Full balance · tap to change' : amountError ?? 'Part payment'}</Text>
         </View>
@@ -883,9 +899,9 @@ const k = StyleSheet.create({
   methodChipText: { color: T.teal, fontWeight: '800', fontSize: 13 },
   lent: { borderTopWidth: 1, borderTopColor: '#eef2ee', paddingTop: 10, paddingBottom: 2 },
   lentText: { fontWeight: '900', fontSize: 15, textAlign: 'right' },
-  histRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 10 },
-  histText: { color: T.ink, fontWeight: '700', fontSize: 14 },
-  histTime: { color: T.muted, fontSize: 12, fontWeight: '700' },
+  histRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 12, paddingVertical: 10, width: '100%', maxWidth: '100%' },
+  histText: { color: T.ink, fontWeight: '700', fontSize: 14, flexGrow: 1, flexShrink: 1, flexBasis: 0, minWidth: 0, ...(Platform.OS === 'web' ? ({ whiteSpace: 'normal', overflowWrap: 'anywhere' } as object) : null) },
+  histTime: { color: T.muted, fontSize: 12, fontWeight: '700', flexShrink: 0, paddingTop: 1 },
   del: { alignItems: 'center', paddingVertical: 16, marginTop: 16, borderRadius: 16, backgroundColor: T.redS, borderWidth: 1, borderColor: '#f1c9cf' },
   delText: { color: T.red, fontWeight: '900', fontSize: 16 },
   delBox: { marginTop: 16, backgroundColor: T.redS, borderRadius: 16, borderWidth: 1, borderColor: '#f1c9cf', padding: 14, gap: 4 },

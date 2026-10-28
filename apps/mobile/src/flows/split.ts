@@ -12,6 +12,11 @@ export type Draft = {
   percent: Record<string, string>
   shares: Record<string, number>
   adjust: Record<string, string>
+  /**
+   * The exact cents a % split was switched over from. While the percents and the amount still match, they are
+   * what the split computes to (and what is sent), so Exact 2.51/3.50/2.50/1.50 comes back as the same cents.
+   */
+  percentCarry?: { total: number; bps: Record<string, number>; minors: Record<string, number> }
 }
 
 export type Bar = { tone: 'ok' | 'bad' | 'idle'; left: string; right: string }
@@ -32,6 +37,13 @@ export function majorString(minor: number, currency: string) {
   const abs = Math.abs(minor)
   const fraction = exp === 0 ? '' : `.${String(abs % scale).padStart(exp, '0')}`
   return `${minor < 0 ? '-' : ''}${Math.floor(abs / scale)}${fraction}`
+}
+
+/** `majorString` with thousands separators, for showing an amount at rest: 4886224 → "48,862.24". */
+export function groupedMajor(minor: number, currency: string) {
+  const [whole = '', fraction] = majorString(minor, currency).split('.')
+  const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',')
+  return fraction === undefined ? grouped : `${grouped}.${fraction}`
 }
 
 const blank = (ids: string[], value: string) => Object.fromEntries(ids.map((id) => [id, value]))
@@ -97,6 +109,25 @@ export function sharesFromWeights(weights: number[]): number[] {
   return weights.map((w) => (w > 0 ? Math.max(1, Math.round((w / total) * 100)) : 0))
 }
 
+/**
+ * Whole shares for the target: the tidy ones from `sharesFromWeights` when they reproduce the source cents, else the
+ * cents themselves as weights (their sum is the total, so every share is exactly its own cents).
+ */
+function sharesCarrying(weights: number[], memberIds: string[], known: Record<string, number> | null, total: number | null, payerId: string | null): Record<string, number> {
+  const tidy = sharesFromWeights(weights)
+  const asDraft = Object.fromEntries(memberIds.map((id, i) => [id, tidy[i]!]))
+  if (!known || total === null) return asDraft
+  const parts = memberIds.map((id, i) => ({ participantId: id, weight: tidy[i]! })).filter((row) => row.weight > 0)
+  try {
+    const got = computeShares(total, { type: 'shares', parts }, undefined, { payerId })
+    const same = memberIds.every((id) => (got.find((row) => row.participantId === id)?.minor ?? 0) === (known[id] ?? 0))
+    if (same) return asDraft
+  } catch { return asDraft }
+  // total * weight must stay a safe integer for the server's arithmetic.
+  if (total * total > Number.MAX_SAFE_INTEGER) return asDraft
+  return Object.fromEntries(memberIds.map((id) => [id, known[id] ?? 0]))
+}
+
 /** Compute what each person owes under the current method, or say what is wrong. */
 export function evaluate(draft: Draft, memberIds: string[], amountText: string, currency: string, payerId: string | null, nameOf: (id: string) => string = (id) => id): Evaluation {
   const total = totalOf(amountText, currency)
@@ -147,6 +178,11 @@ export function evaluate(draft: Draft, memberIds: string[], amountText: string, 
       return bad(`${bpsText(sum) || '0'}% of 100%`, gap > 0 ? `${bpsText(gap)}% left` : `${bpsText(-gap)}% over`)
     }
     if (total === null) return idle('100% of 100%')
+    const carry = draft.percentCarry
+    if (carry && carry.total === total && parts.every((row) => row.bps === (carry.bps[row.participantId] ?? 0))) {
+      const carried = parts.map((row) => ({ ...row, minor: carry.minors[row.participantId] ?? 0 })).filter((row) => row.bps > 0 || row.minor > 0)
+      return done({ type: 'percent', parts: carried }, '100% of 100%')
+    }
     return done({ type: 'percent', parts: parts.filter((row) => row.bps > 0) }, '100% of 100%')
   }
   if (draft.method === 'shares') {
@@ -214,16 +250,21 @@ export function switchMethod(draft: Draft, to: SplitMethod, memberIds: string[],
     if (sumW > 0) {
       const rows = allocateByWeights(10_000, memberIds.map((id, i) => ({ id, weight: weights[i]! })), memberIds)
       next.percent = Object.fromEntries(rows.map((row) => [row.id, row.minor ? bpsText(row.minor) : '']))
+      // Two decimals of percent cannot always say which cent went where, so a valid split brings its cents along.
+      if (known && total !== null) {
+        next.percentCarry = { total, bps: Object.fromEntries(rows.map((row) => [row.id, row.minor])), minors: Object.fromEntries(memberIds.map((id) => [id, known[id] ?? 0])) }
+      } else delete next.percentCarry
     }
   } else if (to === 'shares') {
-    const counts = sharesFromWeights(weights)
-    next.shares = Object.fromEntries(memberIds.map((id, i) => [id, counts[i]!]))
+    next.shares = sharesCarrying(weights, memberIds, known, total, payerId)
   } else {
     // adjust: an even split carries as all zeros; an uneven one as offsets from the even base, which reproduces it exactly.
     if (known && total !== null) {
       const amounts = memberIds.map((id) => known[id] ?? 0)
       const spread = Math.max(...amounts) - Math.min(...amounts)
-      if (spread <= 1) next.adjust = blank(memberIds, '')
+      const evenSplit = allocateByWeights(total, memberIds.map((id) => ({ id, weight: 1 })), payerId ? [payerId, ...memberIds] : memberIds)
+      // Blank adjustments mean "an even split", which only reproduces the cents when the leftover cent lands on the same people.
+      if (spread <= 1 && evenSplit.every((row, i) => row.minor === amounts[i])) next.adjust = blank(memberIds, '')
       else {
         const base = Math.floor(total / memberIds.length)
         next.adjust = Object.fromEntries(memberIds.map((id, i) => {
@@ -246,6 +287,13 @@ export function draftFromSpec(spec: SplitSpec | null, memberIds: string[], curre
   else if (spec.type === 'percent') draft.percent = Object.fromEntries(memberIds.map((id) => { const row = spec.parts.find((r) => r.participantId === id); return [id, row && row.bps ? bpsText(row.bps) : ''] }))
   else if (spec.type === 'shares') draft.shares = Object.fromEntries(memberIds.map((id) => [id, spec.parts.find((r) => r.participantId === id)?.weight ?? 0]))
   else draft.adjust = Object.fromEntries(memberIds.map((id) => { const row = spec.parts.find((r) => r.participantId === id); return [id, row && row.minor ? `${row.minor > 0 ? '+' : '-'}${majorString(Math.abs(row.minor), currency)}` : ''] }))
+  if (spec.type === 'percent' && spec.parts.length > 0 && spec.parts.every((r) => typeof r.minor === 'number')) {
+    draft.percentCarry = {
+      total: spec.parts.reduce((acc, r) => acc + (r.minor as number), 0),
+      bps: Object.fromEntries(spec.parts.map((r) => [r.participantId, r.bps])),
+      minors: Object.fromEntries(spec.parts.map((r) => [r.participantId, r.minor as number])),
+    }
+  }
   return draft
 }
 

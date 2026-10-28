@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { breakdown, dateHeading, groupByDate, historyLines, methodPhrase, netTone, overallUsd, paidPhrase, signedMoney, groupIcon, PICKER_EMOJIS, splitGroupName, startScreen, templateName, TEMPLATES, updatedPhrase, yourPosition } from './view'
+import { SNACK_MS, snackOwner, snackStays, breakdown, dateHeading, groupByDate, historyLines, methodPhrase, netTone, overallUsd, paidPhrase, signedMoney, groupIcon, PICKER_EMOJIS, splitGroupName, startScreen, templateName, TEMPLATES, updatedPhrase, yourPosition } from './view'
 
 const g = (id: string, net: number, extra: object = {}) => ({ id, name: id, currency: 'USD', yourNetMinor: net, archived: false, ...extra })
 
@@ -55,6 +55,15 @@ describe('group screen rows', () => {
     expect(out[0]!.items.map((e) => e.id)).toEqual(['e2', 'e1'])
     expect(dateHeading('2026-10-26', '2026-10-27')).toBe('YESTERDAY · OCT 26')
   })
+  it('sorts same-day expenses by created time, then id', () => {
+    const at = (id: string, createdAt: string | null) => ({ ...gas, id, createdAt })
+    const out = groupByDate([at('a', '2026-10-27T09:00:00.000Z'), at('z', '2026-10-27T08:00:00.000Z'), at('m', '2026-10-27T09:00:00.000Z'), at('b', '2026-10-27T10:30:00.000Z')], '2026-10-27')
+    // newest created first; equal times fall back to the larger id first
+    expect(out[0]!.items.map((e) => e.id)).toEqual(['b', 'm', 'a', 'z'])
+    // an older day never jumps ahead because it was created later
+    const later = { ...gas, id: 'old', date: '2026-10-20', createdAt: '2026-10-27T23:00:00.000Z' }
+    expect(groupByDate([later, at('a', '2026-10-27T09:00:00.000Z')], '2026-10-27').map((d) => d.items[0]!.id)).toEqual(['a', 'old'])
+  })
   it('builds the detail breakdown', () => {
     const rows = breakdown(groceries, (id) => id, 'shares', { parts: [{ participantId: 'you', weight: 2 }, { participantId: 'maya', weight: 1 }, { participantId: 'leo', weight: 1 }, { participantId: 'priya', weight: 2 }] })
     expect(rows[0]).toEqual({ id: 'you', name: 'you', paid: 12000, share: 4000, net: 8000, note: '2 shares of 6' })
@@ -102,5 +111,16 @@ describe('opening the app', () => {
     expect(groupIcon({ name: '🏠 Home', emoji: null })).toEqual({ emoji: '🏠', title: 'Home' })
     expect(groupIcon({ name: 'Plain' })).toEqual({ emoji: '👥', title: 'Plain' })
     for (const t of TEMPLATES) expect(PICKER_EMOJIS).toContain(t.emoji)
+  })
+})
+
+describe('undo snackbar lifetime', () => {
+  it('lasts six seconds and belongs to the screen it was raised on', () => {
+    expect(SNACK_MS).toBe(6000)
+    const owner = snackOwner('group', 'g1')
+    expect(snackStays(owner, 'group', 'g1')).toBe(true)
+    expect(snackStays(owner, 'settle', 'g1')).toBe(false)
+    expect(snackStays(owner, 'group', 'g2')).toBe(false)
+    expect(snackStays(undefined, 'group', 'g1')).toBe(false)
   })
 })

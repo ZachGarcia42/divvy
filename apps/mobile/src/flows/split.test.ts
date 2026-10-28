@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { bpsText, draftFromSpec, evaluate, isDirty, newDraft, parseAmountText, parsePercentBps, sharesFromWeights, switchMethod } from './split'
+import { bpsText, draftFromSpec, evaluate, groupedMajor, isDirty, newDraft, parseAmountText, parsePercentBps, sharesFromWeights, switchMethod } from './split'
 
 const ids = ['you', 'maya', 'leo', 'priya']
 const names: Record<string, string> = { you: 'You', maya: 'Maya', leo: 'Leo', priya: 'Priya' }
@@ -214,5 +214,83 @@ describe('split editor: editing and discard', () => {
     expect(isDirty('1', '', newDraft(ids), ids)).toBe(true)
     expect(isDirty('', ' x', newDraft(ids), ids)).toBe(true)
     expect(isDirty('', '', { ...newDraft(ids), method: 'exact' }, ids)).toBe(true)
+  })
+})
+
+describe('lossless carry-over between methods', () => {
+  const exactDraft = (amount: string, cells: string[], payer: string | null = 'you') => {
+    const d = { ...newDraft(ids), method: 'exact' as const, exact: Object.fromEntries(ids.map((id, i) => [id, cells[i] ?? ''])) }
+    expect(ev(d, amount, payer).ok).toBe(true)
+    return d
+  }
+  it('Exact 2.51/3.50/2.50/1.50 on $10.01 keeps its cents when switched to %', () => {
+    const exact = exactDraft('10.01', ['2.51', '3.50', '2.50', '1.50'])
+    const pct = switchMethod(exact, 'percent', ids, '10.01', 'USD', 'you')
+    const out = ev(pct, '10.01')
+    expect(out.ok).toBe(true)
+    expect(out.results).toEqual({ you: 251, maya: 350, leo: 250, priya: 150 })
+    // what is sent carries the cents too, and the server accepts it as a rounding of the percents
+    expect(out.spec).toMatchObject({ type: 'percent' })
+    const spec = out.spec as { parts: { participantId: string; bps: number; minor?: number }[] }
+    expect(spec.parts.map((p) => p.minor)).toEqual([251, 350, 250, 150])
+  })
+  it('stops carrying once a percent or the amount is edited', () => {
+    const pct = switchMethod(exactDraft('10.01', ['2.51', '3.50', '2.50', '1.50']), 'percent', ids, '10.01', 'USD', 'you')
+    expect(ev(pct, '20').results).not.toEqual({ you: 251, maya: 350, leo: 250, priya: 150 })
+    const edited = { ...pct, percent: { ...pct.percent, you: '25.09', leo: '24.96' } }
+    const out = ev(edited, '10.01')
+    expect((out.spec as { parts: { minor?: number }[] }).parts.every((p) => p.minor === undefined)).toBe(true)
+  })
+  it('is lossless Exact → % → Exact/Shares/Adjust for many totals, payers and shapes', () => {
+    let checked = 0
+    for (let total = 101; total < 60_000; total += 977) {
+      for (const payer of ['you', 'leo', null]) {
+        const weights = [3, 5, 2, 1]
+        const sumW = weights.reduce((a, b) => a + b, 0)
+        const cents = weights.map((w) => Math.floor((total * w) / sumW))
+        cents[1]! += total - cents.reduce((a, b) => a + b, 0)
+        const cell = (n: number) => `${Math.floor(n / 100)}.${String(n % 100).padStart(2, '0')}`
+        const amount = cell(total)
+        const exact = exactDraft(amount, cents.map(cell), payer)
+        const want = Object.fromEntries(ids.map((id, i) => [id, cents[i]!]))
+        const pct = switchMethod(exact, 'percent', ids, amount, 'USD', payer)
+        expect(ev(pct, amount, payer).results).toEqual(want)
+        const back = switchMethod(pct, 'exact', ids, amount, 'USD', payer)
+        expect(ev(back, amount, payer).results).toEqual(want)
+        const shares = switchMethod(exact, 'shares', ids, amount, 'USD', payer)
+        expect(ev(shares, amount, payer).results).toEqual(want)
+        const adjust = switchMethod(exact, 'adjust', ids, amount, 'USD', payer)
+        expect(ev(adjust, amount, payer).results).toEqual(want)
+        checked += 1
+      }
+    }
+    expect(checked).toBeGreaterThan(100)
+  })
+  it('Equal with an uneven cent carries to % and Adjust without moving it', () => {
+    const eq = { ...newDraft(ids), included: { you: false, maya: true, leo: true, priya: true } }
+    const want = ev(eq, '10.01', 'maya').results
+    for (const to of ['exact', 'percent', 'shares', 'adjust'] as const) {
+      const next = switchMethod(eq, to, ids, '10.01', 'USD', 'maya')
+      const got = ev(next, '10.01', 'maya').results
+      expect(Object.fromEntries(ids.map((id) => [id, got[id] ?? 0]))).toEqual({ you: 0, ...want })
+    }
+  })
+  it('an edit reopens a carried % split exactly', () => {
+    const pct = switchMethod(exactDraft('10.01', ['2.51', '3.50', '2.50', '1.50']), 'percent', ids, '10.01', 'USD', 'you')
+    const spec = ev(pct, '10.01').spec!
+    const reopened = draftFromSpec(spec, ids, 'USD')
+    expect(ev(reopened, '10.01').results).toEqual({ you: 251, maya: 350, leo: 250, priya: 150 })
+  })
+})
+
+describe('groupedMajor', () => {
+  it('shows amounts with thousands separators', () => {
+    expect(groupedMajor(4886224, 'USD')).toBe('48,862.24')
+    expect(groupedMajor(100, 'USD')).toBe('1.00')
+    expect(groupedMajor(99999, 'USD')).toBe('999.99')
+    expect(groupedMajor(100000, 'USD')).toBe('1,000.00')
+    expect(groupedMajor(123456789012, 'USD')).toBe('1,234,567,890.12')
+    expect(groupedMajor(1234567, 'JPY')).toBe('1,234,567')
+    expect(groupedMajor(0, 'USD')).toBe('0.00')
   })
 })

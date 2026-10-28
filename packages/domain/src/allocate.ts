@@ -65,7 +65,7 @@ export const SPLIT_METHODS: SplitMethod[] = ['equal', 'exact', 'percent', 'share
 export type SplitSpec =
   | { type: 'equal'; participantIds: string[] }
   | { type: 'exact'; amounts: { participantId: string; minor: number }[] }
-  | { type: 'percent'; parts: { participantId: string; bps: number }[] }
+  | { type: 'percent'; parts: { participantId: string; bps: number; minor?: number }[] }
   | { type: 'shares'; parts: { participantId: string; weight: number }[] }
   | { type: 'adjust'; parts: { participantId: string; minor: number }[] }
 
@@ -118,6 +118,27 @@ function priorityFor(spec: SplitSpec, options?: ComputeOptions): string[] | unde
   return options.payerId ? [options.payerId, ...ids] : ids
 }
 
+/**
+ * A percent split may carry the exact cents it was built from (switching Exact $2.51/$3.50/... to % must not move
+ * a cent). They are honoured only when they add up to the total and each one agrees with its percent to within
+ * one basis point of the total, i.e. they are a rounding of the percents, never a different split.
+ */
+function carriedPercentMinors(totalMinor: number, parts: { participantId: string; bps: number; minor?: number }[]) {
+  const given = parts.filter((row) => row.minor !== undefined && row.minor !== null)
+  if (given.length === 0) return null
+  const bad = () => new LedgerError('BAD_SPLIT', 'Those amounts do not match the percents')
+  if (given.length !== parts.length) throw bad()
+  let sum = 0
+  for (const row of parts) {
+    const minor = row.minor as number
+    if (!Number.isInteger(minor) || minor < 0) throw bad()
+    if (Math.abs(minor * 10_000 - totalMinor * row.bps) >= Math.max(1, totalMinor)) throw bad()
+    sum += minor
+  }
+  if (sum !== totalMinor) throw bad()
+  return parts.map((row) => ({ participantId: row.participantId, minor: row.minor as number }))
+}
+
 export function computeShares(totalMinor: number, spec: SplitSpec, currency?: string, options?: ComputeOptions): { participantId: string; minor: number }[] {
   assertMinor(totalMinor, 'Total')
   assertSplitShape(spec)
@@ -154,6 +175,8 @@ export function computeShares(totalMinor: number, spec: SplitSpec, currency?: st
       throw new LedgerError('PERCENT_SUM', 'Percents must add up to 100')
     }
     assertUnique(spec.parts.map((row) => row.participantId))
+    const carried = carriedPercentMinors(totalMinor, spec.parts)
+    if (carried) return carried
     return allocateByWeights(
       totalMinor,
       spec.parts.map((row) => ({ id: row.participantId, weight: row.bps })),
