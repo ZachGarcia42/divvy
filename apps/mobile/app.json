@@ -17,7 +17,7 @@
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-foreground.png",
         "monochromeImage": "./assets/adaptive-monochrome.png",
-        "backgroundColor": "#0F766E"
+        "backgroundColor": "#0f766e"
       }
     },
     "plugins": [
@@ -32,6 +32,11 @@
     "icon": "./assets/icon.png",
     "web": {
       "favicon": "./assets/favicon.png"
+    },
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0f766e"
     }
   }
 }

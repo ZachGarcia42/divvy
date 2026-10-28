@@ -15,6 +15,8 @@ const check = (name, ok, extra = '') => { console.log(ok ? 'PASS' : 'FAIL', name
   check('Create a group card kept', await id('create-group-card').isVisible())
   check('no "Start from a template" text', (await p.getByText(/start from a template/i).count()) === 0)
   await id('create-group-card').click(); await id('create-group-sheet').waitFor(); await p.waitForTimeout(400)
+  check('create sheet uses the New group header', (await p.getByText('New group', { exact: true }).count()) === 1 && (await id('create-group-cancel').count()) === 1)
+  check('single full-width Create group button', (await id('create-group-save').innerText()).trim() === 'Create group')
   check('no template chips in sheet', (await p.locator('[data-testid^="template-"]').count()) === 0)
   check('no Trip/Home/Couple/Dinners chips', (await p.getByText(/^(🏔️|🏠|💑|🍜)\s+(Trip|Home|Couple|Dinners)$/).count()) === 0)
   const height = async () => (await id('create-group-sheet').boundingBox()).height
@@ -45,6 +47,10 @@ const check = (name, ok, extra = '') => { console.log(ok ? 'PASS' : 'FAIL', name
   const chip = () => id('date-chip').innerText()
   check('default label is Today', /Today/.test(await chip()), await chip())
   const input = id('date-input')
+  const hit = await p.evaluate(() => { const c = document.querySelector('[data-testid="date-chip"]').getBoundingClientRect(); const e = document.elementFromPoint(c.x + c.width / 2, c.y + c.height / 2); return { tag: e.tagName, inChip: !!e.closest('[data-testid="date-chip"]') } })
+  check('the date <input> does not overlay the chip label (click lands on the chip)', hit.tag !== 'INPUT' && hit.inChip, JSON.stringify(hit))
+  check('chip shows the calendar icon', /📅/.test(await chip()), await chip())
+  await id('date-chip').click(); await p.waitForTimeout(150);
   check('date control is a native date input', (await input.getAttribute('type')) === 'date' && (await input.inputValue()) === iso(0))
   check('cannot pick the future (max=today)', (await input.getAttribute('max')) === iso(0))
   await input.fill(iso(-1)); check('yesterday labelled Yesterday', /Yesterday/.test(await chip()), await chip())

@@ -7,25 +7,25 @@ import { dateFromIso, dateLabel, isoFromDate } from './flows/date'
 
 type Props = {
   value: string; today: string; onChange: (iso: string) => void
-  style?: StyleProp<ViewStyle>; textStyle?: StyleProp<TextStyle>; boldStyle?: StyleProp<TextStyle>; testID?: string
+  style?: StyleProp<ViewStyle>; activeStyle?: StyleProp<ViewStyle>; textStyle?: StyleProp<TextStyle>; boldStyle?: StyleProp<TextStyle>; testID?: string
 }
 
-export function DateChip({ value, today, onChange, style, textStyle, boldStyle, testID }: Props) {
+export function DateChip({ value, today, onChange, style, activeStyle, textStyle, boldStyle, testID }: Props) {
   const [open, setOpen] = useState(false)
   const current = dateFromIso(value) ?? new Date()
   const max = dateFromIso(today) ?? new Date()
   const picked = (event: DateTimePickerEvent, date?: Date) => {
-    if (Platform.OS === 'android') setOpen(false)
+    setOpen(Platform.OS === 'ios')
     if (event.type === 'set' && date) onChange(isoFromDate(date))
   }
   const press = () => {
-    if (Platform.OS === 'android') DateTimePickerAndroid.open({ value: current, mode: 'date', maximumDate: max, onChange: picked })
+    if (Platform.OS === 'android') { setOpen(true); DateTimePickerAndroid.open({ value: current, mode: 'date', maximumDate: max, onChange: picked, onError: () => setOpen(false) }) }
     else setOpen((was) => !was)
   }
   return (
     <>
-      <Pressable style={style} onPress={press} accessibilityRole="button" accessibilityLabel={`Expense date, ${dateLabel(value, today)}`} testID={testID}>
-        <Text style={textStyle}><Text style={boldStyle}>{dateLabel(value, today)} ▾</Text></Text>
+      <Pressable style={[style, open && activeStyle]} onPress={press} accessibilityRole="button" accessibilityLabel={`Expense date, ${dateLabel(value, today)}`} testID={testID}>
+        <Text style={textStyle}>📅 <Text style={boldStyle}>{dateLabel(value, today)}</Text></Text>
       </Pressable>
       {open && Platform.OS === 'ios' && (
         <View style={{ width: '100%', borderRadius: 16, overflow: 'hidden', backgroundColor: '#ffffff14' }}>

@@ -154,24 +154,28 @@ export function CreateGroupSheet({ busy, error, onCreate, onClose }: {
   return (
     <BottomSheet onClose={onClose} panelStyle={[k.lightSheet, web && k.sheetWeb]} pillColor="#14221c26" resizable testID="create-group-sheet">
       <ScrollView style={k.sheetScroll} contentContainerStyle={k.sheetScrollBody} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-        <Text style={k.sheetTitle} accessibilityRole="header">Create a group</Text>
+        <View style={k.sheetHeadL}>
+          <Pressable onPress={onClose} accessibilityRole="button" testID="create-group-cancel"><Text style={k.lightCancel}>Cancel</Text></Pressable>
+          <Text style={k.sheetTitleC} accessibilityRole="header">New group</Text>
+          <View style={{ width: 52 }} />
+        </View>
+        <Text style={k.label}>Group name</Text>
+        <TextInput testID="group-name" autoFocus value={name} onChangeText={setName} maxLength={80} placeholder="Tahoe weekend" placeholderTextColor={T.hint} style={[k.input, noOutline]} returnKeyType="done" onSubmitEditing={() => valid && !busy && create()} />
         <Text style={k.label}>Icon</Text>
         <View style={k.chips} testID="emoji-picker">
           {PICKER_EMOJIS.map((e) => (
-            <Pressable key={e} style={[k.emojiCell, emoji === e && k.chipOn]} onPress={() => setEmoji(e)} accessibilityRole="button" accessibilityLabel={`Icon ${e}`} accessibilityState={{ selected: emoji === e }} testID={`emoji-${e}`}>
+            <Pressable key={e} style={[k.emojiCell, emoji === e && k.emojiOn]} onPress={() => setEmoji(e)} accessibilityRole="button" accessibilityLabel={`Icon ${e}`} accessibilityState={{ selected: emoji === e }} testID={`emoji-${e}`}>
               <Text style={{ fontSize: 20 }}>{e}</Text>
             </Pressable>
           ))}
         </View>
-        <Text style={k.label}>Name</Text>
-        <TextInput testID="group-name" autoFocus value={name} onChangeText={setName} maxLength={80} placeholder="Tahoe weekend" placeholderTextColor={T.hint} style={[k.input, noOutline]} returnKeyType="done" onSubmitEditing={() => valid && !busy && create()} />
         <Text style={k.label}>Currency</Text>
         <TextInput testID="group-currency" value={currency} onChangeText={(text) => setCurrency(text.toUpperCase().slice(0, 3))} autoCapitalize="characters" autoCorrect={false} style={[k.input, noOutline, { width: 110 }]} />
         {error && <Text style={k.error} testID="create-group-error">{error}</Text>}
-        <View style={[k.sheetButtons, { marginTop: 'auto', paddingTop: 8 }]}>
-          <Pressable style={[k.btn, k.ghost, k.flex1]} onPress={onClose} accessibilityRole="button"><Text style={[k.btnText, { color: T.teal }]}>Cancel</Text></Pressable>
-          <Pressable style={[k.btn, k.flex1, (!valid || busy) && k.btnOff]} disabled={!valid || busy} onPress={create} accessibilityRole="button" accessibilityState={{ disabled: !valid || busy, busy }} testID="create-group-save">
-            <Text style={k.btnText}>{busy ? 'Creating…' : 'Create'}</Text>
+        <Text style={k.helper}>You'll get an invite link to share as soon as the group is created.</Text>
+        <View style={{ marginTop: 'auto', paddingTop: 8 }}>
+          <Pressable style={[k.btn, (!valid || busy) && k.btnOff]} disabled={!valid || busy} onPress={create} accessibilityRole="button" accessibilityState={{ disabled: !valid || busy, busy }} testID="create-group-save">
+            <Text style={k.btnText}>{busy ? 'Creating…' : 'Create group'}</Text>
           </Pressable>
         </View>
       </ScrollView>
@@ -400,7 +404,7 @@ export function AddSheet({ members, youId, currency, groupName, initial, onClose
             <TextInput testID="expense-description" value={description} onChangeText={setDescription} maxLength={80} placeholder="What was it for?" placeholderTextColor="#ffffff59" style={[k.desc, noOutline]} accessibilityLabel="Description" />
             <View style={k.pick}>
               <Pressable style={k.dp} onPress={() => setPickPayer((v) => !v)} accessibilityRole="button" testID="payer-chip"><Text style={k.dpText}>Paid by <Text style={k.dpB}>{nameOf(payerId)} ▾</Text></Text></Pressable>
-              <DateChip value={date} today={today} onChange={setDate} style={k.dp} textStyle={k.dpText} boldStyle={k.dpB} testID="date-chip" />
+              <DateChip value={date} today={today} onChange={setDate} style={k.dp} activeStyle={k.dpRing} textStyle={k.dpText} boldStyle={k.dpB} testID="date-chip" />
             </View>
             {pickPayer && (
               <View style={k.payerList}>
@@ -779,6 +783,11 @@ const k = StyleSheet.create({
   sheetScroll: { flexShrink: 1 },
   sheetScrollBody: { gap: 10, flexGrow: 1 },
   sheetWeb: { width: '100%', maxWidth: 480, alignSelf: 'center' },
+  sheetHeadL: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingBottom: 4 },
+  sheetTitleC: { fontSize: 17, fontWeight: '900', color: T.ink },
+  lightCancel: { color: T.muted, fontWeight: '700', fontSize: 16, width: 52 },
+  emojiOn: { borderColor: T.teal, borderWidth: 2, backgroundColor: '#e3f1ed' },
+  helper: { color: T.muted, fontSize: 14, lineHeight: 20, marginTop: 4 },
   sheetTitle: { fontSize: 20, fontWeight: '900', color: T.ink },
   sheetButtons: { flexDirection: 'row', gap: 10, marginTop: 8 },
   label: { fontSize: 12, fontWeight: '800', letterSpacing: 1, textTransform: 'uppercase', color: T.muted, marginTop: 6 },
@@ -815,6 +824,7 @@ const k = StyleSheet.create({
   pick: { flexDirection: 'row', gap: 8, paddingHorizontal: 18, paddingTop: 12, paddingBottom: 4, justifyContent: 'center', flexWrap: 'wrap' },
   payerList: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingHorizontal: 18, paddingTop: 4, justifyContent: 'center' },
   dp: { backgroundColor: '#ffffff14', borderWidth: 1, borderColor: '#ffffff22', borderRadius: 999, paddingVertical: 8, paddingHorizontal: 12 },
+  dpRing: { borderColor: T.ok, backgroundColor: '#2dd4bf1f' },
   dpOn: { backgroundColor: T.ok, borderColor: T.ok },
   dpText: { color: '#e6efe9', fontSize: 13, fontWeight: '800' },
   dpB: { color: T.ok },
