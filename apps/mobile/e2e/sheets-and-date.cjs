@@ -21,7 +21,7 @@ const check = (name, ok, extra = '') => { console.log(ok ? 'PASS' : 'FAIL', name
   check('no Trip/Home/Couple/Dinners chips', (await p.getByText(/^(🏔️|🏠|💑|🍜)\s+(Trip|Home|Couple|Dinners)$/).count()) === 0)
   const height = async () => (await id('create-group-sheet').boundingBox()).height
   const pill = async () => { const b = await id('sheet-pill').boundingBox(); return { x: b.x + b.width / 2, y: b.y + b.height / 2 } }
-  const dragPill = async (dy, steps = 8) => { const { x, y } = await pill(); await p.mouse.move(x, y); await p.mouse.down(); for (let i = 1; i <= steps; i++) await p.mouse.move(x, y + (dy * i) / steps); await p.mouse.up(); await p.waitForTimeout(450) }
+  const dragPill = async (dy, steps = 8, pace = 0) => { const { x, y } = await pill(); await p.mouse.move(x, y); await p.mouse.down(); for (let i = 1; i <= steps; i++) { await p.mouse.move(x, y + (dy * i) / steps); if (pace) await p.waitForTimeout(pace) } await p.mouse.up(); await p.waitForTimeout(450) }
   const selected = () => p.evaluate(() => String(window.getSelection()))
   const h0 = await height()
   await dragPill(-200)
@@ -33,8 +33,12 @@ const check = (name, ok, extra = '') => { console.log(ok ? 'PASS' : 'FAIL', name
   check('drag pill down collapses to compact', Math.abs(h2 - h0) < 6, `h=${Math.round(h2)}`)
   await dragPill(20, 4)
   check('small drag snaps back (stays open)', (await id('create-group-sheet').count()) === 1 && Math.abs((await height()) - h0) < 6)
-  await dragPill(260)
-  check('drag pill down far dismisses the sheet', (await id('create-group-sheet').count()) === 0)
+  await dragPill(40, 2)
+  check('a quick 40px drag does not dismiss', (await id('create-group-sheet').count()) === 1 && Math.abs((await height()) - h0) < 6, `h0=${Math.round(h0)}`)
+  await dragPill(Math.round(h0 / 3) - 15, 10, 40)   // a slow drag, so it is not a flick
+  check('drag just under a third of the sheet height does not dismiss', (await id('create-group-sheet').count()) === 1)
+  await dragPill(Math.round(h0 / 3) + 30, 10, 40)
+  check('drag pill down past a third dismisses the sheet', (await id('create-group-sheet').count()) === 0)
   await id('create-group-card').click(); await id('create-group-sheet').waitFor(); await p.waitForTimeout(400)
   await dragPill(-200)
   await dragPill(300)

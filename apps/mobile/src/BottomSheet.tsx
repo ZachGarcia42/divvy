@@ -1,7 +1,7 @@
 // The bottom sheet used for create group, switch group and add expense. The grab pill drags the panel:
 //  - compact (content height) sheets that are `resizable` grow to a tall snap point when dragged up, shrink back when
-//    dragged down, and close when dragged down again;
-//  - fixed-height sheets just close when dragged down far enough, and otherwise snap back.
+//    dragged down, and close only when dragged down past a third of their height or flicked down fast;
+//  - fixed-height sheets close by the same rule, and otherwise snap back.
 // The sheet slides in on its own while the scrim fades, so the dimmed layer never travels up with the panel (a stock
 // `animationType="slide"` Modal slides everything, scrim included, which shows as a dark band above the panel).
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
@@ -21,6 +21,7 @@ export function BottomSheet({ onClose, panelStyle, pillColor, resizable = false,
   const drag = useRef(new Animated.Value(0)).current
   const live = useRef({ snap, onClose })
   live.current = { snap, onClose }
+  const panelHeight = useRef(0) // measured panel height; the dismiss distance is a third of it
   const native = !web
   const inset = useBottomInset()
 
@@ -40,7 +41,7 @@ export function BottomSheet({ onClose, panelStyle, pillColor, resizable = false,
     onPanResponderTerminationRequest: () => false,
     onPanResponderMove: (_event, g) => drag.setValue(dragOffset(g.dy, live.current.snap, resizable && !fixedHeight)),
     onPanResponderRelease: (_event, g) => {
-      const outcome = dragOutcome({ dy: g.dy, vy: g.vy, snap: live.current.snap, resizable: resizable && !fixedHeight })
+      const outcome = dragOutcome({ dy: g.dy, vy: g.vy, snap: live.current.snap, resizable: resizable && !fixedHeight, height: panelHeight.current || undefined })
       const tap = Math.abs(g.dx) < 6 && Math.abs(g.dy) < 6
       if (tap && resizable && !fixedHeight) { setSnap((s) => (s === 'tall' ? 'compact' : 'tall')); back(); return }
       if (outcome === 'expand') setSnap('tall')
@@ -65,6 +66,7 @@ export function BottomSheet({ onClose, panelStyle, pillColor, resizable = false,
           <Animated.View
             style={[panelStyle, !fixedHeight && snap === 'tall' && styles.tall, inset ? { paddingBottom: basePaddingBottom(panelStyle) + inset } : null, { transform: [{ translateY: Animated.add(enter, drag) }] }]}
             testID={testID}
+            onLayout={(e) => { panelHeight.current = e.nativeEvent.layout.height }}
           >
             <View
               {...pan.panHandlers}
