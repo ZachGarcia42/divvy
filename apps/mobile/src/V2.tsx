@@ -33,6 +33,9 @@ export const todayIso = () => {
   const d = new Date()
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
+const symbolOf = (currency: string) => {
+  try { return new Intl.NumberFormat('en', { style: 'currency', currency }).formatToParts(0).find((part) => part.type === 'currency')?.value ?? currency } catch { return currency }
+}
 export const localIso = (offsetDays = 0) => {
   const d = new Date()
   d.setDate(d.getDate() + offsetDays)
@@ -394,7 +397,7 @@ export function AddSheet({ members, youId, currency, groupName, initial, onClose
           </View>
           <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ paddingBottom: 12 }}>
             <View style={k.bigRow}>
-              <Text style={k.bigC}>$</Text>
+              <Text style={k.bigC}>{symbolOf(currency)}</Text>
               <TextInput testID="expense-amount" autoFocus value={amountText} onChangeText={(text) => { setError(null); setAmount(text) }} placeholder="0.00" placeholderTextColor="#ffffff40" keyboardType="decimal-pad" inputMode="decimal" style={[k.big, noOutline]} accessibilityLabel="Amount" />
             </View>
             <TextInput testID="expense-description" value={description} onChangeText={setDescription} maxLength={80} placeholder="What was it for?" placeholderTextColor="#ffffff59" style={[k.desc, noOutline]} accessibilityLabel="Description" />
@@ -810,8 +813,8 @@ const k = StyleSheet.create({
   inkSave: { color: T.aqua, fontWeight: '900', fontSize: 16 },
   inkSaveOff: { color: '#ffffff40' },
   bigRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginTop: 8 },
-  bigC: { color: '#7fa597', fontSize: 34, fontWeight: '900', marginRight: 4 },
-  big: { color: 'white', fontSize: 54, fontWeight: '900', letterSpacing: -2, minWidth: 120, textAlign: 'center', padding: 0 },
+  bigC: { color: '#7fa597', fontSize: 34, fontWeight: '900', position: 'absolute', left: 22 },
+  big: { color: 'white', fontSize: 54, fontWeight: '900', letterSpacing: -2, flex: 1, minWidth: 0, textAlign: 'center', padding: 0, paddingHorizontal: 44 },
   desc: { marginHorizontal: 18, marginTop: 6, textAlign: 'center', fontSize: 17, fontWeight: '700', color: '#e6efe9', borderBottomWidth: 1, borderBottomColor: '#ffffff26', paddingTop: 8, paddingBottom: 12 },
   pick: { flexDirection: 'row', gap: 8, paddingHorizontal: 18, paddingTop: 12, paddingBottom: 4, justifyContent: 'center', flexWrap: 'wrap' },
   payerList: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingHorizontal: 18, paddingTop: 4, justifyContent: 'center' },
