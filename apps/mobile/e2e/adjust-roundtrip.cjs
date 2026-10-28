@@ -14,7 +14,7 @@ const check = (name, ok, extra = '') => { console.log(ok ? 'PASS' : 'FAIL', name
   p.on('pageerror', (e) => { console.log('PAGEERROR', e.message); failures++ })
   await p.goto(base); await p.getByText('Save', { exact: true }).click({ timeout: 3000 }).catch(() => {})
   let home = await api('/api/home')
-  if (!home.groups.length) { await id('template-trip').click(); await id('create-group-save').click(); await id('back-to-groups').waitFor(); home = await api('/api/home') }
+  if (!home.groups.length) { await api('/api/groups', 'POST', { name: 'Tahoe', currency: 'USD', timezone: 'America/Los_Angeles' }); home = await api('/api/home') }
   const gid = home.groups[0].id
   let d = await api(`/api/groups/${gid}`)
   while (d.members.length < 4) { await api(`/api/groups/${gid}/people`, 'POST', { displayName: 'P' + d.members.length }); d = await api(`/api/groups/${gid}`) }

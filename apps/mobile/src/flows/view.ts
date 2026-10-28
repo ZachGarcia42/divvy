@@ -3,13 +3,6 @@ import { formatMoney } from '@divvy/domain'
 
 export type HomeGroupLike = { id: string; name: string; currency: string; yourNetMinor: number; archived: boolean; members?: string[]; latest?: { date: string } | null }
 
-export const TEMPLATES = [
-  { id: 'trip', emoji: '🏔️', label: 'Trip', name: 'Trip' },
-  { id: 'home', emoji: '🏠', label: 'Home', name: 'Home' },
-  { id: 'couple', emoji: '💑', label: 'Couple', name: 'Us' },
-  { id: 'dinners', emoji: '🍜', label: 'Dinners', name: 'Dinners' },
-] as const
-
 export const DEFAULT_EMOJI = '👥'
 const EMOJI_LEAD = /^(\p{Extended_Pictographic}(?:\uFE0F|\u200D\p{Extended_Pictographic}|\p{Emoji_Modifier})*)\s+/u
 
@@ -26,12 +19,8 @@ export function groupIcon(group: { name: string; emoji?: string | null }): { emo
   return group.emoji ? { emoji: group.emoji, title: parsed.title } : parsed
 }
 
-/** Offered by the create-group picker (templates first). */
+/** Offered by the create-group icon picker. */
 export const PICKER_EMOJIS = ['🏔️', '🏠', '💑', '🍜', '✈️', '🏖️', '🎉', '🛒', '🚗', '⚽', '🎬', '🐶'] as const
-
-export function templateName(template: { emoji: string; name: string }) {
-  return `${template.emoji} ${template.name}`
-}
 
 export type NetTone = 'owed' | 'owe' | 'settled'
 export function netTone(minor: number): NetTone { return minor > 0 ? 'owed' : minor < 0 ? 'owe' : 'settled' }

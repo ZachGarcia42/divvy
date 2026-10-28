@@ -1,0 +1,70 @@
+// Browser checks for v2 feedback items 2-5: the Groups header has no "+" button, no template chips, the grab pill drags
+// (resize / dismiss) without selecting text, and the add-expense date is a real picker with Today / Yesterday labels.
+// Usage: NODE_PATH=<dir with playwright> node e2e/sheets-and-date.cjs http://127.0.0.1:18787 <TOKEN>
+const { start } = require('./common.cjs')
+const iso = (off = 0) => { const d = new Date(); d.setDate(d.getDate() + off); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}` }
+let fails = 0
+const check = (name, ok, extra = '') => { console.log(ok ? 'PASS' : 'FAIL', name, extra); if (!ok) fails++ }
+;(async () => {
+  const [base, TOKEN] = process.argv.slice(2)
+  const { browser, p, id, api, gid, errors } = await start(base, TOKEN, { viewport: { width: 420, height: 900 } })
+  const vh = 900
+  // --- Groups home
+  await id('back-to-groups').click(); await id('create-group-card').waitFor()
+  check('no round + create button', (await id('create-group-plus').count()) === 0)
+  check('Create a group card kept', await id('create-group-card').isVisible())
+  check('no "Start from a template" text', (await p.getByText(/start from a template/i).count()) === 0)
+  await id('create-group-card').click(); await id('create-group-sheet').waitFor(); await p.waitForTimeout(400)
+  check('no template chips in sheet', (await p.locator('[data-testid^="template-"]').count()) === 0)
+  check('no Trip/Home/Couple/Dinners chips', (await p.getByText(/^(🏔️|🏠|💑|🍜)\s+(Trip|Home|Couple|Dinners)$/).count()) === 0)
+  const height = async () => (await id('create-group-sheet').boundingBox()).height
+  const pill = async () => { const b = await id('sheet-pill').boundingBox(); return { x: b.x + b.width / 2, y: b.y + b.height / 2 } }
+  const dragPill = async (dy, steps = 8) => { const { x, y } = await pill(); await p.mouse.move(x, y); await p.mouse.down(); for (let i = 1; i <= steps; i++) await p.mouse.move(x, y + (dy * i) / steps); await p.mouse.up(); await p.waitForTimeout(450) }
+  const selected = () => p.evaluate(() => String(window.getSelection()))
+  const h0 = await height()
+  await dragPill(-200)
+  const h1 = await height()
+  check('drag pill up expands to the tall snap', h1 > h0 + 100 && Math.abs(h1 - vh * 0.92) < 6, `compact=${Math.round(h0)} tall=${Math.round(h1)}`)
+  check('dragging the pill selects no text', (await selected()) === '', JSON.stringify(await selected()))
+  await dragPill(200)
+  const h2 = await height()
+  check('drag pill down collapses to compact', Math.abs(h2 - h0) < 6, `h=${Math.round(h2)}`)
+  await dragPill(20, 4)
+  check('small drag snaps back (stays open)', (await id('create-group-sheet').count()) === 1 && Math.abs((await height()) - h0) < 6)
+  await dragPill(260)
+  check('drag pill down far dismisses the sheet', (await id('create-group-sheet').count()) === 0)
+  await id('create-group-card').click(); await id('create-group-sheet').waitFor(); await p.waitForTimeout(400)
+  await dragPill(-200)
+  await dragPill(300)
+  check('from tall, one long drag down collapses (does not dismiss)', (await id('create-group-sheet').count()) === 1)
+  await p.keyboard.press('Escape'); await p.waitForTimeout(300)
+  check('Escape still closes the sheet', (await id('create-group-sheet').count()) === 0)
+  // --- Date picker in Add expense
+  await id(`group-${gid}`).click(); await id('add-expense').waitFor(); await p.waitForTimeout(200)
+  await id('add-expense').click(); await id('add-sheet').waitFor(); await p.waitForTimeout(400)
+  const chip = () => id('date-chip').innerText()
+  check('default label is Today', /Today/.test(await chip()), await chip())
+  const input = id('date-input')
+  check('date control is a native date input', (await input.getAttribute('type')) === 'date' && (await input.inputValue()) === iso(0))
+  check('cannot pick the future (max=today)', (await input.getAttribute('max')) === iso(0))
+  await input.fill(iso(-1)); check('yesterday labelled Yesterday', /Yesterday/.test(await chip()), await chip())
+  await input.fill(iso(-9)); const lab = await chip(); check('older date shows a weekday + month/day, not Today/Yesterday', !/Today|Yesterday/.test(lab) && /[A-Z][a-z]{2}/.test(lab), lab)
+  await input.fill(iso(0)); check('back to Today', /Today/.test(await chip()))
+  // dirty only when the date changed: Escape with only the date changed must ask to discard
+  await input.fill(iso(-3)); await p.keyboard.press('Escape'); await p.waitForTimeout(250)
+  check('changing only the date makes the sheet dirty (discard prompt)', await id('discard-yes').isVisible().catch(() => false))
+  await id('discard-keep').click(); await p.waitForTimeout(200)
+  // save with a picked date, check the stored date and the list heading
+  await id('expense-amount').fill('12.00'); await id('expense-description').fill('Picked date lunch').catch(() => {})
+  const before = (await api(`/api/groups/${gid}`)).expenses.length
+  await id('sheet-save').click().catch(async () => { await p.getByText('Save', { exact: true }).last().click() })
+  await p.waitForTimeout(900)
+  const after = (await api(`/api/groups/${gid}`)).expenses
+  const saved = after.find((e) => e.description === 'Picked date lunch')
+  check('expense saved with the picked local date', !!saved && saved.date === iso(-3), JSON.stringify(saved && saved.date))
+  check('no page errors', errors.length === 0, errors.join(';'))
+  await p.screenshot({ path: '/workspace/eng-scratch/shots/after-date.png' })
+  await browser.close()
+  console.log(fails ? `${fails} FAILED` : 'ALL PASS')
+  process.exit(fails ? 1 : 0)
+})().catch((e) => { console.error(e); process.exit(2) })

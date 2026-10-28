@@ -955,7 +955,7 @@ function Ledger({
   } else if (screen === 'groups' || !groupId) {
     body = (
       <>
-        <GroupsHome home={home} onOpen={openGroup} onCreate={(template) => { setCreateError(null); setCreating({ template }) }} onPaste={openPaste} onJoinLink={pasteCard} />
+        <GroupsHome home={home} onOpen={openGroup} onCreate={() => { setCreateError(null); setCreating({}) }} onPaste={openPaste} onJoinLink={pasteCard} />
         {home.groups.length === 0 && showPaste && pasteCard}
         {joinError && <Text style={styles.error}>{joinError}</Text>}
         {error && !home.groups.length && <Text style={styles.error}>{error}</Text>}
@@ -1007,7 +1007,7 @@ function Ledger({
           initial={sheetInitial} onClose={() => setAdding(null)} onSave={(value) => saveExpense(value, adding.edit)} />
       )}
       {switcher && home && <SwitcherSheet groups={home.groups} currentId={groupId} onPick={openGroup} onAll={() => { setSwitcher(false); goGroups() }} onClose={() => setSwitcher(false)} />}
-      {creating && <CreateGroupSheet initialTemplate={creating.template} busy={createBusy} error={createError} onCreate={createGroup} onClose={() => setCreating(null)} />}
+      {creating && <CreateGroupSheet busy={createBusy} error={createError} onCreate={createGroup} onClose={() => setCreating(null)} />}
       {editingName && home && (
         <NameSheet
           initial={home.you.name}

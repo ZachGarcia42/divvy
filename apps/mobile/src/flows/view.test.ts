@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { SNACK_MS, snackOwner, snackStays, breakdown, dateHeading, groupByDate, historyLines, methodPhrase, netTone, overallUsd, paidPhrase, signedMoney, groupIcon, PICKER_EMOJIS, splitGroupName, startScreen, templateName, TEMPLATES, updatedPhrase, yourPosition } from './view'
+import { SNACK_MS, snackOwner, snackStays, breakdown, dateHeading, groupByDate, historyLines, methodPhrase, netTone, overallUsd, paidPhrase, signedMoney, groupIcon, PICKER_EMOJIS, splitGroupName, startScreen, updatedPhrase, yourPosition } from './view'
 
 const g = (id: string, net: number, extra: object = {}) => ({ id, name: id, currency: 'USD', yourNetMinor: net, archived: false, ...extra })
 
@@ -23,8 +23,6 @@ describe('groups home', () => {
     expect(splitGroupName('Mission St apartment')).toEqual({ emoji: '👥', title: 'Mission St apartment' })
     expect(splitGroupName('👨‍👩‍👧 Family')).toEqual({ emoji: '👨‍👩‍👧', title: 'Family' })
     expect(splitGroupName('2025 trip')).toEqual({ emoji: '👥', title: '2025 trip' })
-    expect(TEMPLATES.map(templateName)).toEqual(['🏔️ Trip', '🏠 Home', '💑 Us', '🍜 Dinners'])
-    for (const t of TEMPLATES) expect(splitGroupName(templateName(t)).title).toBe(t.name)
   })
   it('says when a group was last touched', () => {
     expect(updatedPhrase('2026-10-27', '2026-10-27')).toBe('updated today')
@@ -110,7 +108,6 @@ describe('opening the app', () => {
     expect(groupIcon({ name: '🏠 Home', emoji: '🐶' })).toEqual({ emoji: '🐶', title: 'Home' })
     expect(groupIcon({ name: '🏠 Home', emoji: null })).toEqual({ emoji: '🏠', title: 'Home' })
     expect(groupIcon({ name: 'Plain' })).toEqual({ emoji: '👥', title: 'Plain' })
-    for (const t of TEMPLATES) expect(PICKER_EMOJIS).toContain(t.emoji)
   })
 })
 

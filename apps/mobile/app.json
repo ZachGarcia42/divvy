@@ -12,7 +12,13 @@
     },
     "android": {
       "package": "app.divvy.ledger",
-      "softwareKeyboardLayoutMode": "resize"
+      "softwareKeyboardLayoutMode": "resize",
+      "versionCode": 4,
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-foreground.png",
+        "monochromeImage": "./assets/adaptive-monochrome.png",
+        "backgroundColor": "#0F766E"
+      }
     },
     "plugins": [
       "expo-secure-store"
@@ -22,6 +28,10 @@
       "eas": {
         "projectId": "3568ac6b-d831-42df-bcb3-3056c17a6f37"
       }
+    },
+    "icon": "./assets/icon.png",
+    "web": {
+      "favicon": "./assets/favicon.png"
     }
   }
 }

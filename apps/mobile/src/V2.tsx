@@ -2,13 +2,17 @@
 // Data logic stays in App.tsx (Ledger) and flows/*; these components only render and report taps.
 import { formatMoney, parseMajor, type SplitMethod, type SplitSpec } from '@divvy/domain'
 import { useMemo, useState, type ReactNode } from 'react'
-import { KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native'
+import { Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native'
 import { adjustDisplay, adjustSign, adjustTyped, evaluate, groupedMajor, majorString, METHOD_LABELS, METHODS, newDraft, switchMethod, toggleAdjustSign, type Draft } from './flows/split'
 import {
   breakdown, groupByDate, historyLines, methodPhrase, monthDay, netTone, NET_WORDS, overallUsd, paidPhrase, peopleCount,
-  signedMoney, groupIcon, PICKER_EMOJIS, DEFAULT_EMOJI, TEMPLATES, templateName, updatedPhrase, yourPosition, type HistoryEntry,
+  signedMoney, groupIcon, PICKER_EMOJIS, DEFAULT_EMOJI, updatedPhrase, yourPosition, type HistoryEntry,
 } from './flows/view'
 import { middleEllipsis } from './flows/composer'
+import { SelectInput } from './SelectInput'
+import { BottomSheet } from './BottomSheet'
+import { DateChip } from './DatePicker'
+import { dateToSave } from './flows/date'
 import type { Expense, GroupDetail, Home, HomeGroup, Payment, Settlement } from './types'
 
 export const T = {
@@ -47,11 +51,6 @@ export const todayIso = () => {
 const symbolOf = (currency: string) => {
   try { return new Intl.NumberFormat('en', { style: 'currency', currency }).formatToParts(0).find((part) => part.type === 'currency')?.value ?? currency } catch { return currency }
 }
-export const localIso = (offsetDays = 0) => {
-  const d = new Date()
-  d.setDate(d.getDate() + offsetDays)
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-}
 
 function IconButton({ label, glyph, onPress, testID }: { label: string; glyph: string; onPress: () => void; testID?: string }) {
   return (
@@ -77,7 +76,7 @@ function Eyebrow({ children }: { children: ReactNode }) { return <Text style={k.
 // ───────────────────────── Groups home ─────────────────────────
 
 export function GroupsHome({ home, onOpen, onCreate, onPaste, onJoinLink }: {
-  home: Home; onOpen: (id: string) => void; onCreate: (templateId?: string) => void; onPaste: () => void; onJoinLink?: ReactNode
+  home: Home; onOpen: (id: string) => void; onCreate: () => void; onPaste: () => void; onJoinLink?: ReactNode
 }) {
   const groups = home.groups.filter((group) => !group.archived)
   const today = todayIso()
@@ -88,7 +87,6 @@ export function GroupsHome({ home, onOpen, onCreate, onPaste, onJoinLink }: {
     <>
       <View style={k.top}>
         <Text style={k.h1} accessibilityRole="header">Groups</Text>
-        <IconButton label="Create a group" glyph="+" onPress={() => onCreate()} testID="create-group-plus" />
       </View>
       <View style={k.hero} testID="overall">
         <Text style={k.heroK}>Overall, across {overall.groupCount} {overall.groupCount === 1 ? 'group' : 'groups'}</Text>
@@ -104,7 +102,6 @@ export function GroupsHome({ home, onOpen, onCreate, onPaste, onJoinLink }: {
       </View>
       <Pressable style={k.dashed} onPress={() => onCreate()} accessibilityRole="button" accessibilityLabel="Create a group" testID="create-group-card">
         <Text style={k.dashedText}>+  Create a group</Text>
-        <Text style={k.dashedSub}>Start from a template: trip, home, couple, dinners</Text>
       </Pressable>
       {onJoinLink}
     </>
@@ -134,7 +131,7 @@ function GroupRow({ group, index, today, first, onPress }: { group: HomeGroup; i
   )
 }
 
-export function EmptyGroups({ onCreate, onPaste }: { onCreate: (templateId?: string) => void; onPaste: () => void }) {
+export function EmptyGroups({ onCreate, onPaste }: { onCreate: () => void; onPaste: () => void }) {
   return (
     <View style={k.empty} testID="no-groups">
       <View style={k.emptyArt}><Text style={k.emptyEmoji} accessible={false}>🧾</Text></View>
@@ -142,44 +139,22 @@ export function EmptyGroups({ onCreate, onPaste }: { onCreate: (templateId?: str
       <Text style={k.emptyCopy}>Make a group for a trip, your home or a dinner, then add what each of you owes. Divvy keeps the running total.</Text>
       <Pressable style={k.btn} onPress={() => onCreate()} accessibilityRole="button" testID="empty-create"><Text style={k.btnText}>Create a group</Text></Pressable>
       <Pressable style={[k.btn, k.ghost]} onPress={onPaste} accessibilityRole="button" testID="empty-invite"><Text style={[k.btnText, { color: T.teal }]}>I have an invite link</Text></Pressable>
-      <Text style={k.emptyHint}>OR START FROM</Text>
-      <View style={k.chips}>
-        {TEMPLATES.map((t) => (
-          <Pressable key={t.id} style={k.chip} onPress={() => onCreate(t.id)} accessibilityRole="button" accessibilityLabel={`${t.label} template`} testID={`template-${t.id}`}>
-            <Text style={k.chipText}>{t.emoji}  {t.label}</Text>
-          </Pressable>
-        ))}
-      </View>
     </View>
   )
 }
 
-export function CreateGroupSheet({ initialTemplate, busy, error, onCreate, onClose }: {
-  initialTemplate?: string; busy: boolean; error: string | null; onCreate: (name: string, currency: string, emoji: string) => void; onClose: () => void
+export function CreateGroupSheet({ busy, error, onCreate, onClose }: {
+  busy: boolean; error: string | null; onCreate: (name: string, currency: string, emoji: string) => void; onClose: () => void
 }) {
-  const start = TEMPLATES.find((t) => t.id === initialTemplate)
-  const [name, setName] = useState(start ? start.name : '')
-  const [emoji, setEmoji] = useState<string>(start ? start.emoji : DEFAULT_EMOJI)
-  const pickTemplate = (t: (typeof TEMPLATES)[number]) => { setName(t.name); setEmoji(t.emoji) }
+  const [name, setName] = useState('')
+  const [emoji, setEmoji] = useState<string>(DEFAULT_EMOJI)
   const create = () => onCreate(name.trim(), currency.toUpperCase(), emoji)
   const [currency, setCurrency] = useState('USD')
   const valid = name.trim().length > 0 && name.trim().length <= 80 && /^[A-Za-z]{3}$/.test(currency)
   return (
-    <Modal transparent animationType="slide" visible onRequestClose={onClose}>
-      <Pressable style={k.scrim} onPress={onClose} accessibilityRole="button" accessibilityLabel="Close" tabIndex={-1} />
-      <View style={[k.lightSheet, web && k.sheetWeb]} testID="create-group-sheet">
-        <View style={k.grabberDark} />
+    <BottomSheet onClose={onClose} panelStyle={[k.lightSheet, web && k.sheetWeb]} pillColor="#14221c26" resizable testID="create-group-sheet">
+      <ScrollView style={k.sheetScroll} contentContainerStyle={k.sheetScrollBody} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
         <Text style={k.sheetTitle} accessibilityRole="header">Create a group</Text>
-        <View style={k.chips}>
-          {TEMPLATES.map((t) => {
-            const on = name === t.name && emoji === t.emoji
-            return (
-              <Pressable key={t.id} style={[k.chip, on && k.chipOn]} onPress={() => pickTemplate(t)} accessibilityRole="button" accessibilityState={{ selected: on }} testID={`template-pick-${t.id}`}>
-                <Text style={[k.chipText, on && k.chipTextOn]}>{t.emoji}  {t.label}</Text>
-              </Pressable>
-            )
-          })}
-        </View>
         <Text style={k.label}>Icon</Text>
         <View style={k.chips} testID="emoji-picker">
           {PICKER_EMOJIS.map((e) => (
@@ -193,14 +168,14 @@ export function CreateGroupSheet({ initialTemplate, busy, error, onCreate, onClo
         <Text style={k.label}>Currency</Text>
         <TextInput testID="group-currency" value={currency} onChangeText={(text) => setCurrency(text.toUpperCase().slice(0, 3))} autoCapitalize="characters" autoCorrect={false} style={[k.input, noOutline, { width: 110 }]} />
         {error && <Text style={k.error} testID="create-group-error">{error}</Text>}
-        <View style={k.sheetButtons}>
+        <View style={[k.sheetButtons, { marginTop: 'auto', paddingTop: 8 }]}>
           <Pressable style={[k.btn, k.ghost, k.flex1]} onPress={onClose} accessibilityRole="button"><Text style={[k.btnText, { color: T.teal }]}>Cancel</Text></Pressable>
           <Pressable style={[k.btn, k.flex1, (!valid || busy) && k.btnOff]} disabled={!valid || busy} onPress={create} accessibilityRole="button" accessibilityState={{ disabled: !valid || busy, busy }} testID="create-group-save">
             <Text style={k.btnText}>{busy ? 'Creating…' : 'Create'}</Text>
           </Pressable>
         </View>
-      </View>
-    </Modal>
+      </ScrollView>
+    </BottomSheet>
   )
 }
 
@@ -208,10 +183,8 @@ export function SwitcherSheet({ groups, currentId, onPick, onAll, onClose }: {
   groups: HomeGroup[]; currentId: string | null; onPick: (id: string) => void; onAll: () => void; onClose: () => void
 }) {
   return (
-    <Modal transparent animationType="slide" visible onRequestClose={onClose}>
-      <Pressable style={k.scrim} onPress={onClose} accessibilityRole="button" accessibilityLabel="Close" tabIndex={-1} />
-      <View style={[k.lightSheet, web && k.sheetWeb]} testID="switcher">
-        <View style={k.grabberDark} />
+    <BottomSheet onClose={onClose} panelStyle={[k.lightSheet, web && k.sheetWeb]} pillColor="#14221c26" testID="switcher">
+      <View style={{ gap: 10 }}>
         <Text style={k.sheetTitle} accessibilityRole="header">Switch group</Text>
         <ScrollView style={{ maxHeight: 360 }}>
           {groups.filter((g) => !g.archived).map((group, i) => {
@@ -229,7 +202,7 @@ export function SwitcherSheet({ groups, currentId, onPick, onAll, onClose }: {
         </ScrollView>
         <Pressable style={[k.btn, k.ghost]} onPress={onAll} accessibilityRole="button" testID="switch-all"><Text style={[k.btnText, { color: T.teal }]}>All groups</Text></Pressable>
       </View>
-    </Modal>
+    </BottomSheet>
   )
 }
 
@@ -370,7 +343,8 @@ export function AddSheet({ members, youId, currency, groupName, initial, onClose
   const [description, setDescription] = useState(initial?.description ?? '')
   const [draft, setDraft] = useState<Draft>(() => initial?.draft ?? newDraft(ids))
   const [payerId, setPayer] = useState(initial?.payerId ?? youId)
-  const [when, setWhen] = useState<'today' | 'yesterday' | 'keep'>(initial?.date ? 'keep' : 'today')
+  const [today] = useState(() => todayIso())
+  const [date, setDate] = useState<string>(initial?.date ?? today)
   const [pickPayer, setPickPayer] = useState(false)
   const [confirmDiscard, setConfirmDiscard] = useState(false)
   const [focused, setFocused] = useState<string | null>(null)
@@ -381,9 +355,9 @@ export function AddSheet({ members, youId, currency, groupName, initial, onClose
   const alone = ids.length < 2
   const canSave = ev.ok && !saving && !alone
   const dirty = useMemo(() => {
-    if (initial) return JSON.stringify([amountText, description, draft, payerId, when]) !== JSON.stringify([initial.amountText, initial.description, initial.draft, initial.payerId, initial.date ? 'keep' : 'today'])
-    return !!amountText.trim() || !!description.trim() || payerId !== youId || when !== 'today' || draft.method !== 'equal' || ids.some((id) => !draft.included[id] || draft.shares[id] !== 1 || draft.exact[id] || draft.percent[id] || draft.adjust[id])
-  }, [initial, amountText, description, draft, payerId, when, ids, youId])
+    if (initial) return JSON.stringify([amountText, description, draft, payerId, date]) !== JSON.stringify([initial.amountText, initial.description, initial.draft, initial.payerId, initial.date ?? today])
+    return !!amountText.trim() || !!description.trim() || payerId !== youId || date !== today || draft.method !== 'equal' || ids.some((id) => !draft.included[id] || draft.shares[id] !== 1 || draft.exact[id] || draft.percent[id] || draft.adjust[id])
+  }, [initial, amountText, description, draft, payerId, date, today, ids, youId])
   const tryClose = () => (dirty && !saving ? setConfirmDiscard(true) : onClose())
   const patch = (key: 'exact' | 'percent' | 'adjust', id: string, text: string) => {
     setLastEdited(id)
@@ -397,7 +371,7 @@ export function AddSheet({ members, youId, currency, groupName, initial, onClose
     setSaving(true)
     setError(null)
     try {
-      await onSave({ description: description.trim(), minor, payerId, spec: ev.spec, date: when === 'keep' ? (initial?.date ?? null) : when === 'yesterday' ? localIso(-1) : null })
+      await onSave({ description: description.trim(), minor, payerId, spec: ev.spec, date: dateToSave(date, initial?.date ?? null, today) })
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Could not save that')
       setSaving(false)
@@ -407,14 +381,12 @@ export function AddSheet({ members, youId, currency, groupName, initial, onClose
   const overField = barBad ? lastEdited : null
   const title = initial ? 'Edit expense' : `New expense · ${groupName}`
   return (
-    <Modal transparent animationType="slide" visible onRequestClose={tryClose}>
-      <Pressable style={k.scrim} onPress={tryClose} accessibilityRole="button" accessibilityLabel="Close" tabIndex={-1} />
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={k.inkWrap} pointerEvents="box-none">
-        <View style={[k.ink, web && k.sheetWeb]} testID="add-sheet">
+    <BottomSheet onClose={tryClose} panelStyle={[k.ink, web && k.sheetWeb]} pillColor="#ffffff40" fixedHeight testID="add-sheet">
+      <>
           {/* On web the keyboard order follows the DOM: amount … inputs, Save, then Cancel. The header is last in the DOM and
               the CSS `order` puts everything back where it looks right. Native keeps the plain top-to-bottom order. */}
-          {(web ? ['body', 'foot', 'grabber', 'head'] : ['grabber', 'head', 'body', 'foot']).map((part) => ({
-            grabber: <View key="grabber" style={[k.grabber, ord(-2)]} />, head: <View key="head" style={[k.sheetHead, ord(-1)]}>
+          {(web ? ['body', 'foot', 'head'] : ['head', 'body', 'foot']).map((part) => ({
+            head: <View key="head" style={[k.sheetHead, ord(-1)]}>
             <Pressable onPress={tryClose} accessibilityRole="button" testID="sheet-cancel"><Text style={k.inkCancel}>Cancel</Text></Pressable>
             <Text style={k.inkTitle} numberOfLines={1} accessibilityRole="header">{title}</Text>
             <Pressable onPress={save} disabled={!canSave} accessibilityRole="button" accessibilityState={{ disabled: !canSave }} tabIndex={-1} testID="sheet-save">
@@ -428,9 +400,7 @@ export function AddSheet({ members, youId, currency, groupName, initial, onClose
             <TextInput testID="expense-description" value={description} onChangeText={setDescription} maxLength={80} placeholder="What was it for?" placeholderTextColor="#ffffff59" style={[k.desc, noOutline]} accessibilityLabel="Description" />
             <View style={k.pick}>
               <Pressable style={k.dp} onPress={() => setPickPayer((v) => !v)} accessibilityRole="button" testID="payer-chip"><Text style={k.dpText}>Paid by <Text style={k.dpB}>{nameOf(payerId)} ▾</Text></Text></Pressable>
-              <Pressable style={k.dp} onPress={() => setWhen((w) => (w === 'today' ? 'yesterday' : w === 'yesterday' && initial?.date ? 'keep' : 'today'))} accessibilityRole="button" testID="date-chip">
-                <Text style={k.dpText}><Text style={k.dpB}>{when === 'today' ? 'Today' : when === 'yesterday' ? 'Yesterday' : monthDay(initial?.date ?? '')} ▾</Text></Text>
-              </Pressable>
+              <DateChip value={date} today={today} onChange={setDate} style={k.dp} textStyle={k.dpText} boldStyle={k.dpB} testID="date-chip" />
             </View>
             {pickPayer && (
               <View style={k.payerList}>
@@ -493,7 +463,7 @@ export function AddSheet({ members, youId, currency, groupName, initial, onClose
                 const field = (
                   <View style={[k.inpWrap, focused === m.id && k.inpF, bad && k.inpBad]}>
                     {key === 'exact' && <Text style={k.inpPre}>{symbolOf(currency)}</Text>}
-                    <TextInput
+                    <SelectInput
                       testID={`${key}-${m.id}`}
                       value={key === 'adjust' ? adjustDisplay(value) : value}
                       onChangeText={(text) => patch(key, m.id, key === 'adjust' ? adjustTyped(value, text) : text)}
@@ -503,7 +473,6 @@ export function AddSheet({ members, youId, currency, groupName, initial, onClose
                       inputMode="decimal"
                       placeholder="0.00"
                       placeholderTextColor={T.hint}
-                      selectTextOnFocus
                       accessibilityLabel={`${nameOf(m.id)} ${key === 'percent' ? 'percent' : key === 'adjust' ? 'adjustment' : 'amount'}`}
                       style={[k.inp, noOutline]}
                     />
@@ -545,9 +514,8 @@ export function AddSheet({ members, youId, currency, groupName, initial, onClose
               </View>
             </View>
           )}
-        </View>
-      </KeyboardAvoidingView>
-    </Modal>
+      </>
+    </BottomSheet>
   )
 }
 
@@ -682,7 +650,7 @@ export function SettleScreen({ detail, busyKey, onBack, onRecord, onUndo }: {
           <Text style={k.t}>{name(current.fromId)} {current.fromId === detail.yourParticipantId ? 'pay' : 'paid'} {name(current.toId)}</Text>
           <View style={k.settleAmtRow}>
             <Text style={k.settleC}>{symbolOf(detail.currency)}</Text>
-            <TextInput testID="settle-amount" value={heroText} onChangeText={setAmountText} onFocus={() => setHeroFocused(true)} onBlur={() => setHeroFocused(false)} keyboardType="decimal-pad" inputMode="decimal" selectTextOnFocus style={[k.settleAmt, noOutline, web ? { width: heroWidth } : null]} accessibilityLabel="Amount to record" />
+            <SelectInput testID="settle-amount" value={heroText} onChangeText={setAmountText} onFocus={() => setHeroFocused(true)} onBlur={() => setHeroFocused(false)} keyboardType="decimal-pad" inputMode="decimal" style={[k.settleAmt, noOutline, web ? { width: heroWidth } : null]} accessibilityLabel="Amount to record" />
           </View>
           <Text style={k.m}>{amountText === null ? 'Full balance · tap to change' : amountError ?? 'Part payment'}</Text>
         </View>
@@ -792,12 +760,10 @@ const k = StyleSheet.create({
   zero: { color: T.hint },
   dashed: { marginTop: 14, borderWidth: 1.5, borderStyle: 'dashed', borderColor: T.mint, borderRadius: 20, paddingVertical: 16, alignItems: 'center', gap: 2 },
   dashedText: { color: T.teal, fontWeight: '900', fontSize: 16 },
-  dashedSub: { color: T.muted, fontSize: 12, fontWeight: '600' },
   empty: { alignItems: 'center', gap: 12, paddingTop: 40, paddingHorizontal: 6 },
   emptyArt: { width: 96, height: 96, borderRadius: 30, backgroundColor: T.soft, borderWidth: 1, borderColor: T.mint, alignItems: 'center', justifyContent: 'center', marginBottom: 6 },
   emptyEmoji: { fontSize: 44 },
   emptyCopy: { color: T.body, fontSize: 15, textAlign: 'center', lineHeight: 21, marginBottom: 6 },
-  emptyHint: { fontSize: 12, fontWeight: '800', letterSpacing: 1.1, color: T.muted, marginTop: 14 },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, justifyContent: 'center' },
   emojiCell: { width: 44, height: 40, borderRadius: 12, borderWidth: 1, borderColor: T.line, backgroundColor: T.card, alignItems: 'center', justifyContent: 'center' },
   chip: { backgroundColor: T.card, borderWidth: 1, borderColor: T.line, borderRadius: 999, paddingVertical: 8, paddingHorizontal: 14 },
@@ -809,11 +775,10 @@ const k = StyleSheet.create({
   btnOff: { backgroundColor: '#c9d3ce' },
   btnRed: { backgroundColor: T.red },
   ghost: { backgroundColor: T.card, borderWidth: 1.5, borderColor: T.mint },
-  scrim: { flex: 1, backgroundColor: 'rgba(20,34,28,0.45)' },
-  lightSheet: { backgroundColor: T.bg, borderTopLeftRadius: 28, borderTopRightRadius: 28, padding: 18, paddingBottom: 28, gap: 10 },
+  lightSheet: { backgroundColor: T.bg, borderTopLeftRadius: 28, borderTopRightRadius: 28, padding: 18, paddingBottom: 28, gap: 10, maxHeight: '92%' },
+  sheetScroll: { flexShrink: 1 },
+  sheetScrollBody: { gap: 10, flexGrow: 1 },
   sheetWeb: { width: '100%', maxWidth: 480, alignSelf: 'center' },
-  grabberDark: { width: 40, height: 5, borderRadius: 3, backgroundColor: '#14221c26', alignSelf: 'center', marginBottom: 4 },
-  grabber: { width: 40, height: 5, borderRadius: 3, backgroundColor: '#ffffff40', alignSelf: 'center', marginTop: 8, marginBottom: 4 },
   sheetTitle: { fontSize: 20, fontWeight: '900', color: T.ink },
   sheetButtons: { flexDirection: 'row', gap: 10, marginTop: 8 },
   label: { fontSize: 12, fontWeight: '800', letterSpacing: 1, textTransform: 'uppercase', color: T.muted, marginTop: 6 },
@@ -837,7 +802,6 @@ const k = StyleSheet.create({
   tabLabel: { fontSize: 11, fontWeight: '800', color: T.hint, marginTop: 2 },
   tabOn: { color: T.teal },
   // ink sheet
-  inkWrap: { position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, justifyContent: 'flex-end', pointerEvents: 'box-none' } as object,
   ink: { height: '92%', backgroundColor: T.ink, borderTopLeftRadius: 28, borderTopRightRadius: 28, overflow: 'hidden' },
   sheetHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 18, paddingVertical: 8, gap: 10 },
   inkCancel: { color: '#b9c9c1', fontWeight: '700', fontSize: 16 },
