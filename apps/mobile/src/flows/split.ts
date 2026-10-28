@@ -18,10 +18,10 @@ export type Draft = {
    */
   percentCarry?: { total: number; bps: Record<string, number>; minors: Record<string, number> }
   /**
-   * What each method computed to when it was last switched away from. Coming back to a method while the split is still
-   * exactly that (same amount, same cents) restores what was typed there, instead of recomputing it from the cents.
+   * Where a run of method switches started. While nothing was typed in the methods passed through (and the amount is the
+   * same), switching back to `origin` restores exactly what was typed there instead of recomputing it.
    */
-  left?: Partial<Record<SplitMethod, { total: number; results: Record<string, number> }>>
+  trail?: { origin: SplitMethod; at: SplitMethod; amount: string; slice: string }
 }
 
 export type Bar = { tone: 'ok' | 'bad' | 'idle'; left: string; right: string }
@@ -75,8 +75,42 @@ export function parseAmountText(input: string, currency: string, signed: boolean
     text = text.slice(1).trim()
     if (!text) return 0
   }
-  if (/^0+(\.0+)?$/.test(text)) return 0
+  // ".5" and "5." are what someone mid-typing has; a lone zero (0, 0., 0.00, .) is zero, not an error.
+  if (text.startsWith('.')) text = `0${text}`
+  if (text.endsWith('.')) text = text.slice(0, -1)
+  if (/^0*(\.0*)?$/.test(text)) return 0
   return sign * parseMajor(text, currency)
+}
+
+/** The sign an Adjust cell is stored with ("+1.00", "-0.50"); a blank or bare cell counts as "+". */
+export function adjustSign(value: string): '+' | '-' {
+  return /^[-−]/.test(value) ? '-' : '+'
+}
+
+/** What an Adjust field shows: the signed amount ("+1.00", "-0.50"), a plain zero, or blank (the placeholder). */
+export function adjustDisplay(value: string): string {
+  const digits = value.replace(/^[+\-−\s]+/, '')
+  if (digits === '') return ''
+  if (/^0*\.?0*$/.test(digits)) return digits
+  return `${adjustSign(value)}${digits}`
+}
+
+/**
+ * The stored cell after the user typed `text` into a field that held `prev`. A sign typed in the field wins; otherwise the
+ * cell keeps its sign (set with the +/- button), so "+1.00" can never become "++1.00" and a plain "5" stays "+5".
+ */
+export function adjustTyped(prev: string, text: string): string {
+  const match = /^\s*([+\-−]*)\s*(.*)$/.exec(text.replace(/−/g, '-'))
+  const signs = match?.[1] ?? ''
+  const digits = (match?.[2] ?? '').trim()
+  const sign = signs ? (signs.endsWith('-') ? '-' : '+') : adjustSign(prev)
+  if (digits === '') return signs ? sign : ''
+  return `${sign}${digits}`
+}
+
+/** The +/- button: flip the sign and keep the digits (a blank cell becomes a bare sign the next digits will follow). */
+export function toggleAdjustSign(value: string): string {
+  return `${adjustSign(value) === '-' ? '+' : '-'}${value.replace(/^[+\-−\s]+/, '')}`
 }
 
 /** "33.33" -> 3333 basis points; blank is 0; null when it is not a percent with at most two decimals. */
@@ -132,6 +166,9 @@ function sharesCarrying(weights: number[], memberIds: string[], known: Record<st
   if (total * total > Number.MAX_SAFE_INTEGER) return asDraft
   return Object.fromEntries(memberIds.map((id) => [id, known[id] ?? 0]))
 }
+
+/** The raw inputs of one method, as a comparable string. */
+const sliceOf = (draft: Draft, method: SplitMethod) => JSON.stringify(method === 'equal' ? draft.included : draft[method])
 
 /** Compute what each person owes under the current method, or say what is wrong. */
 export function evaluate(draft: Draft, memberIds: string[], amountText: string, currency: string, payerId: string | null, nameOf: (id: string) => string = (id) => id): Evaluation {
@@ -239,17 +276,16 @@ export function switchMethod(draft: Draft, to: SplitMethod, memberIds: string[],
   const known = evaluation.ok ? evaluation.results : null
   const weights = currentWeights(draft, memberIds, known)
   const next: Draft = { ...draft, method: to }
-  // Remember this method's result, and if the split is still what `to` computed to when it was left, go back to it as typed.
-  const left = { ...draft.left }
-  if (known && total !== null) left[draft.method] = { total, results: { ...known } }
-  const back = left[to]
-  if (back && known && total !== null && back.total === total && memberIds.every((id) => (back.results[id] ?? 0) === (known[id] ?? 0))) {
-    return { ...draft, method: to, left }
-  }
-  next.left = left
+  // Coming back to where a run of switches started, with nothing typed in between, restores what was typed there.
+  const stamp = amountText.trim()
+  const trail = draft.trail
+  const untouched = !!trail && trail.at === draft.method && trail.amount === stamp && trail.slice === sliceOf(draft, draft.method)
+  if (untouched && trail!.origin === to) return { ...draft, method: to, trail: undefined }
+  const origin = untouched ? trail!.origin : draft.method
+  const settle = (result: Draft): Draft => ({ ...result, trail: { origin, at: to, amount: stamp, slice: sliceOf(result, to) } })
   const sumW = weights.reduce((a, b) => a + b, 0)
   // A half-typed or invalid split in another method does not carry: the target keeps what is already there.
-  if (!known && draft.method !== 'equal') return next
+  if (!known && draft.method !== 'equal') return settle(next)
   if (to === 'equal') {
     const any = weights.some((w) => w > 0)
     next.included = Object.fromEntries(memberIds.map((id, i) => [id, any ? weights[i]! > 0 : true]))
@@ -287,7 +323,7 @@ export function switchMethod(draft: Draft, to: SplitMethod, memberIds: string[],
       }
     }
   }
-  return next
+  return settle(next)
 }
 
 /** Back from a stored split (editing an expense) into the editor. */

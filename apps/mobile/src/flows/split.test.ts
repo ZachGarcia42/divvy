@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SplitMethod } from '@divvy/domain'
-import { bpsText, draftFromSpec, evaluate, groupedMajor, isDirty, newDraft, parseAmountText, parsePercentBps, sharesFromWeights, switchMethod, type Draft } from './split'
+import { adjustDisplay, adjustSign, adjustTyped, toggleAdjustSign, bpsText, draftFromSpec, evaluate, groupedMajor, isDirty, newDraft, parseAmountText, parsePercentBps, sharesFromWeights, switchMethod, type Draft } from './split'
 
 const ids = ['you', 'maya', 'leo', 'priya']
 const names: Record<string, string> = { you: 'You', maya: 'Maya', leo: 'Leo', priya: 'Priya' }
@@ -333,5 +333,97 @@ describe('round trips restore what was typed', () => {
     expect(ev(back, '10.01').results).toEqual(ev(edited, '10.01').results)
     const changedAmount = switchMethod(inPct, 'adjust', ids, '20.02', 'USD', 'you')
     expect(ev(changedAmount, '20.02').ok).toBe(true)
+  })
+})
+
+// Interaction level: these replay what the sheet does for a person — key by key into an Adjust field (the field shows
+// adjustDisplay(value) and onChangeText stores adjustTyped(value, text)), the +/- button, and the method tabs.
+describe('driving the Adjust cells like the sheet does', () => {
+  type D = ReturnType<typeof newDraft>
+  const cell = (d: D, id: string) => adjustDisplay(d.adjust[id] ?? '')
+  /** Select-all then type `text` one character at a time, as in a browser input. */
+  const typeInto = (d: D, id: string, text: string): D => {
+    let shown = ''
+    let draft = d
+    for (const ch of text) {
+      shown += ch
+      draft = { ...draft, adjust: { ...draft.adjust, [id]: adjustTyped(draft.adjust[id] ?? '', shown) } }
+      shown = adjustDisplay(draft.adjust[id]!) === '' && /^[+\-−]*$/.test(shown) ? shown : adjustDisplay(draft.adjust[id]!)
+    }
+    return draft
+  }
+  const tab = (d: D, to: SplitMethod, amount = '10.01') => switchMethod(d, to, ids, amount, 'USD', 'you')
+  const open = () => tab(newDraft(ids), 'adjust')
+  const typedRow = () => ['+1.00', '+0.50', '0', '0'].reduce((d, text, i) => typeInto(d, ids[i]!, text), open())
+
+  it('typing "+1.00" shows "+1.00", stores one sign, and is a valid adjustment', () => {
+    const d = typeInto(open(), 'you', '+1.00')
+    expect(d.adjust.you).toBe('+1.00')
+    expect(cell(d, 'you')).toBe('+1.00')
+    expect(ev(d, '10.01').ok).toBe(true)
+  })
+  it('the reported repro: +1.00 / +0.50 / 0 / 0 on $10.01 is valid, with no amount error', () => {
+    const d = typedRow()
+    expect(ids.map((id) => cell(d, id))).toEqual(['+1.00', '+0.50', '0', '0'])
+    const out = ev(d, '10.01')
+    expect(out.bar.right).toBe('✓ Adds up')
+    expect(out.results).toEqual({ you: 313, maya: 263, leo: 213, priya: 212 })
+  })
+  it('Adjust > % > Shares > Adjust brings the typed cells back, not blanks', () => {
+    const typed = typedRow()
+    const back = tab(tab(tab(typed, 'percent'), 'shares'), 'adjust')
+    expect(ids.map((id) => cell(back, id))).toEqual(['+1.00', '+0.50', '0', '0'])
+    expect(ev(back, '10.01').results).toEqual(ev(typed, '10.01').results)
+  })
+  it('every round trip from a typed Adjust restores it', () => {
+    const typed = typedRow()
+    for (const via of [['percent'], ['exact'], ['shares'], ['equal'], ['percent', 'shares'], ['shares', 'exact', 'percent'], ['equal', 'percent', 'exact', 'shares']] as SplitMethod[][]) {
+      const back = tab(via.reduce((d, m) => tab(d, m), typed), 'adjust')
+      expect(back.adjust, via.join('>')).toEqual(typed.adjust)
+    }
+  })
+  it('does not drop an invalid or half-typed Adjust either', () => {
+    const half = typeInto(typeInto(open(), 'you', '+1.00'), 'maya', '99')
+    expect(ev(half, '10.01').ok).toBe(false)
+    const back = tab(tab(tab(half, 'percent'), 'shares'), 'adjust')
+    expect(back.adjust).toEqual(half.adjust)
+    expect(cell(back, 'maya')).toBe('+99')
+  })
+  it('keeps the sign consistent: button, minus, plus, plain digits and a leading dot', () => {
+    let d = typeInto(open(), 'you', '2')
+    expect(cell(d, 'you')).toBe('+2')
+    d = { ...d, adjust: { ...d.adjust, you: toggleAdjustSign(d.adjust.you!) } }
+    expect(cell(d, 'you')).toBe('-2')
+    expect(adjustSign(d.adjust.you!)).toBe('-')
+    d = typeInto(d, 'you', '3')            // typing over it keeps the minus the button set
+    expect(cell(d, 'you')).toBe('-3')
+    d = typeInto(d, 'maya', '-0.50')
+    expect(cell(d, 'maya')).toBe('-0.50')
+    d = typeInto(d, 'leo', '.5')
+    expect(cell(d, 'leo')).toBe('+.5')
+    expect(ev(d, '10.01').ok).toBe(true)
+    expect(adjustTyped('+1.00', '++1.00')).toBe('+1.00')
+    expect(adjustTyped('+1.00', '−2')).toBe('-2')
+    expect(adjustTyped('+1.00', '')).toBe('')
+    expect(toggleAdjustSign('')).toBe('-')
+    // a sign with no digits yet is zero, not an amount error
+    expect(ev({ ...open(), adjust: { ...open().adjust, you: '+', maya: '-' } }, '10.01').ok).toBe(true)
+  })
+  it('a typed zero in any spelling is zero, not "Enter an amount greater than 0"', () => {
+    for (const zero of ['0', '0.', '0.0', '0.00', '.', '.0', '+0', '-0', '+0.00']) {
+      expect(parseAmountText(zero, 'USD', true), zero).toBe(0)
+    }
+    expect(parseAmountText('.5', 'USD', true)).toBe(50)
+    expect(parseAmountText('5.', 'USD', false)).toBe(500)
+  })
+  it('a change made in between (a cell, or the amount) is not rolled back', () => {
+    const viaPercent = tab(typedRow(), 'percent')
+    const edited = { ...viaPercent, percent: { ...viaPercent.percent, you: '40', maya: '30', leo: '20', priya: '10' } }
+    const back = tab(edited, 'adjust')
+    expect(back.adjust).not.toEqual(typedRow().adjust)
+    expect(ev(back, '10.01').results).toEqual(ev(edited, '10.01').results)
+    const newAmount = tab(viaPercent, 'adjust', '20.02')
+    expect(ev(newAmount, '20.02').ok).toBe(true)
+    expect(ev(newAmount, '20.02').results).toEqual(ev(viaPercent, '20.02').results)
   })
 })

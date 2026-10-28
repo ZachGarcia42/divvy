@@ -3,7 +3,7 @@
 import { formatMoney, parseMajor, type SplitMethod, type SplitSpec } from '@divvy/domain'
 import { useMemo, useState, type ReactNode } from 'react'
 import { KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native'
-import { evaluate, groupedMajor, majorString, METHOD_LABELS, METHODS, newDraft, switchMethod, type Draft } from './flows/split'
+import { adjustDisplay, adjustSign, adjustTyped, evaluate, groupedMajor, majorString, METHOD_LABELS, METHODS, newDraft, switchMethod, toggleAdjustSign, type Draft } from './flows/split'
 import {
   breakdown, groupByDate, historyLines, methodPhrase, monthDay, netTone, NET_WORDS, overallUsd, paidPhrase, peopleCount,
   signedMoney, groupIcon, PICKER_EMOJIS, DEFAULT_EMOJI, TEMPLATES, templateName, updatedPhrase, yourPosition, type HistoryEntry,
@@ -495,8 +495,8 @@ export function AddSheet({ members, youId, currency, groupName, initial, onClose
                     {key === 'exact' && <Text style={k.inpPre}>{symbolOf(currency)}</Text>}
                     <TextInput
                       testID={`${key}-${m.id}`}
-                      value={key === 'adjust' ? value.replace(/^[+\-−]/, '') : value}
-                      onChangeText={(text) => patch(key, m.id, key === 'adjust' ? (value.startsWith('-') || value.startsWith('−') ? '-' : '+') + text : text)}
+                      value={key === 'adjust' ? adjustDisplay(value) : value}
+                      onChangeText={(text) => patch(key, m.id, key === 'adjust' ? adjustTyped(value, text) : text)}
                       onFocus={() => setFocused(m.id)}
                       onBlur={() => setFocused((f) => (f === m.id ? null : f))}
                       keyboardType="decimal-pad"
@@ -514,8 +514,8 @@ export function AddSheet({ members, youId, currency, groupName, initial, onClose
                   <View key={m.id} style={line}>
                     {left}
                     {key === 'adjust' && (
-                      <Pressable style={k.signBtn} onPress={() => patch('adjust', m.id, (value.startsWith('-') ? '+' : '-') + value.replace(/^[+\-−]/, ''))} accessibilityRole="button" accessibilityLabel={`${nameOf(m.id)} adjustment sign`} testID={`adjust-sign-${m.id}`}>
-                        <Text style={k.signText}>{value.startsWith('-') ? '−' : '+'}</Text>
+                      <Pressable style={k.signBtn} onPress={() => patch('adjust', m.id, toggleAdjustSign(value))} accessibilityRole="button" accessibilityLabel={`${nameOf(m.id)} adjustment sign`} testID={`adjust-sign-${m.id}`}>
+                        <Text style={k.signText}>{adjustSign(value) === '-' ? '−' : '+'}</Text>
                       </Pressable>
                     )}
                     {field}
