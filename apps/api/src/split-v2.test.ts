@@ -42,7 +42,7 @@ describe('split storage (design v2)', () => {
     for (const e of json.expenses) expect(e.shares.reduce((n: number, s: any) => n + s.minor, 0)).toBe(e.settlementMinor)
   })
 
-  it('keeps the legacy cent rule unless the client opts in to payer-first rounding', async () => {
+  it('gives odd cents to the payer first by default; rounding legacy keeps the old lowest-id rule', async () => {
     const { call, groupId, ids } = await groupOf(['Maya', 'Leo'])
     const [, maya, leo] = ids as [string, string, string]
     const people = [...ids]
@@ -54,12 +54,15 @@ describe('split storage (design v2)', () => {
       expect(res.status).toBe(200)
       return res.json.id as string
     }
-    const legacyId = await make()
+    const defaultId = await make()
     const v2Id = await make('payer')
+    const legacyId = await make('legacy')
     const { json } = await call('GET', `/api/groups/${groupId}`)
     const shareOf = (id: string, who: string) => json.expenses.find((e: any) => e.id === id).shares.find((s: any) => s.participantId === who).minor
     expect(shareOf(v2Id, leo)).toBe(3334)
     expect(shareOf(v2Id, maya)).toBe(3333)
+    expect(shareOf(defaultId, leo)).toBe(3334)
+    expect(shareOf(defaultId, maya)).toBe(3333)
     const lowest = [...people].sort()[0]!
     expect(shareOf(legacyId, lowest)).toBe(3334)
   })

@@ -442,7 +442,7 @@ describe('ledger API', () => {
     }
   })
 
-  it('splits $10 three ways as 334, 333, and 333 cents with the extra cent on the lowest id', async () => {
+  it('splits $10 three ways as 334, 333, and 333 cents with the extra cent on the payer', async () => {
     const sql = await createMemorySql()
     const { app } = createApp(sql, { now: () => new Date('2026-09-26T15:00:00Z'), dev: true, rateFor: async () => '1' })
     const alex = await sessionFor(app, 'alex@example.com')
@@ -482,8 +482,8 @@ describe('ledger API', () => {
     const shares = detail.expenses[0]!.shares
     expect(shares.map((share) => share.minor).sort((a, b) => a - b)).toEqual([333, 333, 334])
     expect(shares.reduce((sum, share) => sum + share.minor, 0)).toBe(1000)
-    const lowest = shares.reduce((best, share) => share.participantId < best.participantId ? share : best)
-    expect(lowest.minor).toBe(334)
+    // Payer-first (default): Alex paid, so Alex carries the extra cent, even though Charlie has the lowest id.
+    expect(shares.find((share) => share.participantId === alexId)!.minor).toBe(334)
   })
 
   it('restores the balance when a recorded settlement is undone', async () => {

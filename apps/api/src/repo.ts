@@ -51,8 +51,8 @@ type ExpenseInput = {
   settlementMinor?: number
   payers?: { participantId: string; minor: number }[]
   split?: SplitSpec
-  /** 'payer' = design v2 rounding (leftover cents to the payer first, then member order). Absent = legacy rule (kept so existing API clients and tests behave the same). */
-  rounding?: 'payer'
+  /** Default (absent or 'payer'): leftover cents go to the payer first, then member order. 'legacy' keeps the old lowest-id rule. */
+  rounding?: 'payer' | 'legacy'
   items?: { label: string; minor: number; participantIds: string[] }[]
   taxMinor?: number
   tipMinor?: number
@@ -1837,7 +1837,7 @@ export class Repo {
     let settlementMinor = fields.settlementMinor
     const payers = input.payers ?? current?.lines.filter((line) => line.role === 'payer').map((line) => ({ participantId: line.participant_id, minor: line.minor }))
     if (!payers) throw new LedgerError('BAD_SPLIT', 'Choose who paid')
-    const rounding = input.rounding === 'payer' ? { payerId: payers[0]?.participantId ?? null } : undefined
+    const rounding = input.rounding === 'legacy' ? undefined : { payerId: payers[0]?.participantId ?? null }
     const currentShares = current?.lines.filter((line) => line.role === 'share').map((line) => ({ participantId: line.participant_id, minor: line.minor }))
     let spec: SplitSpec | null = input.split ?? null
     if (!spec && current && !input.items && settlementMinor !== current.settlement_minor) {
