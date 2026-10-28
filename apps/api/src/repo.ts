@@ -32,6 +32,9 @@ import {
   type LedgerExpense,
   type LedgerSettlement,
   type SplitSpec,
+  splitFromStored,
+  splitToStored,
+  shareGapMessage,
 } from '@divvy/domain'
 import { createHash, randomBytes, randomInt, randomUUID, timingSafeEqual } from 'node:crypto'
 import type { Sql } from './db.ts'
@@ -48,6 +51,8 @@ type ExpenseInput = {
   settlementMinor?: number
   payers?: { participantId: string; minor: number }[]
   split?: SplitSpec
+  /** 'payer' = design v2 rounding (leftover cents to the payer first, then member order). Absent = legacy rule. */
+  rounding?: 'payer'
   items?: { label: string; minor: number; participantIds: string[] }[]
   taxMinor?: number
   tipMinor?: number
@@ -749,6 +754,7 @@ export class Repo {
         expenseId: id,
         settlementMinor: prepared.settlementMinor,
       })
+      await this.history(sql, id, actor.participantId, 'created', null)
     })
     await this.notifyGroup(groupId, actor.participantId, prepared.description || `${actor.displayName} added an expense`, `${actor.displayName} added an expense for ${formatMoney(prepared.settlementMinor, prepared.groupCurrency)}`)
     return { id }
@@ -767,7 +773,7 @@ export class Repo {
       await sql.query(`delete from expense_extras where expense_id = $1`, [expenseId])
       await sql.query(
         `update expenses set expense_date=$1, description=$2, category_id=$3, kind=$4, original_currency=$5, original_minor=$6,
-         settlement_minor=$7, rate=$8, overridden=$9, version=version+1 where id=$10`,
+         settlement_minor=$7, rate=$8, overridden=$9, split_method=$11, split_inputs=$12, version=version+1 where id=$10`,
         [
           prepared.date,
           prepared.description,
@@ -779,6 +785,8 @@ export class Repo {
           prepared.rate,
           prepared.overridden,
           expenseId,
+          prepared.splitMethod,
+          prepared.splitInputs,
         ],
       )
       await this.insertLines(sql, expenseId, prepared)
@@ -786,8 +794,34 @@ export class Repo {
         expenseId,
         previous: { settlementMinor: current.settlement_minor, description: current.description },
       })
+      await this.history(sql, expenseId, actor.participantId, 'edited', diffExpense(current, prepared))
     })
     await this.notifyGroup(groupId, actor.participantId, prepared.description || `${actor.displayName} edited an expense`, `${actor.displayName} edited an expense`)
+  }
+
+  /** One expense with who changed what and when (oldest first). */
+  async expenseDetail(actor: Actor, groupId: string, expenseId: string) {
+    await this.requireMember(actor, groupId)
+    const ledger = await this.loadLedger(groupId)
+    const expense = ledger.views.find((row) => row.id === expenseId)
+    if (!expense) throw new LedgerError('NOT_FOUND', 'Expense not found')
+    const rows = await this.sql.query<{ id: string; actor_participant_id: string | null; actor_name: string | null; kind: string; changes: string | null; created_at: unknown }>(
+      `select h.id, h.actor_participant_id, p.display_name as actor_name, h.kind, h.changes, h.created_at
+       from expense_history h left join participants p on p.id = h.actor_participant_id
+       where h.expense_id = $1 order by h.created_at, h.seq`,
+      [expenseId],
+    )
+    return {
+      expense,
+      history: rows.map((row) => ({
+        id: row.id,
+        kind: row.kind,
+        actorId: row.actor_participant_id,
+        actorName: row.actor_name,
+        changes: parseJson(row.changes),
+        at: row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at),
+      })),
+    }
   }
 
   async deleteExpense(actor: Actor, groupId: string, expenseId: string) {
@@ -799,6 +833,7 @@ export class Repo {
       settlementMinor: current.settlement_minor,
       description: current.description,
     })
+    await this.history(this.sql, expenseId, actor.participantId, 'deleted', null)
     await this.notifyGroup(groupId, actor.participantId, current.description || `${actor.displayName} deleted an expense`, `${actor.displayName} deleted an expense`)
   }
 
@@ -807,6 +842,7 @@ export class Repo {
     const current = await this.mustExpense(groupId, expenseId)
     await this.sql.query(`update expenses set deleted_at = null, version = version + 1 where id = $1`, [expenseId])
     await this.activity(this.sql, groupId, actor.participantId, 'expense.restored', `${actor.displayName} restored ${expenseLabel(current.description)}`, { expenseId })
+    await this.history(this.sql, expenseId, actor.participantId, 'restored', null)
   }
 
   async moveExpense(actor: Actor, groupId: string, expenseId: string, destinationGroupId: string) {
@@ -828,6 +864,7 @@ export class Repo {
       throw new LedgerError('MIXED_CURRENCY', 'Move this into a group that uses the same currency, or enter it again there')
     }
     await this.sql.query(`update expenses set group_id = $1, version = version + 1 where id = $2`, [destinationGroupId, expenseId])
+    await this.history(this.sql, expenseId, actor.participantId, 'moved', null)
     await this.activity(this.sql, groupId, actor.participantId, 'expense.moved', `${actor.displayName} moved ${expenseLabel(expense.description)} out`, { expenseId })
     await this.activity(this.sql, destinationGroupId, actor.participantId, 'expense.moved', `${actor.displayName} moved ${expenseLabel(expense.description)} in`, { expenseId })
   }
@@ -1106,6 +1143,13 @@ export class Repo {
       throw new LedgerError('FORBIDDEN', 'You can delete your own comments')
     }
     await this.sql.query(`update comments set deleted_at = now() where id = $1`, [commentId])
+  }
+
+  async history(sql: Sql, expenseId: string, actorParticipantId: string | null, kind: 'created' | 'edited' | 'deleted' | 'restored' | 'moved', changes: unknown[] | null) {
+    await sql.query(
+      `insert into expense_history (id, expense_id, actor_participant_id, kind, changes) values ($1,$2,$3,$4,$5)`,
+      [newId(), expenseId, actorParticipantId, kind, changes ? JSON.stringify(changes) : null],
+    )
   }
 
   async activity(sql: Sql, groupId: string, actorParticipantId: string | null, kind: string, summary: string, payload: unknown) {
@@ -1721,6 +1765,13 @@ export class Repo {
           `update expenses set settlement_minor = $1, rate = $2, overridden = $3, version = version + 1 where id = $4`,
           [update.settlementMinor, update.rate, update.overridden, update.id],
         )
+        // Percent / shares / equal inputs don't depend on the amount; exact and adjust inputs do, so they become the scaled exact amounts.
+        if (expense.split_method === 'exact' || expense.split_method === 'adjust') {
+          await sql.query(`update expenses set split_method = 'exact', split_inputs = $1 where id = $2`, [
+            JSON.stringify({ amounts: expense.scaledShares ?? [] }),
+            update.id,
+          ])
+        }
         await sql.query(`delete from expense_lines where expense_id = $1`, [update.id])
         for (const payer of expense.scaledPayers ?? []) {
           await sql.query(`insert into expense_lines (expense_id, participant_id, role, minor) values ($1,$2,'payer',$3)`, [update.id, payer.participantId, payer.minor])
@@ -1778,7 +1829,19 @@ export class Repo {
       rateFor: () => marketRate,
     })
     let settlementMinor = fields.settlementMinor
-    let shares = input.split ? computeShares(settlementMinor, input.split, group.settlement_currency) : current?.lines.filter((line) => line.role === 'share').map((line) => ({ participantId: line.participant_id, minor: line.minor }))
+    const payers = input.payers ?? current?.lines.filter((line) => line.role === 'payer').map((line) => ({ participantId: line.participant_id, minor: line.minor }))
+    if (!payers) throw new LedgerError('BAD_SPLIT', 'Choose who paid')
+    const rounding = input.rounding === 'payer' ? { payerId: payers[0]?.participantId ?? null } : undefined
+    const currentShares = current?.lines.filter((line) => line.role === 'share').map((line) => ({ participantId: line.participant_id, minor: line.minor }))
+    let spec: SplitSpec | null = input.split ?? null
+    if (!spec && current && !input.items && settlementMinor !== current.settlement_minor) {
+      // The amount moved but no new split came with it: replay the stored method on the new total.
+      spec = splitFromStored(current.split_method, current.split_inputs)
+    }
+    let shares = spec ? computeShares(settlementMinor, spec, group.settlement_currency, rounding) : currentShares
+    let stored: { method: string; inputs: unknown } | null = spec
+      ? splitToStored(spec)
+      : current?.split_method ? { method: current.split_method, inputs: current.split_inputs ? JSON.parse(current.split_inputs) : null } : null
     let itemRows: { label: string; minor: number; participantIds: string[] }[] | null = null
     let extras = { taxMinor: input.taxMinor ?? 0, tipMinor: input.tipMinor ?? 0, discountMinor: input.discountMinor ?? 0 }
     if (input.items) {
@@ -1796,10 +1859,15 @@ export class Repo {
       fields.overridden = false
       shares = itemized.shares
       itemRows = input.items
+      stored = null
     }
     if (!shares || shares.length === 0) throw new LedgerError('BAD_SPLIT', 'Choose how to split this')
-    const payers = input.payers ?? current?.lines.filter((line) => line.role === 'payer').map((line) => ({ participantId: line.participant_id, minor: line.minor }))
-    if (!payers) throw new LedgerError('BAD_SPLIT', 'Choose who paid')
+    // Whatever route the shares took, they have to add up to the total before anything is saved.
+    const shareSum = shares.reduce((acc, row) => acc + row.minor, 0)
+    if (shareSum !== fields.settlementMinor) {
+      throw new LedgerError('UNBALANCED', shareGapMessage(shareSum, fields.settlementMinor, group.settlement_currency) ?? 'Shares have to add up to the total.')
+    }
+    if (!stored) stored = splitToStored({ type: 'exact', amounts: shares })
     if (payers.length === 1 && payers[0]) {
       payers[0] = { participantId: payers[0].participantId, minor: fields.settlementMinor }
     }
@@ -1818,6 +1886,8 @@ export class Repo {
       overridden: fields.overridden,
       payers,
       shares,
+      splitMethod: stored.method,
+      splitInputs: JSON.stringify(stored.inputs),
       itemRows,
       extras,
       groupCurrency: group.settlement_currency,
@@ -1826,8 +1896,8 @@ export class Repo {
 
   private async insertExpense(sql: Sql, id: string, groupId: string, prepared: Awaited<ReturnType<Repo['prepareExpense']>>, recurrenceId: string | null) {
     await sql.query(
-      `insert into expenses (id, group_id, expense_date, description, category_id, kind, original_currency, original_minor, settlement_minor, rate, overridden, recurrence_id)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+      `insert into expenses (id, group_id, expense_date, description, category_id, kind, original_currency, original_minor, settlement_minor, rate, overridden, recurrence_id, split_method, split_inputs)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
       [
         id,
         groupId,
@@ -1841,6 +1911,8 @@ export class Repo {
         prepared.rate,
         prepared.overridden,
         recurrenceId,
+        prepared.splitMethod,
+        prepared.splitInputs,
       ],
     )
     await this.insertLines(sql, id, prepared)
@@ -1904,6 +1976,8 @@ export class Repo {
       rate: row.rate ? String(row.rate) : null,
       overridden: row.overridden === true || row.overridden === 't' || row.overridden === 'true',
       version: Number(row.version),
+      split_method: row.split_method ? String(row.split_method) : null,
+      split_inputs: row.split_inputs ? String(row.split_inputs) : null,
       deleted_at: row.deleted_at ? String(row.deleted_at) : null,
       lines: lines.filter((line) => line.expense_id === row.id).map((line) => ({
         participant_id: line.participant_id,
@@ -1936,6 +2010,8 @@ export class Repo {
         rate: expense.rate,
         overridden: expense.overridden,
         version: expense.version,
+        splitMethod: expense.split_method ?? 'exact',
+        splitInputs: parseJson(expense.split_inputs),
         deleted: Boolean(expense.deleted_at),
         payers: expense.lines.filter((line) => line.role === 'payer').map((line) => ({
           participantId: line.participant_id,
@@ -2251,6 +2327,8 @@ type ExpenseRecord = {
   rate: string | null
   overridden: boolean
   version: number
+  split_method: string | null
+  split_inputs: string | null
   deleted_at: string | null
   lines: { participant_id: string; role: string; minor: number }[]
   scaledPayers?: { participantId: string; minor: number }[]
@@ -2277,11 +2355,41 @@ function expenseToInput(expense: ExpenseRecord): ExpenseInput {
     originalCurrency: expense.original_currency,
     settlementMinor: expense.settlement_minor,
     payers: expense.lines.filter((line) => line.role === 'payer').map((line) => ({ participantId: line.participant_id, minor: line.minor })),
-    split: {
-      type: 'exact',
-      amounts: expense.lines.filter((line) => line.role === 'share').map((line) => ({ participantId: line.participant_id, minor: line.minor })),
-    },
   }
+}
+
+type PreparedForDiff = {
+  settlementMinor: number
+  description: string
+  date: string
+  categoryId: string
+  payers: { participantId: string; minor: number }[]
+  shares: { participantId: string; minor: number }[]
+  splitMethod: string
+}
+
+/** What an edit changed, as {field, from, to} rows for the expense history. Payers and shares are {participantId: minor} maps. */
+export function diffExpense(current: ExpenseRecord, next: PreparedForDiff) {
+  const changes: { field: string; from: unknown; to: unknown }[] = []
+  const push = (field: string, from: unknown, to: unknown) => {
+    if (JSON.stringify(from) !== JSON.stringify(to)) changes.push({ field, from, to })
+  }
+  const map = (rows: { participantId: string; minor: number }[]) =>
+    Object.fromEntries([...rows].sort((a, b) => (a.participantId < b.participantId ? -1 : 1)).map((row) => [row.participantId, row.minor]))
+  const lines = (role: string) => current.lines.filter((line) => line.role === role).map((line) => ({ participantId: line.participant_id, minor: line.minor }))
+  push('amount', current.settlement_minor, next.settlementMinor)
+  push('description', current.description, next.description)
+  push('date', current.expense_date, next.date)
+  push('category', current.category_id, next.categoryId)
+  push('payer', Object.keys(map(lines('payer'))), Object.keys(map(next.payers)))
+  push('method', current.split_method, next.splitMethod)
+  push('split', map(lines('share')), map(next.shares))
+  return changes
+}
+
+function parseJson(text: string | null): unknown {
+  if (!text) return null
+  try { return JSON.parse(text) } catch { return null }
 }
 
 function scaleParts(parts: { participantId: string; minor: number }[], fromTotal: number, toTotal: number) {

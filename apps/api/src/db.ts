@@ -2,6 +2,7 @@ import { mkdirSync, readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { FIXED_CATEGORIES } from '@divvy/domain'
+import { migrateSplitStorage } from './migrate.ts'
 
 const schema = readFileSync(new URL('./schema.sql', import.meta.url), 'utf8')
 
@@ -27,6 +28,7 @@ export async function createMemorySql(): Promise<Sql> {
   await db.exec(schema)
   const sql = wrapPglite(db)
   await seedCategories(sql)
+  await migrateSplitStorage(sql)
   return sql
 }
 
@@ -37,6 +39,7 @@ export async function createSql(): Promise<Sql> {
     const sql = wrapPostgres(client as unknown as Parameters<typeof wrapPostgres>[0])
     await sql.exec(schema)
     await seedCategories(sql)
+    await migrateSplitStorage(sql)
     return sql
   }
   const { PGlite } = await import('@electric-sql/pglite')
@@ -46,6 +49,7 @@ export async function createSql(): Promise<Sql> {
   await db.exec(schema)
   const sql = wrapPglite(db)
   await seedCategories(sql)
+  await migrateSplitStorage(sql)
   return sql
 }
 

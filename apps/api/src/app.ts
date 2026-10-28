@@ -503,6 +503,7 @@ export function createApp(sql: Sql, options?: {
     return c.json({ ok: true })
   })
   app.post('/api/groups/:id/expenses', async (c) => c.json(await repo.createExpense(await actor(c), c.req.param('id'), await c.req.json())))
+  app.get('/api/groups/:id/expenses/:expenseId', async (c) => c.json(await repo.expenseDetail(await actor(c), c.req.param('id'), c.req.param('expenseId'))))
   app.patch('/api/groups/:id/expenses/:expenseId', async (c) => {
     await repo.updateExpense(await actor(c), c.req.param('id'), c.req.param('expenseId'), await c.req.json())
     return c.json({ ok: true })

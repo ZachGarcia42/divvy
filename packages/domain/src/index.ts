@@ -12,7 +12,7 @@ export {
   assertExpenseCap,
   maxExpenseMinor,
 } from './money.ts'
-export { allocateByWeights, assertPayers, assertSplitShape, computeShares, involvedIds, assertInvolved, type SplitSpec } from './allocate.ts'
+export { allocateByWeights, assertPayers, assertSplitShape, computeShares, involvedIds, assertInvolved, splitToStored, splitFromStored, SPLIT_METHODS, type SplitSpec, type SplitMethod, type ComputeOptions } from './allocate.ts'
 export {
   canMove,
   canRemove,

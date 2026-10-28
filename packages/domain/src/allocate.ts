@@ -1,10 +1,14 @@
-import { LedgerError, assertMinor } from './money.ts'
+import { LedgerError, assertMinor, formatMoney } from './money.ts'
 import { shareGapMessage } from './labels.ts'
 
 export type Weighted = { id: string; weight: number }
 
-/** Split `total` minor units by weight. Leftover units go to the largest fractional remainders, ties by id. */
-export function allocateByWeights(total: number, weights: Weighted[]): { id: string; minor: number }[] {
+/**
+ * Split `total` minor units by weight. Leftover units go to the largest fractional remainders, ties by id.
+ * With `priority` (design v2) the leftover units instead go one each to the people with a positive weight
+ * in that order, then in the order the weights were listed.
+ */
+export function allocateByWeights(total: number, weights: Weighted[], priority?: string[]): { id: string; minor: number }[] {
   assertMinor(total, 'Total')
   if (total < 0) {
     throw new LedgerError('BAD_AMOUNT', 'Total cannot be negative')
@@ -31,7 +35,9 @@ export function allocateByWeights(total: number, weights: Weighted[]): { id: str
     return { id: row.id, minor: Math.floor(product / sum), remainder: product % sum }
   })
   let left = total - staged.reduce((acc, row) => acc + row.minor, 0)
-  const order = [...staged].sort((a, b) => b.remainder - a.remainder || (a.id < b.id ? -1 : 1))
+  const order = priority
+    ? leftoverOrder(staged.filter((row, index) => rows[index]!.weight > 0), priority)
+    : [...staged].sort((a, b) => b.remainder - a.remainder || (a.id < b.id ? -1 : 1))
   for (const row of order) {
     if (left === 0) break
     row.minor += 1
@@ -40,11 +46,28 @@ export function allocateByWeights(total: number, weights: Weighted[]): { id: str
   return staged.map((row) => ({ id: row.id, minor: row.minor }))
 }
 
+function leftoverOrder<T extends { id: string }>(rows: T[], priority: string[]): T[] {
+  const rank = (id: string) => {
+    const at = priority.indexOf(id)
+    return at === -1 ? priority.length : at
+  }
+  // Array.prototype.sort is stable, so people outside `priority` keep the order they were listed in.
+  return [...rows].sort((a, b) => rank(a.id) - rank(b.id))
+}
+
+export type SplitMethod = 'equal' | 'exact' | 'percent' | 'shares' | 'adjust'
+export const SPLIT_METHODS: SplitMethod[] = ['equal', 'exact', 'percent', 'shares', 'adjust']
+
+/**
+ * `adjust` (design v2): each person has a signed adjustment in minor units on top of an equal split of what is
+ * left after the adjustments, e.g. $120 with Leo +$10 is Leo $37.50 and the other three $27.50.
+ */
 export type SplitSpec =
   | { type: 'equal'; participantIds: string[] }
   | { type: 'exact'; amounts: { participantId: string; minor: number }[] }
   | { type: 'percent'; parts: { participantId: string; bps: number }[] }
   | { type: 'shares'; parts: { participantId: string; weight: number }[] }
+  | { type: 'adjust'; parts: { participantId: string; minor: number }[] }
 
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
 const rowsOk = (rows: unknown, key: string, kind: 'string' | 'number') =>
@@ -67,14 +90,38 @@ export function assertSplitShape(spec: unknown): asserts spec is SplitSpec {
     if (!rowsOk(spec.parts, 'bps', 'number')) throw bad()
   } else if (spec.type === 'shares') {
     if (!rowsOk(spec.parts, 'weight', 'number')) throw bad()
+  } else if (spec.type === 'adjust') {
+    if (!Array.isArray(spec.parts)) throw bad()
+    for (const row of spec.parts) {
+      if (isObj(row) && (row.minor === null || row.minor === undefined || row.minor === '')) row.minor = 0
+    }
+    if (!rowsOk(spec.parts, 'minor', 'number')) throw bad()
   } else {
     throw bad()
   }
 }
 
-export function computeShares(totalMinor: number, spec: SplitSpec, currency?: string): { participantId: string; minor: number }[] {
+export type ComputeOptions = {
+  /**
+   * Design v2 rounding: the leftover cents go to the payer first, then down the list in member order.
+   * Without it the leftover cents follow the legacy rule (largest remainder, ties by id).
+   */
+  payerId?: string | null
+}
+
+/** The people who get a leftover cent first: the payer, then everyone in the order the split lists them. */
+function priorityFor(spec: SplitSpec, options?: ComputeOptions): string[] | undefined {
+  if (!options || options.payerId === undefined) return undefined
+  const ids = spec.type === 'equal' ? spec.participantIds
+    : spec.type === 'exact' ? spec.amounts.map((row) => row.participantId)
+      : spec.parts.map((row) => row.participantId)
+  return options.payerId ? [options.payerId, ...ids] : ids
+}
+
+export function computeShares(totalMinor: number, spec: SplitSpec, currency?: string, options?: ComputeOptions): { participantId: string; minor: number }[] {
   assertMinor(totalMinor, 'Total')
   assertSplitShape(spec)
+  const priority = priorityFor(spec, options)
   if (spec.type === 'equal') {
     if (spec.participantIds.length === 0) {
       throw new LedgerError('BAD_SPLIT', 'Choose at least one person')
@@ -82,6 +129,7 @@ export function computeShares(totalMinor: number, spec: SplitSpec, currency?: st
     return allocateByWeights(
       totalMinor,
       spec.participantIds.map((id) => ({ id, weight: 1 })),
+      priority,
     ).map((row) => ({ participantId: row.id, minor: row.minor }))
   }
   if (spec.type === 'exact') {
@@ -109,7 +157,23 @@ export function computeShares(totalMinor: number, spec: SplitSpec, currency?: st
     return allocateByWeights(
       totalMinor,
       spec.parts.map((row) => ({ id: row.participantId, weight: row.bps })),
+      priority,
     ).map((row) => ({ participantId: row.id, minor: row.minor }))
+  }
+  if (spec.type === 'adjust') {
+    if (spec.parts.length === 0) throw new LedgerError('BAD_SPLIT', 'Choose at least one person')
+    spec.parts.forEach((row) => assertMinor(row.minor, 'Adjustment'))
+    assertUnique(spec.parts.map((row) => row.participantId))
+    const adjusted = spec.parts.reduce((acc, row) => acc + row.minor, 0)
+    const rest = totalMinor - adjusted
+    if (rest < 0) {
+      const over = currency ? ` ${formatMoney(-rest, currency)}` : ''
+      throw new LedgerError('UNBALANCED', `Adjustments add up to more than the total.${over ? ` Over by${over}.` : ''}`)
+    }
+    const even = allocateByWeights(rest, spec.parts.map((row) => ({ id: row.participantId, weight: 1 })), priority)
+    const out = spec.parts.map((row, index) => ({ participantId: row.participantId, minor: row.minor + even[index]!.minor }))
+    if (out.some((row) => row.minor < 0)) throw new LedgerError('BAD_SPLIT', 'Shares cannot be negative')
+    return out
   }
   if (spec.parts.some((row) => !Number.isInteger(row.weight) || row.weight < 0)) {
     throw new LedgerError('BAD_SPLIT', 'Shares must be zero or a positive integer')
@@ -118,6 +182,7 @@ export function computeShares(totalMinor: number, spec: SplitSpec, currency?: st
   return allocateByWeights(
     totalMinor,
     spec.parts.map((row) => ({ id: row.participantId, weight: row.weight })),
+    priority,
   ).map((row) => ({ participantId: row.id, minor: row.minor }))
 }
 
@@ -157,4 +222,29 @@ export function assertInvolved(payers: { participantId: string }[], shares: { pa
     throw new LedgerError('TOO_FEW', 'An expense needs at least two people')
   }
   return ids
+}
+
+/** What a split is stored as: its method plus the raw inputs the person typed (so an edit reopens as they left it). */
+export function splitToStored(spec: SplitSpec): { method: SplitMethod; inputs: unknown } {
+  switch (spec.type) {
+    case 'equal': return { method: 'equal', inputs: { participantIds: spec.participantIds } }
+    case 'exact': return { method: 'exact', inputs: { amounts: spec.amounts } }
+    default: return { method: spec.type, inputs: { parts: spec.parts } }
+  }
+}
+
+/** Rebuilds the split from what `splitToStored` saved. Returns null when the stored value is missing or unusable. */
+export function splitFromStored(method: string | null | undefined, inputs: unknown): SplitSpec | null {
+  let raw = inputs
+  if (typeof raw === 'string') {
+    try { raw = JSON.parse(raw) } catch { return null }
+  }
+  if (!method || !isObj(raw)) return null
+  const spec = { type: method, ...raw } as unknown
+  try {
+    assertSplitShape(spec)
+    return spec
+  } catch {
+    return null
+  }
 }

@@ -238,6 +238,23 @@ alter table magic_links add column if not exists code_superseded_at timestamptz;
 alter table magic_links add column if not exists code_locked_at timestamptz;
 create index if not exists magic_links_email on magic_links (email);
 
+-- Design v2: how an expense was split, and what was typed, so editing reopens it as the person left it.
+-- Share amounts themselves stay integer minor units in expense_lines. migrate.ts backfills split_method for old rows.
+alter table expenses add column if not exists split_method text;
+alter table expenses add column if not exists split_inputs text;
+
+-- Who changed what and when. changes is a JSON list of {field, from, to}; null means a legacy row with no detail.
+create table if not exists expense_history (
+  id text primary key,
+  seq bigint generated always as identity,
+  expense_id text not null references expenses(id) on delete cascade,
+  actor_participant_id text,
+  kind text not null,
+  changes text,
+  created_at timestamptz not null default now()
+);
+create index if not exists expense_history_expense on expense_history(expense_id, created_at);
+
 create index if not exists memberships_participant on memberships(participant_id);
 create index if not exists expenses_group on expenses(group_id);
 create index if not exists activity_group on activity(group_id, created_at);
