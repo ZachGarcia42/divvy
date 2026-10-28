@@ -6,7 +6,7 @@ import { KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleShee
 import { evaluate, majorString, METHOD_LABELS, METHODS, newDraft, switchMethod, type Draft } from './flows/split'
 import {
   breakdown, groupByDate, historyLines, methodPhrase, monthDay, netTone, NET_WORDS, overallUsd, paidPhrase, peopleCount,
-  signedMoney, splitGroupName, TEMPLATES, templateName, updatedPhrase, yourPosition, type HistoryEntry,
+  signedMoney, groupIcon, PICKER_EMOJIS, DEFAULT_EMOJI, TEMPLATES, templateName, updatedPhrase, yourPosition, type HistoryEntry,
 } from './flows/view'
 import { middleEllipsis } from './flows/composer'
 import type { Expense, GroupDetail, Home, HomeGroup, Payment, Settlement } from './types'
@@ -101,7 +101,7 @@ export function GroupsHome({ home, onOpen, onCreate, onPaste, onJoinLink }: {
 }
 
 function GroupRow({ group, index, today, first, onPress }: { group: HomeGroup; index: number; today: string; first: boolean; onPress: () => void }) {
-  const { emoji, title } = splitGroupName(group.name)
+  const { emoji, title } = groupIcon(group)
   const tone = netTone(group.yourNetMinor)
   const count = group.members?.length
   const sub = [count ? peopleCount(count) : null, updatedPhrase(group.latest?.date, today)].filter(Boolean).join(' · ')
@@ -144,10 +144,13 @@ export function EmptyGroups({ onCreate, onPaste }: { onCreate: (templateId?: str
 }
 
 export function CreateGroupSheet({ initialTemplate, busy, error, onCreate, onClose }: {
-  initialTemplate?: string; busy: boolean; error: string | null; onCreate: (name: string, currency: string) => void; onClose: () => void
+  initialTemplate?: string; busy: boolean; error: string | null; onCreate: (name: string, currency: string, emoji: string) => void; onClose: () => void
 }) {
   const start = TEMPLATES.find((t) => t.id === initialTemplate)
-  const [name, setName] = useState(start ? templateName(start) : '')
+  const [name, setName] = useState(start ? start.name : '')
+  const [emoji, setEmoji] = useState<string>(start ? start.emoji : DEFAULT_EMOJI)
+  const pickTemplate = (t: (typeof TEMPLATES)[number]) => { setName(t.name); setEmoji(t.emoji) }
+  const create = () => onCreate(name.trim(), currency.toUpperCase(), emoji)
   const [currency, setCurrency] = useState('USD')
   const valid = name.trim().length > 0 && name.trim().length <= 80 && /^[A-Za-z]{3}$/.test(currency)
   return (
@@ -157,21 +160,31 @@ export function CreateGroupSheet({ initialTemplate, busy, error, onCreate, onClo
         <View style={k.grabberDark} />
         <Text style={k.sheetTitle} accessibilityRole="header">Create a group</Text>
         <View style={k.chips}>
-          {TEMPLATES.map((t) => (
-            <Pressable key={t.id} style={[k.chip, name === templateName(t) && k.chipOn]} onPress={() => setName(templateName(t))} accessibilityRole="button" accessibilityState={{ selected: name === templateName(t) }} testID={`template-pick-${t.id}`}>
-              <Text style={[k.chipText, name === templateName(t) && k.chipTextOn]}>{t.emoji}  {t.label}</Text>
+          {TEMPLATES.map((t) => {
+            const on = name === t.name && emoji === t.emoji
+            return (
+              <Pressable key={t.id} style={[k.chip, on && k.chipOn]} onPress={() => pickTemplate(t)} accessibilityRole="button" accessibilityState={{ selected: on }} testID={`template-pick-${t.id}`}>
+                <Text style={[k.chipText, on && k.chipTextOn]}>{t.emoji}  {t.label}</Text>
+              </Pressable>
+            )
+          })}
+        </View>
+        <Text style={k.label}>Icon</Text>
+        <View style={k.chips} testID="emoji-picker">
+          {PICKER_EMOJIS.map((e) => (
+            <Pressable key={e} style={[k.emojiCell, emoji === e && k.chipOn]} onPress={() => setEmoji(e)} accessibilityRole="button" accessibilityLabel={`Icon ${e}`} accessibilityState={{ selected: emoji === e }} testID={`emoji-${e}`}>
+              <Text style={{ fontSize: 20 }}>{e}</Text>
             </Pressable>
           ))}
         </View>
         <Text style={k.label}>Name</Text>
-        <TextInput testID="group-name" autoFocus value={name} onChangeText={setName} maxLength={80} placeholder="🏔️ Tahoe weekend" placeholderTextColor={T.hint} style={[k.input, noOutline]} returnKeyType="done" onSubmitEditing={() => valid && !busy && onCreate(name.trim(), currency.toUpperCase())} />
-        <Text style={k.hintSmall}>Start with an emoji to give it an icon.</Text>
+        <TextInput testID="group-name" autoFocus value={name} onChangeText={setName} maxLength={80} placeholder="Tahoe weekend" placeholderTextColor={T.hint} style={[k.input, noOutline]} returnKeyType="done" onSubmitEditing={() => valid && !busy && create()} />
         <Text style={k.label}>Currency</Text>
         <TextInput testID="group-currency" value={currency} onChangeText={(text) => setCurrency(text.toUpperCase().slice(0, 3))} autoCapitalize="characters" autoCorrect={false} style={[k.input, noOutline, { width: 110 }]} />
         {error && <Text style={k.error} testID="create-group-error">{error}</Text>}
         <View style={k.sheetButtons}>
           <Pressable style={[k.btn, k.ghost, k.flex1]} onPress={onClose} accessibilityRole="button"><Text style={[k.btnText, { color: T.teal }]}>Cancel</Text></Pressable>
-          <Pressable style={[k.btn, k.flex1, (!valid || busy) && k.btnOff]} disabled={!valid || busy} onPress={() => onCreate(name.trim(), currency.toUpperCase())} accessibilityRole="button" accessibilityState={{ disabled: !valid || busy, busy }} testID="create-group-save">
+          <Pressable style={[k.btn, k.flex1, (!valid || busy) && k.btnOff]} disabled={!valid || busy} onPress={create} accessibilityRole="button" accessibilityState={{ disabled: !valid || busy, busy }} testID="create-group-save">
             <Text style={k.btnText}>{busy ? 'Creating…' : 'Create'}</Text>
           </Pressable>
         </View>
@@ -191,7 +204,7 @@ export function SwitcherSheet({ groups, currentId, onPick, onAll, onClose }: {
         <Text style={k.sheetTitle} accessibilityRole="header">Switch group</Text>
         <ScrollView style={{ maxHeight: 360 }}>
           {groups.filter((g) => !g.archived).map((group, i) => {
-            const { emoji, title } = splitGroupName(group.name)
+            const { emoji, title } = groupIcon(group)
             const tone = netTone(group.yourNetMinor)
             return (
               <Pressable key={group.id} style={[k.row, i > 0 && k.rowLine]} onPress={() => onPick(group.id)} accessibilityRole="button" accessibilityState={{ selected: group.id === currentId }} accessibilityLabel={`${title} group`} testID={`switch-${group.id}`}>
@@ -236,7 +249,7 @@ export function GroupView({ detail, today, banner, footer, onBack, onSwitcher, o
   detail: GroupDetail; today: string; banner?: ReactNode; footer?: ReactNode
   onBack: () => void; onSwitcher: () => void; onShare: () => void; onOpenExpense: (id: string) => void; onSettle: () => void; onAdd: () => void
 }) {
-  const { emoji, title } = splitGroupName(detail.group.name)
+  const { emoji, title } = groupIcon(detail.group)
   const youNet = detail.nets.find((n) => n.participantId === detail.yourParticipantId)?.netMinor ?? 0
   const spend = detail.expenses.filter((e) => e.kind !== 'reimbursement').reduce((a, e) => a + e.settlementMinor, 0)
   const active = detail.members.filter((m) => !m.removed)
@@ -548,7 +561,7 @@ export function ExpenseDetail({ detail, expense, history, canEdit, whyNoEdit, bu
     const paying = expense.payers.filter((p) => p.minor > 0)
     return paying.map((p) => (p.participantId === you ? 'You' : p.name)).join(', ') || 'Someone'
   })()
-  const { emoji, title } = splitGroupName(detail.group.name)
+  const { emoji, title } = groupIcon(detail.group)
   return (
     <>
       <View style={k.top}>
@@ -768,6 +781,7 @@ const k = StyleSheet.create({
   emptyCopy: { color: T.body, fontSize: 15, textAlign: 'center', lineHeight: 21, marginBottom: 6 },
   emptyHint: { fontSize: 12, fontWeight: '800', letterSpacing: 1.1, color: T.muted, marginTop: 14 },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, justifyContent: 'center' },
+  emojiCell: { width: 44, height: 40, borderRadius: 12, borderWidth: 1, borderColor: T.line, backgroundColor: T.card, alignItems: 'center', justifyContent: 'center' },
   chip: { backgroundColor: T.card, borderWidth: 1, borderColor: T.line, borderRadius: 999, paddingVertical: 8, paddingHorizontal: 14 },
   chipOn: { backgroundColor: T.ink, borderColor: T.ink },
   chipText: { fontWeight: '800', fontSize: 14, color: T.ink },

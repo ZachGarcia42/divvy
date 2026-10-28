@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { breakdown, dateHeading, groupByDate, historyLines, methodPhrase, netTone, overallUsd, paidPhrase, signedMoney, splitGroupName, startScreen, templateName, TEMPLATES, updatedPhrase, yourPosition } from './view'
+import { breakdown, dateHeading, groupByDate, historyLines, methodPhrase, netTone, overallUsd, paidPhrase, signedMoney, groupIcon, PICKER_EMOJIS, splitGroupName, startScreen, templateName, TEMPLATES, updatedPhrase, yourPosition } from './view'
 
 const g = (id: string, net: number, extra: object = {}) => ({ id, name: id, currency: 'USD', yourNetMinor: net, archived: false, ...extra })
 
@@ -94,5 +94,13 @@ describe('opening the app', () => {
     expect(startScreen(groups, 'gone')).toEqual({ screen: 'groups', groupId: null })
     expect(startScreen(groups, null)).toEqual({ screen: 'groups', groupId: null })
     expect(startScreen([], 'a').screen).toBe('groups')
+  })
+
+  it('groupIcon prefers the stored emoji and falls back to a leading emoji, then the default', () => {
+    expect(groupIcon({ name: 'Trip', emoji: '🏔️' })).toEqual({ emoji: '🏔️', title: 'Trip' })
+    expect(groupIcon({ name: '🏠 Home', emoji: '🐶' })).toEqual({ emoji: '🐶', title: 'Home' })
+    expect(groupIcon({ name: '🏠 Home', emoji: null })).toEqual({ emoji: '🏠', title: 'Home' })
+    expect(groupIcon({ name: 'Plain' })).toEqual({ emoji: '👥', title: 'Plain' })
+    for (const t of TEMPLATES) expect(PICKER_EMOJIS).toContain(t.emoji)
   })
 })

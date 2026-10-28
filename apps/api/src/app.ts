@@ -509,7 +509,10 @@ export function createApp(sql: Sql, options?: {
     return c.json({ ok: true })
   })
   app.delete('/api/groups/:id/expenses/:expenseId', async (c) => {
-    await repo.deleteExpense(await actor(c), c.req.param('id'), c.req.param('expenseId'))
+    // The version comes from ?version= or a JSON body; a delete without one is refused (409 STALE).
+    const raw = c.req.query('version') ?? (await c.req.json().catch(() => null) as { version?: unknown } | null)?.version
+    const version = raw === undefined || raw === null || raw === '' ? undefined : Number(raw)
+    await repo.deleteExpense(await actor(c), c.req.param('id'), c.req.param('expenseId'), version)
     return c.json({ ok: true })
   })
   app.post('/api/groups/:id/expenses/:expenseId/restore', async (c) => {

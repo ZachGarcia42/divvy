@@ -2,6 +2,7 @@
 export type HomeGroup = {
   id: string
   name: string
+  emoji?: string | null
   currency: string
   yourNetMinor: number
   archived: boolean
@@ -27,7 +28,7 @@ export type Expense = {
 export type Settlement = { id: string; fromId: string; toId: string; fromName: string; toName: string; minor: number }
 export type Payment = { fromId: string; toId: string; minor: number }
 export type GroupDetail = {
-  group: { id: string; name: string }
+  group: { id: string; name: string; emoji?: string | null }
   members: Member[]
   yourParticipantId: string
   nets: { participantId: string; netMinor: number }[]

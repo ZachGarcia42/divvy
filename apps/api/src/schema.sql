@@ -275,3 +275,6 @@ create table if not exists used_id_tokens (
   expires_at timestamptz not null,
   primary key (provider, token_key)
 );
+
+-- Design v2: an optional single emoji icon per group (set from a template or the picker).
+alter table groups add column if not exists emoji text;

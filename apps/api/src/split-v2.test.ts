@@ -153,7 +153,7 @@ describe('split storage (design v2)', () => {
     })
     const id = created.json.id as string
     expect((await detail()).nets.find((n: any) => n.participantId === maya).netMinor).toBe(-2000)
-    expect((await call('DELETE', `/api/groups/${groupId}/expenses/${id}`)).status).toBe(200)
+    expect((await call('DELETE', `/api/groups/${groupId}/expenses/${id}`, { version: 1 })).status).toBe(200)
     expect((await detail()).nets.find((n: any) => n.participantId === maya).netMinor).toBe(0)
     expect((await call('POST', `/api/groups/${groupId}/expenses/${id}/restore`)).status).toBe(200)
     expect((await detail()).nets.find((n: any) => n.participantId === maya).netMinor).toBe(-2000)

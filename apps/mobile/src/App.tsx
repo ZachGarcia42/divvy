@@ -1,7 +1,7 @@
 import { formatMoney, splitFromStored } from '@divvy/domain'
 import { joinedFeedback } from './flows/composer'
 import { draftFromSpec, majorString } from './flows/split'
-import { startScreen, splitGroupName, type HistoryEntry } from './flows/view'
+import { startScreen, groupIcon, type HistoryEntry } from './flows/view'
 import { AccountScreen, AddSheet, CreateGroupSheet, ExpenseDetail, Fab, GroupsHome, GroupView, InviteCard, PasteCard, SettleScreen, Snack, SwitcherSheet, TabBar, todayIso, type SheetSave, type Tab } from './V2'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import * as SecureStore from 'expo-secure-store'
@@ -54,6 +54,10 @@ const API = apiBase(Platform.OS, { api: process.env.EXPO_PUBLIC_API_URL, webApi:
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
 export type { Expense, GroupDetail, Home, HomeGroup, Member, Payment, Settlement } from './types'
+
+function isStale(reason: unknown) {
+  return (reason as { code?: string } | null)?.code === 'STALE'
+}
 
 async function call<T>(token: string | null, path: string, init?: RequestInit): Promise<T> {
   const controller = new AbortController()
@@ -732,7 +736,12 @@ function Ledger({
       ...(value.date ? { date: value.date } : {}),
     }
     if (editing) {
-      await call(token, `/api/groups/${detail.group.id}/expenses/${editing.id}`, { method: 'PATCH', body: JSON.stringify({ ...payload, version: editing.version }) })
+      try {
+        await call(token, `/api/groups/${detail.group.id}/expenses/${editing.id}`, { method: 'PATCH', body: JSON.stringify({ ...payload, version: editing.version }) })
+      } catch (reason) {
+        if (isStale(reason)) { setAdding(null); await handleStale(detail.group.id); return }
+        throw reason
+      }
     } else {
       await call(token, `/api/groups/${detail.group.id}/expenses`, { method: 'POST', body: JSON.stringify(payload) })
     }
@@ -740,6 +749,13 @@ function Ledger({
     setAdding(null)
     if (editing) setHistoryTick((n) => n + 1)
     showToast(editing ? 'Expense updated' : 'Expense added')
+  }
+
+  /** Someone else changed this expense first (409 STALE): reload it and its history, and say so. */
+  async function handleStale(gid: string) {
+    await refresh(gid).catch(() => undefined)
+    setHistoryTick((n) => n + 1)
+    showToast('Someone just changed this expense. Review it, then try again.')
   }
 
   async function restoreExpense(id: string, gid: string) {
@@ -758,12 +774,13 @@ function Ledger({
     const gid = detail.group.id
     setDeleting(true)
     try {
-      await call(token, `/api/groups/${gid}/expenses/${expense.id}`, { method: 'DELETE' })
+      await call(token, `/api/groups/${gid}/expenses/${expense.id}`, { method: 'DELETE', body: JSON.stringify({ version: expense.version }) })
       await refresh(gid)
       setScreen('group')
       setExpenseId(null)
       showSnack({ text: `Deleted ${expense.description.trim() || 'expense'}`, action: 'Undo', run: () => { void restoreExpense(expense.id, gid) } })
     } catch (reason) {
+      if (isStale(reason)) { await handleStale(gid); return }
       showToast(reason instanceof Error ? reason.message : 'Could not delete that')
     } finally {
       setDeleting(false)
@@ -808,12 +825,12 @@ function Ledger({
     }
   }
 
-  async function createGroup(name: string, currency: string) {
+  async function createGroup(name: string, currency: string, emoji: string) {
     if (createBusy) return
     setCreateBusy(true)
     setCreateError(null)
     try {
-      const made = await call<GroupDetail>(token, '/api/groups', { method: 'POST', body: JSON.stringify({ name, currency, timezone: deviceZone() }) })
+      const made = await call<GroupDetail>(token, '/api/groups', { method: 'POST', body: JSON.stringify({ name, currency, emoji, timezone: deviceZone() }) })
       setCreating(null)
       booted.current = true
       setGroupId(made.group.id)
@@ -982,7 +999,7 @@ function Ledger({
       </View>
       {showTabs && <TabBar tab={tab} onTab={(next) => (next === 'groups' ? goGroups() : setScreen('account'))} />}
       {adding && detail && (
-        <AddSheet members={sheetMembers} youId={detail.yourParticipantId} currency={detail.currency} groupName={splitGroupName(detail.group.name).title}
+        <AddSheet members={sheetMembers} youId={detail.yourParticipantId} currency={detail.currency} groupName={groupIcon(detail.group).title}
           initial={sheetInitial} onClose={() => setAdding(null)} onSave={(value) => saveExpense(value, adding.edit)} />
       )}
       {switcher && home && <SwitcherSheet groups={home.groups} currentId={groupId} onPick={openGroup} onAll={() => { setSwitcher(false); goGroups() }} onClose={() => setSwitcher(false)} />}

@@ -20,6 +20,15 @@ export function splitGroupName(name: string): { emoji: string; title: string } {
   return { emoji: match[1]!, title: name.slice(match[0].length) }
 }
 
+/** The icon comes from the group's own emoji (template or picker); older groups fall back to a leading emoji in the name. */
+export function groupIcon(group: { name: string; emoji?: string | null }): { emoji: string; title: string } {
+  const parsed = splitGroupName(group.name)
+  return group.emoji ? { emoji: group.emoji, title: parsed.title } : parsed
+}
+
+/** Offered by the create-group picker (templates first). */
+export const PICKER_EMOJIS = ['🏔️', '🏠', '💑', '🍜', '✈️', '🏖️', '🎉', '🛒', '🚗', '⚽', '🎬', '🐶'] as const
+
 export function templateName(template: { emoji: string; name: string }) {
   return `${template.emoji} ${template.name}`
 }

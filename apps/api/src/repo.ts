@@ -51,7 +51,7 @@ type ExpenseInput = {
   settlementMinor?: number
   payers?: { participantId: string; minor: number }[]
   split?: SplitSpec
-  /** 'payer' = design v2 rounding (leftover cents to the payer first, then member order). Absent = legacy rule. */
+  /** 'payer' = design v2 rounding (leftover cents to the payer first, then member order). Absent = legacy rule (kept so existing API clients and tests behave the same). */
   rounding?: 'payer'
   items?: { label: string; minor: number; participantIds: string[] }[]
   taxMinor?: number
@@ -400,15 +400,16 @@ export class Repo {
     }
   }
 
-  async createGroup(actor: Actor, input: { name: string; currency: string; timezone: string }) {
+  async createGroup(actor: Actor, input: { name: string; currency: string; timezone: string; emoji?: string | null }) {
     const name = cleanName(input.name)
+    const emoji = cleanEmoji(input.emoji) ?? null
     const currency = input.currency.toUpperCase()
     exponentOf(currency)
     calendarDateInTimeZone(input.timezone, this.deps.now())
     const id = newId()
     await this.sql.query(
-      `insert into groups (id, name, settlement_currency, timezone) values ($1,$2,$3,$4)`,
-      [id, name, currency, input.timezone],
+      `insert into groups (id, name, settlement_currency, timezone, emoji) values ($1,$2,$3,$4,$5)`,
+      [id, name, currency, input.timezone, emoji],
     )
     await this.sql.query(
       `insert into memberships (group_id, participant_id, default_weight) values ($1,$2,1)`,
@@ -469,9 +470,12 @@ export class Repo {
     confirm?: boolean
     currency?: string
     muted?: boolean
+    emoji?: string | null
   }) {
     await this.requireMember(actor, groupId)
     const group = await this.mustGroup(groupId)
+    const emoji = cleanEmoji(patch.emoji)
+    if (emoji !== undefined) await this.sql.query(`update groups set emoji = $1 where id = $2`, [emoji, groupId])
     if (patch.name !== undefined) {
       await this.sql.query(`update groups set name = $1 where id = $2`, [cleanName(patch.name), groupId])
     }
@@ -824,9 +828,11 @@ export class Repo {
     }
   }
 
-  async deleteExpense(actor: Actor, groupId: string, expenseId: string) {
+  async deleteExpense(actor: Actor, groupId: string, expenseId: string, version?: number) {
     await this.requireMember(actor, groupId)
     const current = await this.mustExpense(groupId, expenseId)
+    if (version === undefined || !Number.isInteger(version)) throw new LedgerError('STALE', 'Reload this expense and try again')
+    checkVersion(current.version, version)
     await this.sql.query(`update expenses set deleted_at = now(), version = version + 1 where id = $1`, [expenseId])
     await this.activity(this.sql, groupId, actor.participantId, 'expense.deleted', `${actor.displayName} deleted ${expenseLabel(current.description)}`, {
       expenseId,
@@ -2061,6 +2067,7 @@ export class Repo {
       summary: {
         id: group.id,
         name: group.name,
+        emoji: group.emoji ?? null,
         currency: group.settlement_currency,
         timezone: group.timezone,
         archived: Boolean(group.archived_at),
@@ -2124,7 +2131,7 @@ export class Repo {
 
   private async mustGroup(groupId: string): Promise<GroupRow> {
     const group = await this.one<GroupRow>(
-      `select id, name, settlement_currency, timezone, simplify, archived_at from groups where id = $1`,
+      `select id, name, emoji, settlement_currency, timezone, simplify, archived_at from groups where id = $1`,
       [groupId],
     )
     if (!group) throw new LedgerError('NOT_FOUND', 'Group not found')
@@ -2308,6 +2315,7 @@ export class Repo {
 type GroupRow = {
   id: string
   name: string
+  emoji?: string | null
   settlement_currency: string
   timezone: string
   simplify: boolean
@@ -2404,6 +2412,7 @@ function publicGroup(group: GroupRow) {
   return {
     id: group.id,
     name: group.name,
+    emoji: group.emoji ?? null,
     currency: group.settlement_currency,
     timezone: group.timezone,
     simplify: group.simplify,
@@ -2460,6 +2469,18 @@ export function cleanNextPath(value: unknown) {
     }
   }
   return value
+}
+
+/** undefined = leave alone, null/'' = clear, otherwise exactly one emoji. */
+function cleanEmoji(value: unknown): string | null | undefined {
+  if (value === undefined) return undefined
+  if (value === null) return null
+  if (typeof value !== 'string') throw new LedgerError('BAD_EMOJI', 'Pick a single emoji')
+  const text = value.trim()
+  if (!text) return null
+  const parts = [...new Intl.Segmenter('en', { granularity: 'grapheme' }).segment(text)]
+  if (parts.length !== 1 || text.length > 16 || !/\p{Extended_Pictographic}/u.test(text)) throw new LedgerError('BAD_EMOJI', 'Pick a single emoji')
+  return text
 }
 
 function cleanName(value: unknown) {

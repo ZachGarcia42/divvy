@@ -348,7 +348,7 @@ function GroupPage() {
                 {expense.originalCurrency !== detail.currency && <div className="muted">{formatMoney(expense.originalMinor, expense.originalCurrency)}</div>}
               </span>
               <button className="secondary" onClick={async () => {
-                await api(`/api/groups/${id}/expenses/${expense.id}`, { method: 'DELETE' })
+                await api(`/api/groups/${id}/expenses/${expense.id}?version=${expense.version}`, { method: 'DELETE' })
                 await reload()
               }}>Delete</button>
             </span>
