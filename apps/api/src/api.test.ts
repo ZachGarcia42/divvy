@@ -5,13 +5,13 @@ import { createMemorySql } from './db.ts'
 async function sessionFor(app: ReturnType<typeof createApp>['app'], email: string) {
   const started = await app.request('/api/auth/magic-link', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', 'x-divvy-platform': 'ios' },
     body: JSON.stringify({ email }),
   })
   const issued = await started.json() as { devToken: string }
   const verified = await app.request('/api/auth/verify', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', 'x-divvy-platform': 'ios' },
     body: JSON.stringify({ token: issued.devToken }),
   })
   const body = await verified.json() as { token: string; user: { displayName: string } }
@@ -27,7 +27,7 @@ describe('ledger API', () => {
       dev: true,
     })
     const alex = await sessionFor(app, 'alex@example.com')
-    const auth = { authorization: `Bearer ${alex.token}`, 'content-type': 'application/json' }
+    const auth = { authorization: `Bearer ${alex.token}`, 'content-type': 'application/json', 'x-divvy-platform': 'ios' }
     const created = await app.request('/api/groups', {
       method: 'POST',
       headers: auth,
@@ -100,7 +100,7 @@ describe('ledger API', () => {
     const { app } = createApp(sql, { now: () => new Date('2026-09-26T15:00:00Z'), dev: true, rateFor: async () => '1' })
     const alex = await sessionFor(app, 'alex@example.com')
     await sessionFor(app, 'jordan@example.com')
-    const auth = { authorization: `Bearer ${alex.token}`, 'content-type': 'application/json' }
+    const auth = { authorization: `Bearer ${alex.token}`, 'content-type': 'application/json', 'x-divvy-platform': 'ios' }
     const created = await (await app.request('/api/groups', {
       method: 'POST',
       headers: auth,
@@ -124,7 +124,7 @@ describe('ledger API', () => {
       dev: true,
     })
     const alex = await sessionFor(early.app, 'alex@example.com')
-    const auth = { authorization: `Bearer ${alex.token}`, 'content-type': 'application/json' }
+    const auth = { authorization: `Bearer ${alex.token}`, 'content-type': 'application/json', 'x-divvy-platform': 'ios' }
     const created = await (await early.app.request('/api/groups', {
       method: 'POST',
       headers: auth,
@@ -215,7 +215,7 @@ describe('ledger API', () => {
       dev: true,
     })
     const alex = await sessionFor(app, 'alex@example.com')
-    const auth = { authorization: `Bearer ${alex.token}`, 'content-type': 'application/json' }
+    const auth = { authorization: `Bearer ${alex.token}`, 'content-type': 'application/json', 'x-divvy-platform': 'ios' }
     const created = await (await app.request('/api/groups', {
       method: 'POST',
       headers: auth,
@@ -277,7 +277,7 @@ describe('ledger API', () => {
       dev: true,
     })
     const alex = await sessionFor(app, 'alex@example.com')
-    const auth = { authorization: `Bearer ${alex.token}`, 'content-type': 'application/json' }
+    const auth = { authorization: `Bearer ${alex.token}`, 'content-type': 'application/json', 'x-divvy-platform': 'ios' }
     const created = await (await app.request('/api/groups', {
       method: 'POST',
       headers: auth,
@@ -326,7 +326,7 @@ describe('ledger API', () => {
     const sql = await createMemorySql()
     const { app } = createApp(sql, { now: () => new Date('2026-09-26T15:00:00Z'), dev: true, rateFor: async () => '1' })
     const alex = await sessionFor(app, 'alex@example.com')
-    const auth = { authorization: `Bearer ${alex.token}`, 'content-type': 'application/json' }
+    const auth = { authorization: `Bearer ${alex.token}`, 'content-type': 'application/json', 'x-divvy-platform': 'ios' }
     const created = await (await app.request('/api/groups', {
       method: 'POST',
       headers: auth,
@@ -382,7 +382,7 @@ describe('ledger API', () => {
     const sql = await createMemorySql()
     const { app } = createApp(sql, { now: () => new Date('2026-09-26T15:00:00Z'), dev: true, rateFor: async () => '1' })
     const alex = await sessionFor(app, 'alex@example.com')
-    const auth = { authorization: `Bearer ${alex.token}`, 'content-type': 'application/json' }
+    const auth = { authorization: `Bearer ${alex.token}`, 'content-type': 'application/json', 'x-divvy-platform': 'ios' }
     const created = await (await app.request('/api/groups', {
       method: 'POST',
       headers: auth,
@@ -419,7 +419,7 @@ describe('ledger API', () => {
     const sql = await createMemorySql()
     const { app } = createApp(sql, { now: () => new Date('2026-09-26T15:00:00Z'), dev: true, rateFor: async () => '1' })
     const alex = await sessionFor(app, 'alex@example.com')
-    const auth = { authorization: `Bearer ${alex.token}`, 'content-type': 'application/json' }
+    const auth = { authorization: `Bearer ${alex.token}`, 'content-type': 'application/json', 'x-divvy-platform': 'ios' }
     const created = await (await app.request('/api/groups', {
       method: 'POST', headers: auth,
       body: JSON.stringify({ name: 'Apartment', currency: 'USD', timezone: 'UTC' }),
@@ -446,7 +446,7 @@ describe('ledger API', () => {
     const sql = await createMemorySql()
     const { app } = createApp(sql, { now: () => new Date('2026-09-26T15:00:00Z'), dev: true, rateFor: async () => '1' })
     const alex = await sessionFor(app, 'alex@example.com')
-    const auth = { authorization: `Bearer ${alex.token}`, 'content-type': 'application/json' }
+    const auth = { authorization: `Bearer ${alex.token}`, 'content-type': 'application/json', 'x-divvy-platform': 'ios' }
     const created = await (await app.request('/api/groups', {
       method: 'POST',
       headers: auth,
@@ -490,7 +490,7 @@ describe('ledger API', () => {
     const sql = await createMemorySql()
     const { app } = createApp(sql, { now: () => new Date('2026-09-26T15:00:00Z'), dev: true, rateFor: async () => '1' })
     const alex = await sessionFor(app, 'alex@example.com')
-    const auth = { authorization: `Bearer ${alex.token}`, 'content-type': 'application/json' }
+    const auth = { authorization: `Bearer ${alex.token}`, 'content-type': 'application/json', 'x-divvy-platform': 'ios' }
     const created = await (await app.request('/api/groups', {
       method: 'POST',
       headers: auth,
@@ -559,7 +559,7 @@ describe('ledger API', () => {
     const jordan = await sessionFor(app, 'jordan@example.com')
     const casey = await sessionFor(app, 'casey@example.com')
     const sam = await sessionFor(app, 'sam@example.com')
-    const auth = { authorization: `Bearer ${alex.token}`, 'content-type': 'application/json' }
+    const auth = { authorization: `Bearer ${alex.token}`, 'content-type': 'application/json', 'x-divvy-platform': 'ios' }
     const created = await (await app.request('/api/groups', {
       method: 'POST',
       headers: auth,
@@ -625,7 +625,7 @@ describe('ledger API', () => {
     const sql = await createMemorySql()
     const { app } = createApp(sql, { dev: true, rateFor: async () => '1', devSigninEmails: ' Alex@Example.com , sam@example.com' })
     const ask = async (email: string) => (await app.request('/api/auth/magic-link', {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email }),
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-divvy-platform': 'ios' }, body: JSON.stringify({ email }),
     })).json() as Promise<{ ok: boolean; devToken?: string }>
     const allowed = await ask('alex@example.com')
     expect(allowed.devToken).toBeTruthy()
@@ -633,7 +633,7 @@ describe('ledger API', () => {
     const stranger = await ask('zach@example.com')
     expect(stranger).toEqual({ ok: true })
     const verify = await app.request('/api/auth/verify', {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ token: stranger.devToken }),
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-divvy-platform': 'ios' }, body: JSON.stringify({ token: stranger.devToken }),
     })
     expect(verify.status).toBe(401)
     expect((await app.request('/api/dev/outbox')).status).toBe(404)
@@ -657,7 +657,7 @@ describe('ledger API', () => {
     const sql = await createMemorySql()
     const saved = process.env.DEV_SIGNIN_EMAILS
     const ask = async (app: ReturnType<typeof createApp>['app']) => (await app.request('/api/auth/magic-link', {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'alex@example.com' }),
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-divvy-platform': 'ios' }, body: JSON.stringify({ email: 'alex@example.com' }),
     })).json() as Promise<{ ok: boolean; devToken?: string }>
     try {
       for (const value of ['', '   ', ' , ']) {
@@ -680,7 +680,7 @@ describe('ledger API', () => {
     const sql = await createMemorySql()
     const { app } = createApp(sql, { dev: true, rateFor: async () => '1' })
     for (const body of ['{"email":null}', '{}', '[]', '{"email":["a@b.co"]}', '{"email":42}', '{"email":{}}', 'null', 'not json']) {
-      const response = await app.request('/api/auth/magic-link', { method: 'POST', headers: { 'content-type': 'application/json' }, body })
+      const response = await app.request('/api/auth/magic-link', { method: 'POST', headers: { 'content-type': 'application/json', 'x-divvy-platform': 'ios' }, body })
       expect(response.status, body).toBe(400)
       expect(await response.json()).toMatchObject({ error: { code: 'BAD_EMAIL' } })
     }
@@ -692,7 +692,7 @@ describe('ledger API', () => {
     const { app } = createApp(sql, { ...opts, now: () => new Date('2026-09-26T15:00:00Z') })
     const alex = await sessionFor(app, 'alex@example.com')
     const sam = await sessionFor(app, 'sam@example.com')
-    const auth = { authorization: `Bearer ${alex.token}`, 'content-type': 'application/json' }
+    const auth = { authorization: `Bearer ${alex.token}`, 'content-type': 'application/json', 'x-divvy-platform': 'ios' }
     const created = await (await app.request('/api/groups', { method: 'POST', headers: auth, body: JSON.stringify({ name: 'Apartment', currency: 'USD', timezone: 'UTC' }) })).json() as { group: { id: string } }
     const link = await (await app.request(`/api/groups/${created.group.id}/invite-link`, { method: 'POST', headers: auth })).json() as { token: string }
     const preview = await app.request(`/api/invites/${link.token}/preview`)
@@ -715,14 +715,14 @@ describe('ledger API', () => {
   it('carries a relative next path through the email link and verify, and rejects absolute ones', async () => {
     const sql = await createMemorySql()
     const { app } = createApp(sql, { dev: true, rateFor: async () => '1', devSigninEmails: null })
-    const send = (body: unknown) => app.request('/api/auth/magic-link', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+    const send = (body: unknown) => app.request('/api/auth/magic-link', { method: 'POST', headers: { 'content-type': 'application/json', 'x-divvy-platform': 'ios' }, body: JSON.stringify(body) })
     const issued = await (await send({ email: 'alex@example.com', next: '/invite/abc123' })).json() as { devToken: string }
     const outbox = await (await app.request('/api/dev/outbox')).json() as { to_email: string; body: string }[]
     expect(outbox.at(-1)!.body).toContain('&next=%2Finvite%2Fabc123')
-    const verified = await (await app.request('/api/auth/verify', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ token: issued.devToken }) })).json()
+    const verified = await (await app.request('/api/auth/verify', { method: 'POST', headers: { 'content-type': 'application/json', 'x-divvy-platform': 'ios' }, body: JSON.stringify({ token: issued.devToken }) })).json()
     expect(verified).toMatchObject({ next: '/invite/abc123' })
     const plain = await (await send({ email: 'sam@example.com' })).json() as { devToken: string }
-    expect(await (await app.request('/api/auth/verify', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ token: plain.devToken }) })).json()).toMatchObject({ next: null })
+    expect(await (await app.request('/api/auth/verify', { method: 'POST', headers: { 'content-type': 'application/json', 'x-divvy-platform': 'ios' }, body: JSON.stringify({ token: plain.devToken }) })).json()).toMatchObject({ next: null })
     for (const next of ['https://evil.example/x', '//evil.example', 'javascript:alert(1)', 'invite/abc', '/\\evil.example', '/a b', 42]) {
       const response = await send({ email: 'jo@example.com', next })
       expect(response.status, String(next)).toBe(400)
@@ -734,7 +734,7 @@ describe('ledger API', () => {
     const sql = await createMemorySql()
     const { app } = createApp(sql, { dev: true, rateFor: async () => '1', devSigninEmails: null })
     const alex = await sessionFor(app, 'alex@example.com')
-    const patch = (body: string) => app.request('/api/me', { method: 'PATCH', headers: { authorization: `Bearer ${alex.token}`, 'content-type': 'application/json' }, body })
+    const patch = (body: string) => app.request('/api/me', { method: 'PATCH', headers: { authorization: `Bearer ${alex.token}`, 'content-type': 'application/json', 'x-divvy-platform': 'ios' }, body })
     const blank = await patch(JSON.stringify({ displayName: '   ' }))
     expect(blank.status).toBe(400)
     expect(await blank.json()).toMatchObject({ error: { code: 'BAD_NAME', message: "Name can't be blank" } })
@@ -750,7 +750,7 @@ describe('ledger API', () => {
     let now = new Date('2026-09-26T15:00:00Z').getTime()
     const { app } = createApp(sql, { dev: true, rateFor: async () => '1', devSigninEmails: null, trustProxy: true, now: () => new Date(now) })
     const send = (email: string, ip: string) => app.request('/api/auth/magic-link', {
-      method: 'POST', headers: { 'content-type': 'application/json', 'x-forwarded-for': ip }, body: JSON.stringify({ email }),
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-divvy-platform': 'ios', 'x-forwarded-for': ip }, body: JSON.stringify({ email }),
     })
     for (let i = 0; i < 5; i += 1) expect((await send('Alex@example.com', `10.0.0.${i}`)).status).toBe(200)
     const limited = await send('alex@example.com ', '10.0.1.1')
@@ -766,7 +766,7 @@ describe('ledger API', () => {
   it('rejects next paths with "//" anywhere or dot segments, raw or encoded', async () => {
     const sql = await createMemorySql()
     const { app } = createApp(sql, { dev: true, rateFor: async () => '1', devSigninEmails: null, rateLimit: false })
-    const send = (next: string) => app.request('/api/auth/magic-link', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'n@example.com', next }) })
+    const send = (next: string) => app.request('/api/auth/magic-link', { method: 'POST', headers: { 'content-type': 'application/json', 'x-divvy-platform': 'ios' }, body: JSON.stringify({ email: 'n@example.com', next }) })
     for (const next of ['/..//evil.com', '/.//evil.com', '/a//b', '/a/../b', '/..', '/./x', '/%2F%2Fevil.com', '/..%2F..%2Fevil.com', '/%5Cevil.com', '/%E0%A4%A', '/javascript:alert(1)', '/%6Aavascript:x']) {
       expect((await send(next)).status, next).toBe(400)
     }
@@ -779,7 +779,7 @@ describe('ledger API', () => {
     const sql = await createMemorySql()
     const { app } = createApp(sql, { dev: true, rateFor: async () => '1', devSigninEmails: null, trustProxy: true })
     const send = (email: string, xff: string) => app.request('/api/auth/magic-link', {
-      method: 'POST', headers: { 'content-type': 'application/json', 'x-forwarded-for': xff }, body: JSON.stringify({ email }),
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-divvy-platform': 'ios', 'x-forwarded-for': xff }, body: JSON.stringify({ email }),
     })
     for (let i = 0; i < 5; i += 1) expect((await send(`x${i}@example.com`, `6.6.6.${i}, 203.0.113.7`)).status).toBe(200)
     expect((await send('x9@example.com', '6.6.6.99, 203.0.113.7')).status).toBe(429)
@@ -789,7 +789,7 @@ describe('ledger API', () => {
     const sql = await createMemorySql()
     const { app } = createApp(sql, { dev: true, rateFor: async () => '1', devSigninEmails: null })
     const alex = await sessionFor(app, 'alex@example.com')
-    const auth = { authorization: `Bearer ${alex.token}`, 'content-type': 'application/json' }
+    const auth = { authorization: `Bearer ${alex.token}`, 'content-type': 'application/json', 'x-divvy-platform': 'ios' }
     const created = await (await app.request('/api/groups', { method: 'POST', headers: auth, body: JSON.stringify({ name: 'Apartment', currency: 'USD', timezone: 'UTC' }) })).json() as { group: { id: string } }
     for (const name of ['', '   ', null, 42, ['x']]) {
       const response = await app.request(`/api/groups/${created.group.id}`, { method: 'PATCH', headers: auth, body: JSON.stringify({ name }) })
@@ -805,7 +805,7 @@ describe('ledger API', () => {
     const { app } = createApp(sql, { dev: true, rateFor: async () => '1', devSigninEmails: null })
     const alex = await sessionFor(app, 'alex@example.com')
     const jordan = await sessionFor(app, 'jordan@example.com')
-    const auth = { authorization: `Bearer ${alex.token}`, 'content-type': 'application/json' }
+    const auth = { authorization: `Bearer ${alex.token}`, 'content-type': 'application/json', 'x-divvy-platform': 'ios' }
     const created = await (await app.request('/api/groups', { method: 'POST', headers: auth, body: JSON.stringify({ name: 'Old', currency: 'USD', timezone: 'UTC' }) })).json() as { group: { id: string } }
     const link = await (await app.request(`/api/groups/${created.group.id}/invite-link`, { method: 'POST', headers: auth })).json() as { token: string }
     await app.request(`/api/groups/${created.group.id}/archive`, { method: 'POST', headers: auth })
@@ -823,7 +823,7 @@ describe('ledger API', () => {
     const session = await sessionFor(app, `${'l'.repeat(120)}@example.com`)
     expect(session.token).toBeTruthy()
     expect(session.user.displayName).toBe('L' + 'l'.repeat(79))
-    const long = await app.request('/api/me', { method: 'PATCH', headers: { authorization: `Bearer ${session.token}`, 'content-type': 'application/json' }, body: JSON.stringify({ displayName: 'x'.repeat(81) }) })
+    const long = await app.request('/api/me', { method: 'PATCH', headers: { authorization: `Bearer ${session.token}`, 'content-type': 'application/json', 'x-divvy-platform': 'ios' }, body: JSON.stringify({ displayName: 'x'.repeat(81) }) })
     expect(await long.json()).toMatchObject({ error: { code: 'BAD_NAME', message: 'Use a name of 80 characters or fewer' } })
   })
 
@@ -836,7 +836,7 @@ describe('ledger API', () => {
     const alex = await sessionFor(app, 'alex@example.com')
     const sam = await sessionFor(app, 'sam@example.com')
     const jo = await sessionFor(app, 'jo@example.com')
-    const auth = { authorization: `Bearer ${alex.token}`, 'content-type': 'application/json' }
+    const auth = { authorization: `Bearer ${alex.token}`, 'content-type': 'application/json', 'x-divvy-platform': 'ios' }
     const created = await (await app.request('/api/groups', { method: 'POST', headers: auth, body: JSON.stringify({ name: 'Apartment', currency: 'USD', timezone: 'UTC' }) })).json() as { group: { id: string } }
     await app.request(`/api/groups/${created.group.id}/people`, { method: 'POST', headers: auth, body: JSON.stringify({ email: 'sam@example.com', displayName: 'Sam' }) })
     const outbox = await (await app.request('/api/dev/outbox')).json() as { to_email: string; body: string }[]
@@ -856,7 +856,7 @@ describe('ledger API', () => {
     const sql = await createMemorySql()
     const { app } = createApp(sql, { now: () => new Date('2026-09-26T15:00:00Z'), rateFor: async () => '1', dev: true })
     const alex = await sessionFor(app, 'alex@example.com')
-    const auth = { authorization: `Bearer ${alex.token}`, 'content-type': 'application/json' }
+    const auth = { authorization: `Bearer ${alex.token}`, 'content-type': 'application/json', 'x-divvy-platform': 'ios' }
     const mk = async (name: string) => (await (await app.request('/api/groups', { method: 'POST', headers: auth, body: JSON.stringify({ name, currency: 'USD', timezone: 'UTC' }) })).json()) as { group: { id: string }; members: { id: string }[] }
     const g = await mk('Home')
     const other = await mk('Other')
@@ -897,7 +897,7 @@ describe('ledger API', () => {
   })
 
   describe('sign-in codes', () => {
-    const json = { 'content-type': 'application/json' }
+    const json = { 'content-type': 'application/json', 'x-divvy-platform': 'ios' }
     const make = async (over: Parameters<typeof createApp>[1] = {}) => {
       let now = new Date('2026-10-13T10:00:00Z').getTime()
       const sql = await createMemorySql()
@@ -1109,7 +1109,7 @@ describe('ledger API', () => {
     let now = new Date('2026-09-26T15:00:00Z')
     const { app } = createApp(sql, { now: () => now, dev: true, rateFor: async () => '1' })
     const alex = await sessionFor(app, 'alex@example.com')
-    const auth = { authorization: `Bearer ${alex.token}`, 'content-type': 'application/json' }
+    const auth = { authorization: `Bearer ${alex.token}`, 'content-type': 'application/json', 'x-divvy-platform': 'ios' }
     await app.request('/api/me', { method: 'PATCH', headers: auth, body: JSON.stringify({ displayName: 'Al <b>&' }) })
     const inviter = 'Al <b>&'
     const esc = (v: string) => v.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
@@ -1153,7 +1153,7 @@ describe('ledger API', () => {
   it('sends RateLimit headers and Retry-After on 429', async () => {
     const sql = await createMemorySql()
     const { app } = createApp(sql, { dev: true, rateFor: async () => '1', devSigninEmails: null })
-    const send = () => app.request('/api/auth/magic-link', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'rl@example.com' }) })
+    const send = () => app.request('/api/auth/magic-link', { method: 'POST', headers: { 'content-type': 'application/json', 'x-divvy-platform': 'ios' }, body: JSON.stringify({ email: 'rl@example.com' }) })
     const first = await send()
     expect(first.headers.get('RateLimit-Limit')).toBe('5')
     expect(first.headers.get('RateLimit-Remaining')).toBe('4')
@@ -1169,7 +1169,7 @@ describe('ledger API', () => {
     const sql = await createMemorySql()
     const { app } = createApp(sql, { dev: true, rateFor: async () => '1' })
     const alex = await sessionFor(app, 'alex@example.com')
-    const auth = { authorization: `Bearer ${alex.token}`, 'content-type': 'application/json' }
+    const auth = { authorization: `Bearer ${alex.token}`, 'content-type': 'application/json', 'x-divvy-platform': 'ios' }
     const group = await (await app.request('/api/groups', { method: 'POST', headers: auth, body: JSON.stringify({ name: 'Trip', currency: 'USD', timezone: 'UTC' }) })).json() as { group: { id: string }; members: { id: string }[] }
     const bobId = ((await (await app.request(`/api/groups/${group.group.id}/people`, { method: 'POST', headers: auth, body: JSON.stringify({ displayName: 'Bob' }) })).json()) as { participantId: string }).participantId
     const alexId = group.members[0]!.id

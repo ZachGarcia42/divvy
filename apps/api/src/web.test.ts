@@ -146,20 +146,35 @@ describe('dev tester sign-in is native-only', () => {
   const post = (app: Awaited<ReturnType<typeof setup>>, path: string, body: unknown, headers: Record<string, string> = {}) =>
     app.request(path, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) })
   const make = async () => createApp(await createMemorySql(), { dev: true, rateFor: async () => '1', devSigninEmails: 'tester@example.com', rateLimit: false }).app
-  it('never issues a devToken to a browser or web platform request', async () => {
+  it('never issues a devToken to a browser, a web/unknown platform, or a request with no platform header', async () => {
     const app = await make()
-    for (const headers of [{ 'x-divvy-platform': 'web' }, { origin: 'https://divvy.mooo.com' }, { 'sec-fetch-site': 'same-origin' }, { 'x-divvy-platform': 'bogus' }] as Record<string, string>[]) {
-      const body = await (await post(app, '/api/auth/magic-link', { email: 'tester@example.com' }, headers)).json() as { devToken?: string }
+    for (const headers of [
+      {},
+      { 'x-divvy-platform': '' },
+      { 'x-divvy-platform': 'web' },
+      { 'x-divvy-platform': 'bogus' },
+      { 'x-divvy-platform': 'windows' },
+      { origin: 'https://divvy.mooo.com' },
+      { 'sec-fetch-site': 'same-origin' },
+      { 'x-divvy-platform': 'ios', origin: 'https://divvy.mooo.com' },
+      { 'x-divvy-platform': 'android', origin: 'https://divvy.mooo.com' },
+      { 'x-divvy-platform': 'ios', 'sec-fetch-site': 'cross-site' },
+      { 'x-divvy-platform': 'android', 'sec-fetch-mode': 'cors' },
+    ] as Record<string, string>[]) {
+      const body = await (await post(app, '/api/auth/magic-link', { email: 'tester@example.com' }, headers)).json() as { devToken?: string; devCode?: string }
       expect(body.devToken, JSON.stringify(headers)).toBeUndefined()
+      expect(body.devCode, JSON.stringify(headers)).toBeUndefined()
     }
-    const providers = await (await app.request('/api/auth/providers', { headers: { 'x-divvy-platform': 'web' } })).json() as { email: boolean }
-    expect(providers.email).toBe(false)
+    for (const headers of [{}, { 'x-divvy-platform': 'web' }] as Record<string, string>[]) {
+      const providers = await (await app.request('/api/auth/providers', { headers })).json() as { email: boolean }
+      expect(providers.email, JSON.stringify(headers)).toBe(false)
+    }
   })
-  it('still issues and verifies for ios/android (and legacy native with no headers)', async () => {
+  it('issues and verifies a devToken only for ios/android without browser headers', async () => {
     const app = await make()
-    for (const headers of [{ 'x-divvy-platform': 'ios' }, { 'x-divvy-platform': 'android' }, {}] as Record<string, string>[]) {
+    for (const headers of [{ 'x-divvy-platform': 'ios' }, { 'x-divvy-platform': 'android' }, { 'x-divvy-platform': ' IOS ' }] as Record<string, string>[]) {
       const issued = await (await post(app, '/api/auth/magic-link', { email: 'tester@example.com' }, headers)).json() as { devToken?: string }
-      expect(issued.devToken).toBeTruthy()
+      expect(issued.devToken, JSON.stringify(headers)).toBeTruthy()
       expect((await post(app, '/api/auth/verify', { token: issued.devToken }, headers)).status).toBe(200)
     }
     expect(((await (await app.request('/api/auth/providers', { headers: { 'x-divvy-platform': 'ios' } })).json()) as { email: boolean }).email).toBe(true)

@@ -4,7 +4,7 @@ import { listenOptions } from './config.ts'
 import { createMemorySql } from './db.ts'
 
 const ORIGIN = 'https://divvy.mooo.com'
-const json = { 'content-type': 'application/json' }
+const json = { 'content-type': 'application/json', 'x-divvy-platform': 'ios' }
 
 async function setup(webOrigin = ORIGIN) {
   const { app } = createApp(await createMemorySql(), { dev: true, rateFor: async () => '1', devSigninEmails: null, rateLimit: false, webOrigin })

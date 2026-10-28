@@ -42,7 +42,7 @@ async function setup(extra: Parameters<typeof createApp>[1] = {}) {
     ? body && typeof body === 'object' && !('platform' in body) ? { ...body, platform: path.endsWith('apple') ? 'ios' : 'web' } : body
     : body
   const post = (path: string, body: unknown) => created.app.request(path, {
-    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(withPlatform(path, body)),
+    method: 'POST', headers: { 'content-type': 'application/json', 'x-divvy-platform': 'ios' }, body: JSON.stringify(withPlatform(path, body)),
   })
   return { ...created, post, sql }
 }
@@ -127,9 +127,9 @@ describe('Sign in with Google / Apple', () => {
     expect(res.status).toBe(503)
     expect(((await res.json()) as { error: { code: string } }).error.code).toBe('NOT_CONFIGURED')
     expect((await post('/api/auth/apple', { identityToken: 'x' })).status).toBe(503)
-    expect(await (await app.request('/api/auth/providers')).json()).toEqual({ google: false, apple: false, email: true })
+    expect(await (await app.request('/api/auth/providers', { headers: { 'x-divvy-platform': 'ios' } })).json()).toEqual({ google: false, apple: false, email: true })
     const locked = (await setup({ devSigninEmails: [] })).app
-    expect(await (await locked.request('/api/auth/providers')).json()).toEqual({ google: true, apple: true, email: false })
+    expect(await (await locked.request('/api/auth/providers', { headers: { 'x-divvy-platform': 'ios' } })).json()).toEqual({ google: true, apple: true, email: false })
   })
 
   it('carries the invite next path through and refuses an off-site next', async () => {
@@ -142,7 +142,7 @@ describe('Sign in with Google / Apple', () => {
   it('rate-limits provider sign-in per IP (4x the link quota)', async () => {
     const { app } = await setup({ rateLimit: { max: 1, windowMs: 60_000 }, trustProxy: true })
     const from = async (ip: string) => app.request('/api/auth/google', {
-      method: 'POST', headers: { 'content-type': 'application/json', 'x-forwarded-for': ip }, body: JSON.stringify({ idToken: await google('g-9', 'r@example.com'), platform: 'web' }),
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-divvy-platform': 'ios', 'x-forwarded-for': ip }, body: JSON.stringify({ idToken: await google('g-9', 'r@example.com'), platform: 'web' }),
     })
     for (let i = 0; i < 4; i++) expect((await from('203.0.113.1')).status).toBe(200)
     const limited = await from('203.0.113.1')
@@ -245,7 +245,7 @@ describe('Sign in with Google / Apple', () => {
   it('trusts X-Forwarded-For only from a loopback hop when TRUST_PROXY is unset', async () => {
     const { app } = await setup({ rateLimit: { max: 1, windowMs: 60_000 }, trustProxy: false })
     const from = async (remoteAddress: string, xff: string) => app.request('/api/auth/google', {
-      method: 'POST', headers: { 'content-type': 'application/json', 'x-forwarded-for': xff }, body: JSON.stringify({ idToken: await google('g-lb', 'lb@gmail.com'), platform: 'web' }),
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-divvy-platform': 'ios', 'x-forwarded-for': xff }, body: JSON.stringify({ idToken: await google('g-lb', 'lb@gmail.com'), platform: 'web' }),
     }, { incoming: { socket: { remoteAddress } } })
     // Behind Caddy (127.0.0.1): each forwarded client gets its own bucket.
     for (let i = 0; i < 4; i++) expect((await from('127.0.0.1', '203.0.113.5')).status).toBe(200)
@@ -303,7 +303,7 @@ describe('Sign in with Google / Apple', () => {
 
   it('N4: platform must be ios, android or web', async () => {
     const { app } = await setup()
-    const raw = (path: string, body: unknown) => app.request(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+    const raw = (path: string, body: unknown) => app.request(path, { method: 'POST', headers: { 'content-type': 'application/json', 'x-divvy-platform': 'ios' }, body: JSON.stringify(body) })
     for (const platform of [undefined, 'windows', 5, '']) {
       const g = await raw('/api/auth/google', { idToken: await google('g-pf', 'pf@gmail.com'), ...(platform === undefined ? {} : { platform }) })
       expect(g.status, String(platform)).toBe(400)

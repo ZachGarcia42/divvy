@@ -167,12 +167,12 @@ export function createApp(sql: Sql, options?: {
   }
   const devRoutes = dev && !restricted
   // Dev tester sign-in is for the native tester builds only, never a browser (the hosted web app is public).
-  // Native builds send x-divvy-platform: ios|android; older native builds send nothing and no browser headers.
+  // Native builds send x-divvy-platform: ios|android on every call and never send Origin/Sec-Fetch-* headers.
+  // A missing or unknown platform header, or any browser header, means no devToken.
   const fromBrowser = (c: { req: { header: (name: string) => string | undefined } }) => {
     const platform = c.req.header('x-divvy-platform')?.trim().toLowerCase()
-    if (platform === 'ios' || platform === 'android') return false
-    if (platform) return true
-    return !!(c.req.header('origin') || c.req.header('sec-fetch-site') || c.req.header('sec-fetch-mode'))
+    if (platform !== 'ios' && platform !== 'android') return true
+    return !!(c.req.header('origin') || c.req.header('sec-fetch-site') || c.req.header('sec-fetch-mode') || c.req.header('sec-fetch-dest') || c.req.header('sec-fetch-user'))
   }
   // Tokens handed out as devTokens, so /api/auth/verify can refuse them from a browser too.
   const devIssued = new Set<string>()
