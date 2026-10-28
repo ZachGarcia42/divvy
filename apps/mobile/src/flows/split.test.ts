@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { bpsText, draftFromSpec, evaluate, groupedMajor, isDirty, newDraft, parseAmountText, parsePercentBps, sharesFromWeights, switchMethod } from './split'
+import type { SplitMethod } from '@divvy/domain'
+import { bpsText, draftFromSpec, evaluate, groupedMajor, isDirty, newDraft, parseAmountText, parsePercentBps, sharesFromWeights, switchMethod, type Draft } from './split'
 
 const ids = ['you', 'maya', 'leo', 'priya']
 const names: Record<string, string> = { you: 'You', maya: 'Maya', leo: 'Leo', priya: 'Priya' }
@@ -292,5 +293,45 @@ describe('groupedMajor', () => {
     expect(groupedMajor(123456789012, 'USD')).toBe('1,234,567,890.12')
     expect(groupedMajor(1234567, 'JPY')).toBe('1,234,567')
     expect(groupedMajor(0, 'USD')).toBe('0.00')
+  })
+})
+
+describe('round trips restore what was typed', () => {
+  const adjustDraft = (cells: string[]) => ({ ...newDraft(ids), method: 'adjust' as const, adjust: Object.fromEntries(ids.map((id, i) => [id, cells[i] ?? ''])) })
+  const trip = (draft: Draft, via: SplitMethod[], amount: string, payer: string | null = 'you') =>
+    [...via, draft.method].reduce((d, to) => switchMethod(d, to, ids, amount, 'USD', payer), draft)
+
+  it('Adjust +1.00/+0.50/0/0 → % → Adjust comes back as typed', () => {
+    const typed = ['+1.00', '+0.50', '', '']
+    const draft = adjustDraft(typed)
+    expect(ev(draft, '10.01').ok).toBe(true)
+    const back = trip(draft, ['percent'], '10.01')
+    expect(back.method).toBe('adjust')
+    expect(ids.map((id) => back.adjust[id])).toEqual(typed)
+    expect(ev(back, '10.01').results).toEqual(ev(draft, '10.01').results)
+  })
+  it('restores the raw inputs across longer trips and for every method', () => {
+    const typed = ['+1.00', '+0.50', '', '']
+    const draft = adjustDraft(typed)
+    for (const via of [['percent', 'shares'], ['exact'], ['shares', 'exact', 'percent']] as SplitMethod[][]) {
+      const back = trip(draft, via, '10.01')
+      expect(ids.map((id) => back.adjust[id]), via.join('>')).toEqual(typed)
+    }
+    const shares = { ...newDraft(ids), method: 'shares' as const, shares: { you: 3, maya: 2, leo: 0, priya: 1 } }
+    const sBack = trip(shares, ['percent'], '12.34')
+    expect(sBack.shares).toEqual({ you: 3, maya: 2, leo: 0, priya: 1 })
+    const pct = { ...newDraft(ids), method: 'percent' as const, percent: { you: '33.33', maya: '33.33', leo: '33.34', priya: '' } }
+    const pBack = trip(pct, ['exact'], '10.01')
+    expect(pBack.percent).toEqual(pct.percent)
+  })
+  it('recomputes once anything changed in between (a cell, the amount)', () => {
+    const draft = adjustDraft(['+1.00', '+0.50', '', ''])
+    const inPct = switchMethod(draft, 'percent', ids, '10.01', 'USD', 'you')
+    const edited = { ...inPct, percent: { ...inPct.percent, you: '40', maya: '30', leo: '20', priya: '10' } }
+    const back = switchMethod(edited, 'adjust', ids, '10.01', 'USD', 'you')
+    expect(ids.map((id) => back.adjust[id])).not.toEqual(['+1.00', '+0.50', '', ''])
+    expect(ev(back, '10.01').results).toEqual(ev(edited, '10.01').results)
+    const changedAmount = switchMethod(inPct, 'adjust', ids, '20.02', 'USD', 'you')
+    expect(ev(changedAmount, '20.02').ok).toBe(true)
   })
 })

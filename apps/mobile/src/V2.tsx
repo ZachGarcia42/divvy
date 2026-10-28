@@ -661,6 +661,8 @@ export function SettleScreen({ detail, busyKey, onBack, onRecord, onUndo }: {
   // Shown as currency at rest (48,862.24); the plain digits only while it is being edited.
   const heroPlain = amountText ?? majorStringLocal(current?.minor ?? 0, detail.currency)
   const heroText = heroFocused || (amountText !== null && amountError !== null) ? heroPlain : amountText === null ? groupedMajor(current?.minor ?? 0, detail.currency) : groupedMajor(minor, detail.currency)
+  // On web an <input> is ~20 characters wide by default, which pushed the $ out of the card; size it to what it shows.
+  const heroWidth = [...heroText].reduce((w, ch) => w + (/\d/.test(ch) ? 25 : 12), 14)
   const busy = busyKey !== null
   const label = (s: Settlement) => `${s.fromId === detail.yourParticipantId ? 'You' : s.fromName} paid ${s.toId === detail.yourParticipantId ? 'You' : s.toName}`
   return (
@@ -680,7 +682,7 @@ export function SettleScreen({ detail, busyKey, onBack, onRecord, onUndo }: {
           <Text style={k.t}>{name(current.fromId)} {current.fromId === detail.yourParticipantId ? 'pay' : 'paid'} {name(current.toId)}</Text>
           <View style={k.settleAmtRow}>
             <Text style={k.settleC}>{symbolOf(detail.currency)}</Text>
-            <TextInput testID="settle-amount" value={heroText} onChangeText={setAmountText} onFocus={() => setHeroFocused(true)} onBlur={() => setHeroFocused(false)} keyboardType="decimal-pad" inputMode="decimal" selectTextOnFocus style={[k.settleAmt, noOutline]} accessibilityLabel="Amount to record" />
+            <TextInput testID="settle-amount" value={heroText} onChangeText={setAmountText} onFocus={() => setHeroFocused(true)} onBlur={() => setHeroFocused(false)} keyboardType="decimal-pad" inputMode="decimal" selectTextOnFocus style={[k.settleAmt, noOutline, web ? { width: heroWidth } : null]} accessibilityLabel="Amount to record" />
           </View>
           <Text style={k.m}>{amountText === null ? 'Full balance · tap to change' : amountError ?? 'Part payment'}</Text>
         </View>
@@ -908,9 +910,9 @@ const k = StyleSheet.create({
   // settle
   pair: { flexDirection: 'row', alignItems: 'center', gap: 14, marginTop: 4 },
   pairArrow: { fontSize: 22, color: T.hint, fontWeight: '800' },
-  settleAmtRow: { flexDirection: 'row', alignItems: 'center' },
-  settleC: { fontSize: 28, fontWeight: '900', color: T.hint, marginRight: 4 },
-  settleAmt: { fontSize: 44, fontWeight: '900', letterSpacing: -1.5, color: T.ink, minWidth: 120, textAlign: 'center', padding: 0 },
+  settleAmtRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', maxWidth: '100%' },
+  settleC: { fontSize: 28, fontWeight: '900', color: T.hint, marginRight: 4, flexShrink: 0 },
+  settleAmt: { fontSize: 44, fontWeight: '900', letterSpacing: -1.5, color: T.ink, minWidth: 120, flexShrink: 1, textAlign: 'center', padding: 0 },
   notice: { marginTop: 14, backgroundColor: T.amberS, borderWidth: 1, borderColor: '#f0dcb4', borderRadius: 14, padding: 12 },
   noticeText: { color: T.amber, fontWeight: '700', fontSize: 13, lineHeight: 18 },
   undo: { borderRadius: 999, paddingVertical: 6, paddingHorizontal: 12, borderWidth: 1, borderColor: T.mint, backgroundColor: T.soft },

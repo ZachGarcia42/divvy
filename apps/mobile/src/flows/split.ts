@@ -17,6 +17,11 @@ export type Draft = {
    * what the split computes to (and what is sent), so Exact 2.51/3.50/2.50/1.50 comes back as the same cents.
    */
   percentCarry?: { total: number; bps: Record<string, number>; minors: Record<string, number> }
+  /**
+   * What each method computed to when it was last switched away from. Coming back to a method while the split is still
+   * exactly that (same amount, same cents) restores what was typed there, instead of recomputing it from the cents.
+   */
+  left?: Partial<Record<SplitMethod, { total: number; results: Record<string, number> }>>
 }
 
 export type Bar = { tone: 'ok' | 'bad' | 'idle'; left: string; right: string }
@@ -234,6 +239,14 @@ export function switchMethod(draft: Draft, to: SplitMethod, memberIds: string[],
   const known = evaluation.ok ? evaluation.results : null
   const weights = currentWeights(draft, memberIds, known)
   const next: Draft = { ...draft, method: to }
+  // Remember this method's result, and if the split is still what `to` computed to when it was left, go back to it as typed.
+  const left = { ...draft.left }
+  if (known && total !== null) left[draft.method] = { total, results: { ...known } }
+  const back = left[to]
+  if (back && known && total !== null && back.total === total && memberIds.every((id) => (back.results[id] ?? 0) === (known[id] ?? 0))) {
+    return { ...draft, method: to, left }
+  }
+  next.left = left
   const sumW = weights.reduce((a, b) => a + b, 0)
   // A half-typed or invalid split in another method does not carry: the target keeps what is already there.
   if (!known && draft.method !== 'equal') return next
