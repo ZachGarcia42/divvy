@@ -1,11 +1,15 @@
-import { computeShares, exponentOf, formatMoney, parseMajor, shareGapMessage, splitPhrase } from '@divvy/domain'
-import { joinedFeedback, liveShareGap, middleEllipsis, parseShare, pickGroup, selectAllOnFirstClick } from './flows/composer'
+import { formatMoney, splitFromStored } from '@divvy/domain'
+import { joinedFeedback } from './flows/composer'
+import { draftFromSpec, majorString } from './flows/split'
+import { startScreen, splitGroupName, type HistoryEntry } from './flows/view'
+import { AccountScreen, AddSheet, CreateGroupSheet, ExpenseDetail, Fab, GroupsHome, GroupView, InviteCard, PasteCard, SettleScreen, Snack, SwitcherSheet, TabBar, todayIso, type SheetSave, type Tab } from './V2'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import * as SecureStore from 'expo-secure-store'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   ActivityIndicator,
   Alert,
+  BackHandler,
   KeyboardAvoidingView,
   Linking,
   Platform,
@@ -20,6 +24,7 @@ import {
 } from 'react-native'
 import { inviteFromNext, invitePath, isToken, parseDeepLink, parseInvitePreview, PENDING_INVITE_KEY, tokenFromInput, type InvitePreview } from './links'
 import { SocialSignIn } from './SocialSignIn'
+import type { Expense, GroupDetail, Home, HomeGroup, Payment, Settlement } from './types'
 import { apiBase, SIGN_IN_WIDTH, webLinkUrl } from './flows/web'
 import { FALLBACK_PROVIDERS, parseProviders, type Providers } from './flows/providers'
 import { CheckEmail, ExpiredLink, JoinCard, NamePrompt, NameSheet, Toast } from './November'
@@ -48,29 +53,7 @@ const cooldowns = createCooldowns()
 const API = apiBase(Platform.OS, { api: process.env.EXPO_PUBLIC_API_URL, webApi: process.env.EXPO_PUBLIC_WEB_API_URL })
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
-type HomeGroup = { id: string; name: string; currency: string; yourNetMinor: number; archived: boolean }
-type Home = { you: { name: string }; groups: HomeGroup[] }
-type Member = { id: string; name: string; removed: boolean }
-type Expense = {
-  id: string
-  date: string
-  description: string
-  settlementMinor: number
-  payers: { participantId: string; name: string; minor: number }[]
-  shares?: { participantId: string; minor: number }[]
-}
-type Settlement = { id: string; fromId: string; toId: string; fromName: string; toName: string; minor: number }
-type Payment = { fromId: string; toId: string; minor: number }
-type GroupDetail = {
-  group: { id: string; name: string }
-  members: Member[]
-  yourParticipantId: string
-  nets: { participantId: string; netMinor: number }[]
-  payments: Payment[]
-  expenses: Expense[]
-  settlements: Settlement[]
-  currency: string
-}
+export type { Expense, GroupDetail, Home, HomeGroup, Member, Payment, Settlement } from './types'
 
 async function call<T>(token: string | null, path: string, init?: RequestInit): Promise<T> {
   const controller = new AbortController()
@@ -106,67 +89,7 @@ async function call<T>(token: string | null, path: string, init?: RequestInit): 
 }
 
 
-function majorString(minor: number, currency: string) {
-  const exp = exponentOf(currency)
-  const scale = 10 ** exp
-  const abs = Math.abs(minor)
-  const whole = Math.floor(abs / scale)
-  const fraction = exp === 0 ? '' : `.${String(abs % scale).padStart(exp, '0')}`
-  return `${minor < 0 ? '-' : ''}${whole}${fraction}`
-}
-
-
-function equalShareText(amount: string, members: { id: string }[], currency: string) {
-  try {
-    const total = parseMajor(amount, currency)
-    const shares = computeShares(total, { type: 'equal', participantIds: members.map((member) => member.id) })
-    return Object.fromEntries(shares.map((share) => [share.participantId, majorString(share.minor, currency)]))
-  } catch {
-    return Object.fromEntries(members.map((member) => [member.id, '']))
-  }
-}
-
-function shortDate(iso: string) {
-  const [year, month, day] = iso.split('-')
-  const monthIndex = Number(month) - 1
-  if (!year || !day || monthIndex < 0 || monthIndex > 11) return iso
-  return `${MONTHS[monthIndex]} ${Number(day)}`
-}
-
-function payerPhrase(payers: Expense['payers'], youId: string) {
-  const paying = payers.filter((payer) => payer.minor > 0)
-  if (paying.length === 1) {
-    const payer = paying[0]!
-    return payer.participantId === youId ? 'You paid' : `${payer.name} paid`
-  }
-  if (paying.length > 1) {
-    return `${paying.map((payer) => payer.participantId === youId ? 'You' : payer.name).join(', ')} paid`
-  }
-  return 'Paid'
-}
-
-function personName(detail: GroupDetail, id: string, lowerYou: boolean) {
-  if (id === detail.yourParticipantId) return lowerYou ? 'you' : 'You'
-  return detail.members.find((member) => member.id === id)?.name ?? 'Someone'
-}
-
-function paymentLabel(detail: GroupDetail, payment: Payment) {
-  if (payment.fromId === detail.yourParticipantId) return `You pay ${personName(detail, payment.toId, true)}`
-  if (payment.toId === detail.yourParticipantId) return `${personName(detail, payment.fromId, false)} pays you`
-  return `${personName(detail, payment.fromId, false)} pays ${personName(detail, payment.toId, true)}`
-}
-
-function settlementLabel(detail: GroupDetail, settlement: Settlement) {
-  if (settlement.fromId === detail.yourParticipantId) return `You paid ${personName(detail, settlement.toId, true)}`
-  if (settlement.toId === detail.yourParticipantId) return `${settlement.fromName} paid you`
-  return `${settlement.fromName} paid ${settlement.toName}`
-}
-
 const LAST_GROUP_KEY = 'divvy.lastGroup'
-
-function firstGroup(groups: HomeGroup[]) {
-  return groups.find((group) => !group.archived)?.id ?? groups[0]?.id ?? null
-}
 
 /** On wide (desktop) web screens the app sits in a centered ~480px column; phones are unchanged. */
 export function App() {
@@ -569,6 +492,19 @@ function SignIn({ onToken, pendingInvite, onDismissInvite, linkFailure, onClearL
   )
 }
 
+type Screen = 'groups' | 'group' | 'expense' | 'settle' | 'account'
+type Snackbar = { text: string; action?: string; run?: () => void }
+
+const deviceZone = () => {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' } catch { return 'UTC' }
+}
+const timeText = (iso: string) => {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  const clock = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+  return d.toDateString() === new Date().toDateString() ? clock : `${MONTHS[d.getMonth()]} ${d.getDate()}, ${clock}`
+}
+
 function Ledger({
   token,
   inviteToken,
@@ -585,24 +521,20 @@ function Ledger({
   const [home, setHome] = useState<Home | null>(null)
   const [groupId, setGroupId] = useState<string | null>(null)
   const [detail, setDetail] = useState<GroupDetail | null>(null)
+  const [screen, setScreen] = useState<Screen>('groups')
+  const [expenseId, setExpenseId] = useState<string | null>(null)
+  const [history, setHistory] = useState<HistoryEntry[] | null>(null)
+  const [adding, setAdding] = useState<{ edit: Expense | null } | null>(null)
+  const [switcher, setSwitcher] = useState(false)
+  const [creating, setCreating] = useState<{ template?: string } | null>(null)
+  const [createBusy, setCreateBusy] = useState(false)
+  const [createError, setCreateError] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [amount, setAmount] = useState('')
-  const [description, setDescription] = useState('')
-  const [custom, setCustom] = useState(false)
-  const [shares, setShares] = useState<Record<string, string>>({})
-  const [sharesTouched, setSharesTouched] = useState(false)
-  const shareButton = useRef<View>(null)
-  // Web: per-field handlers so the click that focuses a share field selects all of it (see flows/composer).
-  const shareClickSelect = useRef<Record<string, ReturnType<typeof selectAllOnFirstClick>>>({})
-  const refocusShare = () => {
-    const doc = (globalThis as unknown as { document?: { getElementById(id: string): { focus?: () => void } | null } }).document
-    const el = doc?.getElementById('share-group-link') ?? (shareButton.current as unknown as { focus?: () => void } | null)
-    el?.focus?.()
-  }
-  const [saving, setSaving] = useState(false)
-  const [busyId, setBusyId] = useState<string | null>(null)
-  const savingRef = useRef(false)
+  const [busyKey, setBusyKey] = useState<string | null>(null)
   const busyRef = useRef<string | null>(null)
+  const [deleting, setDeleting] = useState(false)
+  const [detailTick, setDetailTick] = useState(0)
+  const [historyTick, setHistoryTick] = useState(0)
   const [inviteUrl, setInviteUrl] = useState<string | null>(null)
   const [paste, setPaste] = useState('')
   const [showPaste, setShowPaste] = useState(false)
@@ -612,22 +544,34 @@ function Ledger({
   const [joinAttempt, setJoinAttempt] = useState(0)
   const [editingName, setEditingName] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
+  const [snack, setSnack] = useState<Snackbar | null>(null)
   // A lasting "You're in <group>" confirmation after accepting a group link (cleared on dismiss).
   const [welcome, setWelcome] = useState<{ groupId: string; text: string } | null>(null)
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const snackTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const booted = useRef(false)
   const showToast = (text: string) => {
     if (toastTimer.current) clearTimeout(toastTimer.current)
     setToast(text)
     toastTimer.current = setTimeout(() => setToast(null), 3000)
   }
-  useEffect(() => () => { if (toastTimer.current) clearTimeout(toastTimer.current) }, [])
+  const showSnack = (next: Snackbar | null) => {
+    if (snackTimer.current) clearTimeout(snackTimer.current)
+    setSnack(next)
+    if (next) snackTimer.current = setTimeout(() => setSnack(null), 7000)
+  }
+  useEffect(() => () => {
+    if (toastTimer.current) clearTimeout(toastTimer.current)
+    if (snackTimer.current) clearTimeout(snackTimer.current)
+  }, [])
 
   useEffect(() => {
     if (inviteToken) setJoinToken(inviteToken)
   }, [inviteToken])
 
-  // Load your groups right after sign-in (any method) and open the last group you had open, else the first.
-  // If none show up yet (e.g. a just-linked Google account), look again shortly and when the tab regains focus.
+  // Load your groups right after sign-in. The first load reopens the last group you had open (back goes to Groups);
+  // otherwise you land on Groups. If none show up yet (e.g. a just-linked Google account), look again shortly
+  // and when the tab regains focus.
   const [homeAttempt, setHomeAttempt] = useState(0)
   useEffect(() => {
     let cancelled = false
@@ -635,7 +579,14 @@ function Ledger({
       .then(([next, last]) => {
         if (cancelled) return
         setHome(next)
-        setGroupId((current) => pickGroup(next.groups, current, last))
+        if (!booted.current) {
+          booted.current = true
+          const start = startScreen(next.groups, last)
+          if (start.groupId) {
+            setGroupId(start.groupId)
+            setScreen('group')
+          }
+        }
       })
       .catch((reason: Error) => { if (!cancelled) setError(reason.message) })
     return () => { cancelled = true }
@@ -660,20 +611,21 @@ function Ledger({
       return
     }
     let cancelled = false
+    setDetail((current) => (current?.group.id === groupId ? current : null))
     call<GroupDetail>(token, `/api/groups/${groupId}`)
       .then((next) => { if (!cancelled) setDetail(next) })
       .catch((reason: Error) => { if (!cancelled) setError(reason.message) })
     return () => { cancelled = true }
-  }, [token, groupId])
+  }, [token, groupId, detailTick])
 
   useEffect(() => {
-    setAmount('')
-    setDescription('')
-    setCustom(false)
-    setShares({})
-    setSharesTouched(false)
-    setError(null)
-  }, [groupId])
+    if (screen !== 'expense' || !groupId || !expenseId) return
+    let cancelled = false
+    call<{ history: HistoryEntry[] }>(token, `/api/groups/${groupId}/expenses/${expenseId}`)
+      .then((found) => { if (!cancelled) setHistory(found.history) })
+      .catch(() => { if (!cancelled) setHistory([]) })
+    return () => { cancelled = true }
+  }, [token, groupId, expenseId, screen, historyTick])
 
   useEffect(() => {
     if (!groupId) return
@@ -706,7 +658,9 @@ function Ledger({
       })
       if (cancelled) return
       if (view.kind === 'already') {
+        booted.current = true
         setGroupId(view.groupId)
+        setScreen('group')
         showToast(`You’re already in ${view.groupName}.`)
         setJoinToken(null)
         onInviteHandled()
@@ -726,91 +680,93 @@ function Ledger({
     onInviteHandled()
   }
 
-  const active = (detail?.members ?? []).filter((member) => !member.removed)
-  // Live "Shares have to add up… $x left/over" while a custom split is open (blank shares count as 0).
-  const liveGap = custom && detail ? liveShareGap(amount, shares, active.map((member) => member.id), detail.currency) : null
-  // Any edit to the amount or shares retires the last Add error, so the live line below is never stale.
-  useEffect(() => { setError(null) }, [amount, shares, custom])
-
+  // Android back: step out of a screen instead of closing the app.
   useEffect(() => {
-    if (!custom || sharesTouched || !detail) return
-    const members = detail.members.filter((member) => !member.removed)
-    setShares(equalShareText(amount, members, detail.currency))
-  }, [custom, sharesTouched, amount, detail])
+    if (Platform.OS !== 'android') return
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (screen === 'expense' || screen === 'settle') { setScreen('group'); return true }
+      if (screen === 'group' || screen === 'account') { goGroups(); return true }
+      return false
+    })
+    return () => sub.remove()
+  }, [screen])
 
   async function refresh(nextGroupId = groupId) {
     const nextHome = await call<Home>(token, '/api/home')
     setHome(nextHome)
-    const id = nextGroupId && nextHome.groups.some((group) => group.id === nextGroupId) ? nextGroupId : firstGroup(nextHome.groups)
+    const id = nextGroupId && nextHome.groups.some((group) => group.id === nextGroupId) ? nextGroupId : null
     setGroupId(id)
     if (!id) {
       setDetail(null)
+      setScreen('groups')
       return
     }
     setDetail(await call<GroupDetail>(token, `/api/groups/${id}`))
   }
 
-  async function addExpense() {
-    if (!detail || savingRef.current) return
-    setError(null)
-    if (active.length < 2) {
-      setError('An expense needs at least two people')
-      return
-    }
-    if (description.trim().length > 80) {
-      setError('Use a description of 80 characters or fewer')
-      return
-    }
-    let minor: number
-    try {
-      minor = parseMajor(amount, detail.currency)
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'Enter an amount')
-      return
-    }
-    const payload: {
-      description: string
-      originalMinor: number
-      originalCurrency: string
-      payers: { participantId: string; minor: number }[]
-      split: { type: 'equal'; participantIds: string[] } | { type: 'exact'; amounts: { participantId: string; minor: number }[] }
-    } = {
-      description: description.trim(),
-      originalMinor: minor,
+  const goGroups = () => {
+    setScreen('groups')
+    setExpenseId(null)
+    call<Home>(token, '/api/home').then(setHome).catch(() => undefined)
+  }
+  const openGroup = (id: string) => {
+    setSwitcher(false)
+    setExpenseId(null)
+    setGroupId(id)
+    setScreen('group')
+    setDetailTick((n) => n + 1)
+  }
+
+  const members = (detail?.members ?? []).filter((member) => !member.removed)
+
+  // Add or edit: the sheet reports a valid split; the server re-validates and has the last word.
+  async function saveExpense(value: SheetSave, editing: Expense | null) {
+    if (!detail) return
+    const payload = {
+      description: value.description,
+      originalMinor: value.minor,
       originalCurrency: detail.currency,
-      payers: [{ participantId: detail.yourParticipantId, minor }],
-      split: { type: 'equal', participantIds: active.map((member) => member.id) },
+      payers: [{ participantId: value.payerId, minor: value.minor }],
+      split: value.spec,
+      rounding: 'payer' as const,
+      ...(value.date ? { date: value.date } : {}),
     }
-    if (custom) {
-      let amounts: { participantId: string; minor: number }[]
-      try {
-        amounts = active.map((member) => ({ participantId: member.id, minor: parseShare(shares[member.id] ?? '', detail.currency) }))
-      } catch (reason) {
-        setError(reason instanceof Error ? reason.message : 'Enter each share')
-        return
-      }
-      const sum = amounts.reduce((total, share) => total + share.minor, 0)
-      if (sum !== minor) {
-        setError(shareGapMessage(sum, minor, detail.currency) ?? 'Shares have to add up to the total')
-        return
-      }
-      payload.split = { type: 'exact', amounts }
-    }
-    savingRef.current = true
-    setSaving(true)
-    try {
+    if (editing) {
+      await call(token, `/api/groups/${detail.group.id}/expenses/${editing.id}`, { method: 'PATCH', body: JSON.stringify({ ...payload, version: editing.version }) })
+    } else {
       await call(token, `/api/groups/${detail.group.id}/expenses`, { method: 'POST', body: JSON.stringify(payload) })
-      setAmount('')
-      setDescription('')
-      setCustom(false)
-      setShares({})
-      setSharesTouched(false)
-      await refresh(detail.group.id)
+    }
+    await refresh(detail.group.id)
+    setAdding(null)
+    if (editing) setHistoryTick((n) => n + 1)
+    showToast(editing ? 'Expense updated' : 'Expense added')
+  }
+
+  async function restoreExpense(id: string, gid: string) {
+    try {
+      await call(token, `/api/groups/${gid}/expenses/${id}/restore`, { method: 'POST' })
+      await refresh(gid)
+      showSnack(null)
+      showToast('Expense restored')
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'Could not add that')
+      showToast(reason instanceof Error ? reason.message : 'Could not restore that')
+    }
+  }
+
+  async function deleteExpense(expense: Expense) {
+    if (!detail || deleting) return
+    const gid = detail.group.id
+    setDeleting(true)
+    try {
+      await call(token, `/api/groups/${gid}/expenses/${expense.id}`, { method: 'DELETE' })
+      await refresh(gid)
+      setScreen('group')
+      setExpenseId(null)
+      showSnack({ text: `Deleted ${expense.description.trim() || 'expense'}`, action: 'Undo', run: () => { void restoreExpense(expense.id, gid) } })
+    } catch (reason) {
+      showToast(reason instanceof Error ? reason.message : 'Could not delete that')
     } finally {
-      savingRef.current = false
-      setSaving(false)
+      setDeleting(false)
     }
   }
 
@@ -818,36 +774,62 @@ function Ledger({
     if (!detail || busyRef.current) return
     const key = `${payment.fromId}:${payment.toId}`
     busyRef.current = key
-    setBusyId(key)
-    setError(null)
+    setBusyKey(key)
     try {
-      await call(token, `/api/groups/${detail.group.id}/settlements`, {
+      const made = await call<{ id: string }>(token, `/api/groups/${detail.group.id}/settlements`, {
         method: 'POST',
         body: JSON.stringify({ fromId: payment.fromId, toId: payment.toId, minor: payment.minor }),
       })
       await refresh(detail.group.id)
+      const who = (id: string) => (id === detail.yourParticipantId ? 'You' : detail.members.find((m) => m.id === id)?.name ?? 'Someone')
+      showSnack({ text: `Recorded ${who(payment.fromId)} → ${who(payment.toId)} ${formatMoney(payment.minor, detail.currency)}`, action: 'Undo', run: () => { void undo(made.id, true) } })
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'Could not record that')
+      showToast(reason instanceof Error ? reason.message : 'Could not record that')
     } finally {
       busyRef.current = null
-      setBusyId(null)
+      setBusyKey(null)
     }
   }
 
-  async function undo(settlementId: string) {
-    if (!detail || busyRef.current) return
+  async function undo(settlementId: string, fromSnack = false) {
+    if (!detail || (busyRef.current && !fromSnack)) return
     busyRef.current = settlementId
-    setBusyId(settlementId)
-    setError(null)
+    setBusyKey(settlementId)
     try {
       await call(token, `/api/groups/${detail.group.id}/settlements/${settlementId}`, { method: 'DELETE' })
       await refresh(detail.group.id)
+      showSnack(null)
+      showToast('Payment undone')
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'Could not undo that')
+      showToast(reason instanceof Error ? reason.message : 'Could not undo that')
     } finally {
       busyRef.current = null
-      setBusyId(null)
+      setBusyKey(null)
     }
+  }
+
+  async function createGroup(name: string, currency: string) {
+    if (createBusy) return
+    setCreateBusy(true)
+    setCreateError(null)
+    try {
+      const made = await call<GroupDetail>(token, '/api/groups', { method: 'POST', body: JSON.stringify({ name, currency, timezone: deviceZone() }) })
+      setCreating(null)
+      booted.current = true
+      setGroupId(made.group.id)
+      setDetail(made)
+      setScreen('group')
+      setHome(await call<Home>(token, '/api/home'))
+    } catch (reason) {
+      setCreateError(reason instanceof Error ? reason.message : 'Could not create that group')
+    } finally {
+      setCreateBusy(false)
+    }
+  }
+
+  const shareLink = () => {
+    if (!inviteUrl) { showToast('Preparing the link…'); return }
+    Share.share({ message: inviteUrl }).catch(() => undefined)
   }
 
   const joinOnce = useRef(createOnce()).current
@@ -863,8 +845,10 @@ function Ledger({
       setPaste('')
       setShowPaste(false)
       onInviteHandled()
+      booted.current = true
       setGroupId(joined.group.id)
       setDetail(joined)
+      setScreen('group')
       const already = joinedWasAlreadyMember(joined.group.id, before)
       const feedback = joinedFeedback(joined.group.name, already)
       showToast(feedback.toast)
@@ -881,237 +865,128 @@ function Ledger({
     }
   }
 
-  const youNet = detail?.nets.find((net) => net.participantId === detail.yourParticipantId)?.netMinor ?? 0
-  const expenses = [...(detail?.expenses ?? [])].sort((a, b) => b.date.localeCompare(a.date) || b.id.localeCompare(a.id))
+  const openPaste = () => { setShowPaste(true) }
+  const openPastedLink = () => {
+    const next = tokenFromInput(paste)
+    if (!next) {
+      setJoinError('That is not a group link')
+      return
+    }
+    setJoinError(null)
+    setJoinToken(next)
+  }
+  const pasteCard = <PasteCard show={showPaste} value={paste} onChange={setPaste} onOpen={openPastedLink} onToggle={setShowPaste} />
+
+  const today = todayIso()
+  const expense = detail && expenseId ? detail.expenses.find((row) => row.id === expenseId) ?? null : null
+  // Edit reuses the Add sheet; expenses in another currency, reimbursements and the like stay view-only.
+  const editBlock = (row: Expense) => {
+    if (!detail) return 'Loading…'
+    if (row.kind && row.kind !== 'expense') return 'This type of entry can’t be edited here.'
+    if (row.originalCurrency && row.originalCurrency !== detail.currency) return `Entered in ${row.originalCurrency}; editing those isn’t available yet.`
+    return null
+  }
+  const sheetMembers = (() => {
+    if (!detail) return []
+    const edit = adding?.edit
+    const wanted = new Set(members.map((member) => member.id))
+    if (edit) for (const row of [...edit.payers, ...(edit.shares ?? [])]) wanted.add(row.participantId)
+    const named = detail.members.filter((member) => wanted.has(member.id))
+    return [...named.filter((m) => m.id === detail.yourParticipantId), ...named.filter((m) => m.id !== detail.yourParticipantId)]
+  })()
+  const sheetInitial = (() => {
+    const edit = adding?.edit
+    if (!edit || !detail) return null
+    const ids = sheetMembers.map((member) => member.id)
+    const spec = splitFromStored(edit.splitMethod, edit.splitInputs)
+    const payer = edit.payers.find((p) => p.minor > 0)?.participantId ?? detail.yourParticipantId
+    return {
+      amountText: majorString(edit.settlementMinor, detail.currency),
+      description: edit.description,
+      draft: draftFromSpec(spec ?? { type: 'exact', amounts: (edit.shares ?? []).map((s) => ({ participantId: s.participantId, minor: s.minor })) }, ids, detail.currency),
+      payerId: payer,
+      date: edit.date,
+    }
+  })()
+
+  const tab: Tab = screen === 'account' ? 'account' : 'groups'
+  const showTabs = !join && (screen === 'groups' || screen === 'group' || screen === 'account')
+  let body: ReactNode
+  if (join) {
+    body = (
+      <>
+        <Text style={styles.wordmark}>Divvy</Text>
+        <JoinCard view={join} onJoin={acceptJoin} onNotNow={closeJoin} onOk={closeJoin} onRetry={() => setJoinAttempt((n) => n + 1)} />
+      </>
+    )
+  } else if (!home) {
+    body = (
+      <View style={styles.card}>
+        <Text style={styles.groupName}>Loading…</Text>
+        {error && <Text style={styles.error}>{error}</Text>}
+      </View>
+    )
+  } else if (screen === 'account') {
+    body = <AccountScreen name={home.you.name} onEditName={() => setEditingName(true)} onSignOut={async () => {
+      try { await call(token, '/api/auth/logout', { method: 'POST' }) } catch { /* The local session is what switches person. */ }
+      onSignedOut()
+    }} />
+  } else if (screen === 'groups' || !groupId) {
+    body = (
+      <>
+        <GroupsHome home={home} onOpen={openGroup} onCreate={(template) => { setCreateError(null); setCreating({ template }) }} onPaste={openPaste} onJoinLink={pasteCard} />
+        {home.groups.length === 0 && showPaste && pasteCard}
+        {joinError && <Text style={styles.error}>{joinError}</Text>}
+        {error && !home.groups.length && <Text style={styles.error}>{error}</Text>}
+      </>
+    )
+  } else if (!detail || detail.group.id !== groupId) {
+    body = (
+      <View style={styles.card}>
+        <Text style={styles.groupName}>Loading…</Text>
+        {error && <Text style={styles.error}>{error}</Text>}
+      </View>
+    )
+  } else if (screen === 'settle') {
+    body = <SettleScreen detail={detail} busyKey={busyKey} onBack={() => setScreen('group')} onRecord={record} onUndo={(id) => { void undo(id) }} />
+  } else if (screen === 'expense') {
+    body = expense ? (
+      <ExpenseDetail detail={detail} expense={expense} history={history} canEdit={editBlock(expense) === null} whyNoEdit={editBlock(expense)} busy={deleting}
+        onBack={() => setScreen('group')} onEdit={() => setAdding({ edit: expense })} onDelete={() => { void deleteExpense(expense) }} timeText={timeText} />
+    ) : (
+      <View style={styles.card}><Text style={styles.groupName}>That expense is gone</Text><Pressable onPress={() => setScreen('group')} accessibilityRole="button"><Text style={styles.signOut}>Back to the group</Text></Pressable></View>
+    )
+  } else {
+    body = (
+      <GroupView detail={detail} today={today}
+        banner={welcome && welcome.groupId === detail.group.id ? (
+          <View style={[styles.inviteNote, { marginTop: 8 }]} testID="joined-banner" accessibilityLiveRegion="polite">
+            <Text style={styles.copy}>🎉  <Text style={styles.strong}>{welcome.text}</Text>. Add an expense below or share the group link.</Text>
+            <Pressable onPress={() => setWelcome(null)} accessibilityRole="button" accessibilityLabel="Dismiss"><Text style={styles.signOut}>Dismiss</Text></Pressable>
+          </View>
+        ) : undefined}
+        footer={<InviteCard url={inviteUrl} onShare={shareLink} />}
+        onBack={goGroups} onSwitcher={() => setSwitcher(true)} onShare={shareLink}
+        onOpenExpense={(id) => { setHistory(null); setExpenseId(id); setScreen('expense') }} onSettle={() => setScreen('settle')} onAdd={() => setAdding({ edit: null })} />
+    )
+  }
 
   return (
     <SafeAreaView style={styles.screen}>
-      <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-        <ScrollView
-          keyboardShouldPersistTaps="handled"
-          contentContainerStyle={styles.scroll}
-          style={styles.noSideways}
-          horizontal={false}
-          alwaysBounceHorizontal={false}
-          showsHorizontalScrollIndicator={false}
-        >
-          <View style={styles.header}>
-            <Text style={styles.wordmark}>Divvy</Text>
-            <View style={styles.spacer} />
-            {home && (
-              <Pressable style={styles.chip} onPress={() => setEditingName(true)} testID="name-chip" accessibilityRole="button" accessibilityLabel={`Your name, ${home.you.name}. Edit`} accessibilityState={{ disabled: false }}>
-                <View style={styles.chipAvatar}><Text style={styles.chipAvatarText}>{home.you.name.charAt(0).toUpperCase()}</Text></View>
-                <Text style={styles.chipText} numberOfLines={1}>{home.you.name}</Text>
-                <Text style={styles.muted}>✎</Text>
-              </Pressable>
-            )}
-            <Pressable accessibilityRole="button" accessibilityState={{ disabled: false }} testID="sign-out" onPress={async () => {
-              try { await call(token, '/api/auth/logout', { method: 'POST' }) } catch { /* The local session is what switches person. */ }
-              onSignedOut()
-            }}>
-              <Text style={styles.signOut}>Sign out</Text>
-            </Pressable>
-          </View>
-
-          {!join && home && home.groups.length > 1 && (
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.strip}>
-              {home.groups.map((group) => {
-                const on = group.id === groupId
-                return (
-                  <Pressable key={group.id} onPress={() => setGroupId(group.id)} style={[styles.pill, on && styles.pillOn]} accessibilityRole="button" accessibilityLabel={`${group.name} group`} accessibilityState={{ selected: on }}>
-                    <Text style={[styles.pillText, on && styles.pillTextOn]}>{group.name}</Text>
-                  </Pressable>
-                )
-              })}
-            </ScrollView>
-          )}
-
-          {join && (
-            <JoinCard view={join} onJoin={acceptJoin} onNotNow={closeJoin} onOk={closeJoin} onRetry={() => setJoinAttempt((n) => n + 1)} />
-          )}
-          {joinError && !join && <Text style={styles.error}>{joinError}</Text>}
-
-          {!join && !detail && (
-            <View style={styles.card}>
-              <Text style={styles.groupName}>{!home || groupId ? 'Loading…' : 'No groups yet'}</Text>
-              {error ? <Text style={styles.error}>{error}</Text> : home && !groupId && <Text style={styles.copy} testID="no-groups">You’re not in a group yet. Ask a friend for their group link and open it here.</Text>}
-            </View>
-          )}
-
-          {!join && detail && (
-            <View style={styles.card}>
-              {welcome && welcome.groupId === detail.group.id && (
-                <View style={styles.inviteNote} testID="joined-banner" accessibilityLiveRegion="polite">
-                  <Text style={styles.copy}>🎉  <Text style={styles.strong}>{welcome.text}</Text>. Add an expense below or share the group link.</Text>
-                  <Pressable onPress={() => setWelcome(null)} accessibilityRole="button" accessibilityLabel="Dismiss" accessibilityState={{ disabled: false }}>
-                    <Text style={styles.signOut}>Dismiss</Text>
-                  </Pressable>
-                </View>
-              )}
-              <Text style={styles.groupName}>{detail.group.name}</Text>
-              <Text style={styles.balance} testID="group-balance">
-                {youNet === 0 ? 'Settled' : youNet > 0 ? `You are owed ${formatMoney(youNet, detail.currency)}` : `You owe ${formatMoney(Math.abs(youNet), detail.currency)}`}
-              </Text>
-
-              <View style={styles.amountRow}>
-                <TextInput
-                  testID="expense-amount"
-                  value={amount}
-                  onChangeText={setAmount}
-                  placeholder="0.00"
-                  placeholderTextColor="#8aa099"
-                  keyboardType="decimal-pad"
-                  inputMode="decimal"
-                  style={styles.amount}
-                />
-                <Pressable style={[styles.primary, styles.addButton]} testID="add-expense" onPress={addExpense} accessibilityRole="button" accessibilityLabel="Add expense" accessibilityState={{ disabled: saving, busy: saving }}>
-                  <Text style={styles.primaryText}>{saving ? 'Adding' : 'Add'}</Text>
-                </Pressable>
-              </View>
-              <Text style={styles.muted}>{custom ? 'Enter the share each person owes' : 'You paid · split equally'}</Text>
-              <TextInput
-                testID="expense-description"
-                autoFocus={false}
-                value={description}
-                onChangeText={setDescription}
-                placeholder="Description (optional)"
-                maxLength={120}
-                placeholderTextColor="#8aa099"
-                style={styles.description}
-              />
-              <Pressable
-                accessibilityRole="button"
-                accessibilityState={{ checked: custom }}
-                testID="custom-split"
-                style={styles.secondary}
-                onPress={() => {
-                  if (custom) {
-                    setCustom(false)
-                    setSharesTouched(false)
-                    setShares({})
-                    return
-                  }
-                  setCustom(true)
-                }}
-              >
-                <Text style={styles.secondaryText}>{custom ? 'Split equally' : 'Custom split'}</Text>
-              </Pressable>
-              {custom && active.map((member) => (
-                <View key={member.id} style={styles.shareRow}>
-                  <Text style={styles.shareName}>{member.id === detail.yourParticipantId ? 'You' : member.name}</Text>
-                  <TextInput
-                    testID={`share-${member.id}`}
-                    autoFocus={false}
-                    value={shares[member.id] ?? ''}
-                    onChangeText={(text) => {
-                      setSharesTouched(true)
-                      setShares((current) => ({ ...current, [member.id]: text }))
-                    }}
-                    keyboardType="decimal-pad"
-                    inputMode="decimal"
-                    placeholder="0.00"
-                    placeholderTextColor="#8aa099"
-                    style={styles.shareInput}
-                    selectTextOnFocus
-                    {...(Platform.OS === 'web' ? (shareClickSelect.current[member.id] ??= selectAllOnFirstClick()) as object : {})}
-                  />
-                </View>
-              ))}
-              {error && <Text style={styles.error} testID="composer-error">{error}</Text>}
-              {!error && liveGap && <Text style={styles.error} testID="share-gap" accessibilityLiveRegion="polite">{liveGap}</Text>}
-
-              <Text style={styles.section}>Who pays whom</Text>
-              {detail.payments.length === 0 && detail.settlements.length === 0 && <Text style={styles.muted}>This group is settled.</Text>}
-              {detail.payments.map((payment) => (
-                <View key={`${payment.fromId}-${payment.toId}`} style={styles.line}>
-                  <Text style={styles.lineLabel}>{paymentLabel(detail, payment)}</Text>
-                  <View style={styles.lineEnd}>
-                    <Text style={styles.money}>{formatMoney(payment.minor, detail.currency)}</Text>
-                    <Pressable testID={`record-${payment.fromId}-${payment.toId}`} style={styles.record} onPress={() => record(payment)} accessibilityRole="button" accessibilityLabel={`Record: ${paymentLabel(detail, payment)}`} accessibilityState={{ busy: busyId === `${payment.fromId}:${payment.toId}`, disabled: busyId !== null }}>
-                      <Text style={styles.recordText}>{busyId === `${payment.fromId}:${payment.toId}` ? 'Recording' : 'Record'}</Text>
-                    </Pressable>
-                  </View>
-                </View>
-              ))}
-              {detail.settlements.map((settlement) => (
-                <View key={settlement.id} style={styles.line}>
-                  <Text style={styles.lineLabel}>{settlementLabel(detail, settlement)}</Text>
-                  <View style={styles.lineEnd}>
-                    <Text style={styles.money}>{formatMoney(settlement.minor, detail.currency)}</Text>
-                    <Pressable testID={`undo-${settlement.id}`} style={styles.record} onPress={() => undo(settlement.id)} accessibilityRole="button" accessibilityLabel={`Undo: ${settlementLabel(detail, settlement)}`} accessibilityState={{ busy: busyId === settlement.id, disabled: busyId !== null }}>
-                      <Text style={styles.recordText}>{busyId === settlement.id ? 'Undoing' : 'Undo'}</Text>
-                    </Pressable>
-                  </View>
-                </View>
-              ))}
-
-              <Text style={styles.section}>Expenses</Text>
-              {expenses.length === 0 && <Text style={styles.muted}>Nothing here yet.</Text>}
-              {expenses.map((expense) => (
-                <View key={expense.id} style={styles.line} testID={`expense-${expense.id}`}>
-                  <View style={styles.lineCopy}>
-                    {expense.description.trim() ? <Text style={styles.expenseTitle}>{expense.description}</Text> : null}
-                    <Text style={styles.muted}>{payerPhrase(expense.payers, detail.yourParticipantId)} · {shortDate(expense.date)}{!expense.description.trim() && expense.shares ? ` · ${splitPhrase(expense.shares)}` : ''}</Text>
-                  </View>
-                  <Text style={styles.money}>{formatMoney(expense.settlementMinor, detail.currency)}</Text>
-                </View>
-              ))}
-
-              <Text style={styles.section}>Group link</Text>
-              <Text selectable numberOfLines={1} style={styles.link} testID="group-link" accessibilityLabel={inviteUrl ?? undefined}>{inviteUrl ? middleEllipsis(inviteUrl, 36) : 'Preparing a link…'}</Text>
-              <Text style={styles.muted}>Anyone already signed in can open this.</Text>
-              {inviteUrl && (
-                <Pressable ref={shareButton} nativeID="share-group-link" testID="share-group-link" focusable style={styles.secondary} onPress={() => {
-                  // When the share sheet closes, put focus back on the Share button (web focus otherwise drops to <body>).
-                  Share.share({ message: inviteUrl }).catch(() => undefined).finally(() => setTimeout(refocusShare, 0))
-                }} accessibilityRole="button" accessibilityState={{ disabled: false }}>
-                  <Text style={styles.secondaryText}>Share</Text>
-                </Pressable>
-              )}
-            </View>
-          )}
-
-          {!join && !detail && (
-          <View style={styles.card} testID="paste-card">
-            {showPaste ? (
-              <>
-                <TextInput
-                  testID="invite-paste"
-                  autoFocus={false}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  value={paste}
-                  onChangeText={setPaste}
-                  placeholder="Paste a group link"
-                  placeholderTextColor="#8aa099"
-                  style={styles.input}
-                />
-                <View style={styles.rowActions}>
-                  <Pressable testID="invite-open" style={styles.primary} accessibilityRole="button" accessibilityState={{ disabled: false }} onPress={() => {
-                    const next = tokenFromInput(paste)
-                    if (!next) {
-                      setJoinError('That is not a group link')
-                      return
-                    }
-                    setJoinError(null)
-                    setJoinToken(next)
-                  }}>
-                    <Text style={styles.primaryText}>Open</Text>
-                  </Pressable>
-                  <Pressable style={styles.secondary} onPress={() => setShowPaste(false)} accessibilityRole="button" accessibilityState={{ disabled: false }}>
-                    <Text style={styles.secondaryText}>Close</Text>
-                  </Pressable>
-                </View>
-              </>
-            ) : (
-              <Pressable onPress={() => setShowPaste(true)} accessibilityRole="button" accessibilityState={{ disabled: false }}>
-                <Text style={styles.signOut}>Open a group link</Text>
-              </Pressable>
-            )}
-          </View>
-          )}
+      <View style={styles.flex}>
+        <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={v2scroll} style={styles.noSideways} horizontal={false} alwaysBounceHorizontal={false} showsHorizontalScrollIndicator={false}>
+          {body}
         </ScrollView>
-      </KeyboardAvoidingView>
+        {!join && screen === 'group' && detail && groupId && <Fab onPress={() => setAdding({ edit: null })} />}
+        <Snack text={snack?.text ?? null} action={snack?.action} onAction={snack?.run} />
+      </View>
+      {showTabs && <TabBar tab={tab} onTab={(next) => (next === 'groups' ? goGroups() : setScreen('account'))} />}
+      {adding && detail && (
+        <AddSheet members={sheetMembers} youId={detail.yourParticipantId} currency={detail.currency} groupName={splitGroupName(detail.group.name).title}
+          initial={sheetInitial} onClose={() => setAdding(null)} onSave={(value) => saveExpense(value, adding.edit)} />
+      )}
+      {switcher && home && <SwitcherSheet groups={home.groups} currentId={groupId} onPick={openGroup} onAll={() => { setSwitcher(false); goGroups() }} onClose={() => setSwitcher(false)} />}
+      {creating && <CreateGroupSheet initialTemplate={creating.template} busy={createBusy} error={createError} onCreate={createGroup} onClose={() => setCreating(null)} />}
       {editingName && home && (
         <NameSheet
           initial={home.you.name}
@@ -1129,6 +1004,8 @@ function Ledger({
     </SafeAreaView>
   )
 }
+
+const v2scroll = { padding: 18, paddingBottom: 110 }
 
 const styles = StyleSheet.create({
   flex: { flex: 1 },
