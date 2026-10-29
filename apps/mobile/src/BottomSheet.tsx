@@ -7,9 +7,10 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Animated, Dimensions, Easing, KeyboardAvoidingView, Modal, PanResponder, Platform, Pressable, StyleSheet, View, type StyleProp, type ViewStyle } from 'react-native'
 import { basePaddingBottom, useBottomInset } from './insets'
-import { dragOffset, dragOutcome, type SheetSnap } from './flows/sheet'
+import { dragOffset, dragOutcome, releaseVelocity, type DragSample, type SheetSnap } from './flows/sheet'
 
 const web = Platform.OS === 'web'
+const clock = () => (typeof performance !== 'undefined' ? performance.now() : Date.now())
 const noSelect = (web ? { userSelect: 'none', WebkitUserSelect: 'none', touchAction: 'none', cursor: 'grab' } : null) as object | null
 
 export function BottomSheet({ onClose, panelStyle, pillColor, resizable = false, fixedHeight = false, testID, children }: {
@@ -22,6 +23,7 @@ export function BottomSheet({ onClose, panelStyle, pillColor, resizable = false,
   const live = useRef({ snap, onClose })
   live.current = { snap, onClose }
   const panelHeight = useRef(0) // measured panel height; the dismiss distance is a third of it
+  const samples = useRef<DragSample[]>([]) // recent pointer positions with performance.now times, for the web flick speed
   const native = !web
   const inset = useBottomInset()
 
@@ -39,9 +41,15 @@ export function BottomSheet({ onClose, panelStyle, pillColor, resizable = false,
     onStartShouldSetPanResponder: () => true,
     onMoveShouldSetPanResponder: () => true,
     onPanResponderTerminationRequest: () => false,
-    onPanResponderMove: (_event, g) => drag.setValue(dragOffset(g.dy, live.current.snap, resizable && !fixedHeight)),
+    onPanResponderGrant: () => { samples.current = [{ t: clock(), y: 0 }] },
+    onPanResponderMove: (_event, g) => {
+      samples.current.push({ t: clock(), y: g.dy }); if (samples.current.length > 24) samples.current.shift()
+      drag.setValue(dragOffset(g.dy, live.current.snap, resizable && !fixedHeight))
+    },
     onPanResponderRelease: (_event, g) => {
-      const outcome = dragOutcome({ dy: g.dy, vy: g.vy, snap: live.current.snap, resizable: resizable && !fixedHeight, height: panelHeight.current || undefined })
+      // react-native-web's g.vy is just the last move's delta over the gap before it (and ~0 for a one-move flick); use a window.
+      const vy = web ? releaseVelocity(samples.current, clock()) : g.vy
+      const outcome = dragOutcome({ dy: g.dy, vy, snap: live.current.snap, resizable: resizable && !fixedHeight, height: panelHeight.current || undefined })
       const tap = Math.abs(g.dx) < 6 && Math.abs(g.dy) < 6
       if (tap && resizable && !fixedHeight) { setSnap((s) => (s === 'tall' ? 'compact' : 'tall')); back(); return }
       if (outcome === 'expand') setSnap('tall')

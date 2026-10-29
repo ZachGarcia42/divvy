@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { dragOffset, dragOutcome } from './sheet'
+import { dragOffset, dragOutcome, releaseVelocity, type DragSample } from './sheet'
 
 describe('grab pill gesture', () => {
   const o = (dy: number, vy: number, snap: 'compact' | 'tall', resizable = true, height?: number) => dragOutcome({ dy, vy, snap, resizable, height })
@@ -46,5 +46,40 @@ describe('grab pill gesture', () => {
     expect(dragOffset(-400, 'compact', true)).toBe(-120)
     expect(dragOffset(-80, 'tall', true)).toBe(-10)
     expect(dragOffset(-80, 'tall', false)).toBe(-10)
+  })
+})
+
+describe('release velocity from recent move samples', () => {
+  const s = (...pts: Array<[number, number]>): DragSample[] => pts.map(([t, y]) => ({ t, y }))
+  it('a one-move flick is measured from the pointer-down sample, not from time 0', () => {
+    // pointer down at t=5000ms, a single move of 150px 6ms later: react-native-web would report 150 / 5006 = 0.03 px/ms
+    const v = releaseVelocity(s([5000, 0], [5006, 150]), 5010)
+    expect(v).toBeCloseTo(25, 5)
+    expect(dragOutcome({ dy: 150, vy: v, snap: 'compact', resizable: true, height: 600 })).toBe('dismiss')
+  })
+  it('a many-step flick uses the last ~150ms, not just the final (possibly slow) gap', () => {
+    const steps = s([0, 0], [4, 12], [9, 24], [26, 36], [44, 48], [60, 60], [77, 72], [93, 84], [110, 96], [125, 108], [141, 120])
+    const v = releaseVelocity(steps, 150)
+    expect(v).toBeGreaterThan(0.7)
+    expect(dragOutcome({ dy: 120, vy: v, snap: 'compact', resizable: true, height: 600 })).toBe('dismiss')
+  })
+  it('a slow drag is not a flick', () => {
+    const slow = Array.from({ length: 11 }, (_, i): [number, number] => [i * 40, i * 12])
+    expect(releaseVelocity(s(...slow), 420)).toBeCloseTo(0.3, 5)
+    expect(dragOutcome({ dy: 120, vy: releaseVelocity(s(...slow), 420), snap: 'compact', resizable: true, height: 600 })).toBe('stay')
+  })
+  it('holding still before letting go cancels the flick', () => {
+    expect(releaseVelocity(s([0, 0], [10, 150]), 400)).toBe(0)
+  })
+  it('only the end of the drag counts: a fast start then a slow finish is slow', () => {
+    expect(releaseVelocity(s([0, 0], [10, 100], [400, 110], [450, 120], [500, 130]), 510)).toBeLessThan(0.3)
+  })
+  it('no usable samples, or a repeated timestamp, never divides by zero', () => {
+    expect(releaseVelocity([], 10)).toBe(0)
+    expect(releaseVelocity(s([5, 0]), 6)).toBe(0)
+    expect(Number.isFinite(releaseVelocity(s([5, 0], [5, 80]), 6))).toBe(true)
+  })
+  it('a flick up reads negative', () => {
+    expect(releaseVelocity(s([0, 0], [10, -90]), 12)).toBeLessThan(-0.7)
   })
 })

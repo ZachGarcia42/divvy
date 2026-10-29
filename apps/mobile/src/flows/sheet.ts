@@ -24,6 +24,29 @@ export function dragOutcome({ dy, vy, snap, resizable, height = FALLBACK_HEIGHT 
   return 'stay'
 }
 
+/** One pointer position (px, down is +, relative to where the drag began) and when it was seen (ms, a monotonic clock). */
+export type DragSample = { t: number; y: number }
+/** Speed is measured over this much of the end of the drag (ms), and a pointer that sat still this long is not flicking (ms). */
+const VELOCITY_WINDOW = 150
+const VELOCITY_STALE = 100
+
+/**
+ * Vertical speed (px/ms, down is +) at release, from the recent move samples.
+ * react-native-web's own `gestureState.vy` is only the last move's delta over the gap since the previous move, and for the
+ * first move of a drag that gap runs from time 0 (not from the pointer-down), so a one-step flick reads ~0 px/ms and a
+ * many-step one depends on whichever gap came last. A window over the last ~150ms is steady against both.
+ */
+export function releaseVelocity(samples: readonly DragSample[], now: number): number {
+  const n = samples.length
+  if (n < 2) return 0
+  const last = samples[n - 1]
+  if (now - last.t > VELOCITY_STALE) return 0
+  let i = n - 1
+  while (i > 0 && last.t - samples[i - 1].t <= VELOCITY_WINDOW) i--
+  const from = samples[i === n - 1 ? n - 2 : i]
+  return (last.y - from.y) / Math.max(last.t - from.t, 1)
+}
+
 /** How far the panel follows the finger: free downwards, a little upwards when it could still grow, none otherwise. */
 export function dragOffset(dy: number, snap: SheetSnap, resizable: boolean): number {
   if (dy >= 0) return dy

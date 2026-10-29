@@ -39,6 +39,24 @@ const check = (name, ok, extra = '') => { console.log(ok ? 'PASS' : 'FAIL', name
   check('drag just under a third of the sheet height does not dismiss', (await id('create-group-sheet').count()) === 1)
   await dragPill(Math.round(h0 / 3) + 30, 10, 40)
   check('drag pill down past a third dismisses the sheet', (await id('create-group-sheet').count()) === 0)
+  // A quick flick (100-150px, under a third of the sheet) closes it whatever the number of mouse-move steps.
+  // react-native-web's own gesture vy is wrong for these (a one-step flick reads ~0 px/ms), so the sheet times the moves itself.
+  for (const dy of [100, 150]) {
+    for (const steps of [1, 2, 3, 5]) { // (10 steps are left out: Playwright spaces them ~15-25ms apart, so 100-150px is about 0.6-0.8 px/ms, right on the 0.7 line)
+      await id('create-group-card').click(); await id('create-group-sheet').waitFor(); await p.waitForTimeout(400)
+      const hf = await height()
+      await dragPill(dy, steps)
+      check(`flick ${dy}px in ${steps} step(s) dismisses (under a third of ${Math.round(hf)}px)`, dy < hf / 3 && (await id('create-group-sheet').count()) === 0)
+      if ((await id('create-group-sheet').count()) === 1) { await p.keyboard.press('Escape'); await p.waitForTimeout(300) }
+    }
+  }
+  // ...but pausing before letting go is a drag, not a flick, and a short flick (under 60px) never counts.
+  await id('create-group-card').click(); await id('create-group-sheet').waitFor(); await p.waitForTimeout(400)
+  { const { x, y } = await pill(); await p.mouse.move(x, y); await p.mouse.down(); await p.mouse.move(x, y + 100, { steps: 4 }); await p.waitForTimeout(400); await p.mouse.up(); await p.waitForTimeout(450) }
+  check('a fast move then a pause before release does not dismiss', (await id('create-group-sheet').count()) === 1)
+  await dragPill(50, 1)
+  check('a 50px one-step flick does not dismiss', (await id('create-group-sheet').count()) === 1)
+  await p.keyboard.press('Escape'); await p.waitForTimeout(300)
   await id('create-group-card').click(); await id('create-group-sheet').waitFor(); await p.waitForTimeout(400)
   await dragPill(-200)
   await dragPill(300)
