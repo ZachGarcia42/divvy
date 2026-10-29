@@ -82,4 +82,10 @@ describe('release velocity from recent move samples', () => {
   it('a flick up reads negative', () => {
     expect(releaseVelocity(s([0, 0], [10, -90]), 12)).toBeLessThan(-0.7)
   })
+  it('uses the times the pointer events happened, so a janky frame between handling them does not hide a flick', () => {
+    // pointer down at 4457, one 100px move at 4534 (77ms later), release at 4767: a flick by event time...
+    expect(releaseVelocity(s([4457, 0], [4534, 100]), 4767 - 150)).toBeGreaterThan(0.7)
+    // ...but timed by when the handlers ran (down 4469, move 4698 after a 160ms stall) it is only 0.44 px/ms
+    expect(releaseVelocity(s([4469, 0], [4698, 100]), 4781)).toBeLessThan(0.7)
+  })
 })

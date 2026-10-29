@@ -11,6 +11,11 @@ import { dragOffset, dragOutcome, releaseVelocity, type DragSample, type SheetSn
 
 const web = Platform.OS === 'web'
 const clock = () => (typeof performance !== 'undefined' ? performance.now() : Date.now())
+/** When the pointer event happened (DOM timeStamp, same origin as performance.now), not when this handler got to run: a busy main thread can hold events back. */
+const stamp = (event: { nativeEvent?: { timestamp?: number; timeStamp?: number } } | undefined): number => {
+  const t = event?.nativeEvent?.timestamp ?? event?.nativeEvent?.timeStamp
+  return typeof t === 'number' && Number.isFinite(t) && t > 0 ? t : clock()
+}
 const noSelect = (web ? { userSelect: 'none', WebkitUserSelect: 'none', touchAction: 'none', cursor: 'grab' } : null) as object | null
 
 export function BottomSheet({ onClose, panelStyle, pillColor, resizable = false, fixedHeight = false, testID, children }: {
@@ -41,14 +46,14 @@ export function BottomSheet({ onClose, panelStyle, pillColor, resizable = false,
     onStartShouldSetPanResponder: () => true,
     onMoveShouldSetPanResponder: () => true,
     onPanResponderTerminationRequest: () => false,
-    onPanResponderGrant: () => { samples.current = [{ t: clock(), y: 0 }] },
-    onPanResponderMove: (_event, g) => {
-      samples.current.push({ t: clock(), y: g.dy }); if (samples.current.length > 24) samples.current.shift()
+    onPanResponderGrant: (event) => { samples.current = [{ t: stamp(event), y: 0 }] },
+    onPanResponderMove: (event, g) => {
+      samples.current.push({ t: stamp(event), y: g.dy }); if (samples.current.length > 24) samples.current.shift()
       drag.setValue(dragOffset(g.dy, live.current.snap, resizable && !fixedHeight))
     },
-    onPanResponderRelease: (_event, g) => {
+    onPanResponderRelease: (event, g) => {
       // react-native-web's g.vy is just the last move's delta over the gap before it (and ~0 for a one-move flick); use a window.
-      const vy = web ? releaseVelocity(samples.current, clock()) : g.vy
+      const vy = web ? releaseVelocity(samples.current, stamp(event)) : g.vy
       const outcome = dragOutcome({ dy: g.dy, vy, snap: live.current.snap, resizable: resizable && !fixedHeight, height: panelHeight.current || undefined })
       const tap = Math.abs(g.dx) < 6 && Math.abs(g.dy) < 6
       if (tap && resizable && !fixedHeight) { setSnap((s) => (s === 'tall' ? 'compact' : 'tall')); back(); return }

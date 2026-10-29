@@ -31,7 +31,8 @@ const VELOCITY_WINDOW = 150
 const VELOCITY_STALE = 100
 
 /**
- * Vertical speed (px/ms, down is +) at release, from the recent move samples.
+ * Vertical speed (px/ms, down is +) at release, from the recent move samples. Times should be when the pointer events happened
+ * (their own timestamps), so a slow frame between handling a move and the release does not stretch the gesture or read as a pause.
  * react-native-web's own `gestureState.vy` is only the last move's delta over the gap since the previous move, and for the
  * first move of a drag that gap runs from time 0 (not from the pointer-down), so a one-step flick reads ~0 px/ms and a
  * many-step one depends on whichever gap came last. A window over the last ~150ms is steady against both.
