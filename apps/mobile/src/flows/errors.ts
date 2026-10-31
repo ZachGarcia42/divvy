@@ -25,3 +25,14 @@ export function isUnauthenticated(reason: unknown) {
   const code = codeOf(reason)
   return code === 'UNAUTHENTICATED' || (statusOf(reason) === 401 && code !== 'BAD_TOKEN')
 }
+
+/**
+ * What a failed expense edit means: 'stale' (409, someone else saved first) or 'gone' (404, someone deleted it).
+ * Either way the local copy is out of date: reload the group's expenses and balances. Anything else is the user's to fix.
+ */
+export function editConflict(reason: unknown): 'stale' | 'gone' | null {
+  const code = codeOf(reason)
+  if (code === 'STALE') return 'stale'
+  if (code === 'NOT_FOUND' || code === 'EXPENSE_NOT_FOUND' || statusOf(reason) === 404) return 'gone'
+  return null
+}

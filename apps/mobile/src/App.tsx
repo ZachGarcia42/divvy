@@ -1,4 +1,5 @@
 import { formatMoney, splitFromStored } from '@divvy/domain'
+import { editConflict } from './flows/errors'
 import { joinedFeedback } from './flows/composer'
 import { draftFromSpec, majorString } from './flows/split'
 import { SNACK_MS, snackOwner, snackStays, startScreen, groupIcon, type HistoryEntry } from './flows/view'
@@ -752,8 +753,11 @@ function Ledger({
     if (editing) {
       try {
         await call(token, `/api/groups/${detail.group.id}/expenses/${editing.id}`, { method: 'PATCH', body: JSON.stringify({ ...payload, version: editing.version }) })
+        setHistoryTick((n) => n + 1) // the edit is saved: fetch History now, in parallel with the group refresh below
       } catch (reason) {
-        if (isStale(reason)) { setAdding(null); await handleStale(detail.group.id); return }
+        const conflict = editConflict(reason)
+        if (conflict === 'stale') { setAdding(null); await handleStale(detail.group.id); return }
+        if (conflict === 'gone') { setAdding(null); await handleGone(detail.group.id); return }
         throw reason
       }
     } else {
@@ -761,7 +765,6 @@ function Ledger({
     }
     await refresh(detail.group.id)
     setAdding(null)
-    if (editing) setHistoryTick((n) => n + 1)
     showToast(editing ? 'Expense updated' : 'Expense added')
   }
 
@@ -770,6 +773,14 @@ function Ledger({
     await refresh(gid).catch(() => undefined)
     setHistoryTick((n) => n + 1)
     showToast('Someone just changed this expense. Review it, then try again.')
+  }
+
+  /** The expense was deleted by someone else while the sheet was open (404): reload the group's expenses and balances, leave the dead detail. */
+  async function handleGone(gid: string) {
+    await refresh(gid).catch(() => undefined)
+    setExpenseId(null)
+    setScreen('group')
+    showToast('That expense was deleted. The list is up to date.')
   }
 
   async function restoreExpense(id: string, gid: string) {
