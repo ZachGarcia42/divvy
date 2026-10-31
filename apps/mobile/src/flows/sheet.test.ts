@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { dragOffset, dragOutcome, keyboardLift, releaseVelocity, type DragSample } from './sheet'
+import { dismissTarget, dragOffset, dragOutcome, keyboardLift, releaseVelocity, type DragSample } from './sheet'
 
 describe('grab pill gesture', () => {
   const o = (dy: number, vy: number, snap: 'compact' | 'tall', resizable = true, height?: number) => dragOutcome({ dy, vy, snap, resizable, height })
@@ -101,4 +101,29 @@ describe('keyboardLift', () => {
     expect(keyboardLift(-5, 'android')).toBe(0)
     expect(keyboardLift(Number.NaN, 'ios')).toBe(0)
   })
+})
+
+describe('keyboardLift with the bottom inset', () => {
+  it('Android adds the nav-bar inset back, because the keyboard event height leaves it out', () => {
+    expect(keyboardLift(300, 'android', 24)).toBe(324)
+    expect(keyboardLift(300.4, 'android', 48)).toBe(348)
+  })
+  it('iOS and web ignore the inset (iOS reports the full height; web lifts its own page)', () => {
+    expect(keyboardLift(336, 'ios', 34)).toBe(336)
+    expect(keyboardLift(300, 'web', 24)).toBe(0)
+  })
+  it('no keyboard means no lift, even with an inset; a bad inset adds nothing', () => {
+    expect(keyboardLift(0, 'android', 24)).toBe(0)
+    expect(keyboardLift(300, 'android', Number.NaN)).toBe(300)
+    expect(keyboardLift(300, 'android', -5)).toBe(300)
+  })
+})
+
+describe('dismissTarget (one slide-out animation)', () => {
+  it('goes past the panel bottom edge, never back up from where the finger left it', () => {
+    expect(dismissTarget(100, 400)).toBe(424)
+    expect(dismissTarget(900, 400)).toBe(900)
+    expect(dismissTarget(-30, 400)).toBe(424)
+  })
+  it('a lifted sheet (keyboard up) travels the extra lift too', () => { expect(dismissTarget(100, 400, 300)).toBe(724) })
 })

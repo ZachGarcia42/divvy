@@ -214,3 +214,11 @@ export const SNACK_MS = 6000
 /** A snackbar belongs to the screen (and group) it was raised for; it goes away when either changes. */
 export const snackOwner = (screen: string, groupId: string | null) => `${screen}:${groupId ?? ''}`
 export const snackStays = (owner: string | undefined, screen: string, groupId: string | null) => owner === snackOwner(screen, groupId)
+
+/**
+ * Space between the top safe-area inset and the first row of a main page (px). The inset itself is applied once, by the screen's
+ * SafeAreaView; on a phone only a small gap follows it (the header row has its own 8px), whereas web has no inset and keeps the roomier 18px.
+ */
+export function contentTopGap(os: string): number {
+  return os === 'web' ? 18 : 2
+}

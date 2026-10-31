@@ -54,8 +54,23 @@ export function dragOffset(dy: number, snap: SheetSnap, resizable: boolean): num
   return resizable && snap === 'compact' ? Math.max(dy, -120) : dy / 8
 }
 
-/** How far a sheet lifts to clear the on-screen keyboard (px). The web browser lifts its own page, so there it is 0; a bad height is 0. */
-export function keyboardLift(height: number, os: string): number {
+/**
+ * How far a sheet lifts to clear the on-screen keyboard (px). The web browser lifts its own page, so there it is 0; a bad height is 0.
+ * On Android (edge to edge) the keyboard event's height is the IME height MINUS the bottom system-bar inset (React Native subtracts it),
+ * while the window still reaches the bottom of the screen, so the nav-bar inset is added back or the keyboard covers a strip of the sheet.
+ * iOS reports the full keyboard height already.
+ */
+export function keyboardLift(height: number, os: string, bottomInset = 0): number {
   if (os === 'web') return 0
-  return Number.isFinite(height) && height > 0 ? Math.round(height) : 0
+  if (!(Number.isFinite(height) && height > 0)) return 0
+  const extra = os === 'android' && Number.isFinite(bottomInset) && bottomInset > 0 ? bottomInset : 0
+  return Math.round(height + extra)
+}
+
+/**
+ * The drag offset a dismissing sheet slides to in ONE animation (px, down is +): just past its own bottom edge (the panel rests on the
+ * bottom of the screen, or on the keyboard `lift` above it), and never back up from where the finger already took it.
+ */
+export function dismissTarget(dy: number, panelHeight: number, lift = 0): number {
+  return Math.max(dy, Math.max(panelHeight, 0) + Math.max(lift, 0) + 24)
 }

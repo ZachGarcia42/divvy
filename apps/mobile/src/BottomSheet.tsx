@@ -7,7 +7,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Animated, Dimensions, Easing, Modal, PanResponder, Platform, Pressable, StyleSheet, View, type StyleProp, type ViewStyle } from 'react-native'
 import { basePaddingBottom, useBottomInset, useKeyboardLift } from './insets'
-import { dragOffset, dragOutcome, releaseVelocity, type DragSample, type SheetSnap } from './flows/sheet'
+import { dismissTarget, dragOffset, dragOutcome, releaseVelocity, type DragSample, type SheetSnap } from './flows/sheet'
 
 const web = Platform.OS === 'web'
 const clock = () => (typeof performance !== 'undefined' ? performance.now() : Date.now())
@@ -25,13 +25,13 @@ export function BottomSheet({ onClose, panelStyle, pillColor, resizable = false,
   const enter = useRef(new Animated.Value(Dimensions.get('window').height)).current
   const fade = useRef(new Animated.Value(0)).current
   const drag = useRef(new Animated.Value(0)).current
-  const live = useRef({ snap, onClose })
-  live.current = { snap, onClose }
+  const live = useRef({ snap, onClose, lift: 0 })
   const panelHeight = useRef(0) // measured panel height; the dismiss distance is a third of it
   const samples = useRef<DragSample[]>([]) // recent pointer positions with performance.now times, for the web flick speed
   const native = !web
   const inset = useBottomInset()
   const lift = useKeyboardLift() // the keyboard's height: the sheet sits above it (see insets.ts)
+  live.current = { snap, onClose, lift }
 
   useEffect(() => {
     const run = Animated.parallel([
@@ -42,17 +42,26 @@ export function BottomSheet({ onClose, panelStyle, pillColor, resizable = false,
     return () => run.stop()
   }, [enter, fade, native])
 
-  const back = () => Animated.spring(drag, { toValue: 0, useNativeDriver: native, bounciness: 4 }).start()
+  const mounted = useRef(true)
+  const closing = useRef(false) // a dismiss animation is running: nothing may start another one on `drag`
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; drag.stopAnimation() } }, [drag])
+  // Snap back to rest. Any animation already running on `drag` is stopped first, so two never fight over the same value.
+  const back = () => { if (closing.current) return; drag.stopAnimation(); Animated.spring(drag, { toValue: 0, useNativeDriver: native, bounciness: 4 }).start() }
   const pan = useMemo(() => PanResponder.create({
     onStartShouldSetPanResponder: () => true,
     onMoveShouldSetPanResponder: () => true,
     onPanResponderTerminationRequest: () => false,
-    onPanResponderGrant: (event) => { samples.current = [{ t: stamp(event), y: 0 }] },
+    onPanResponderGrant: (event) => {
+      samples.current = [{ t: stamp(event), y: 0 }]
+      if (!closing.current) drag.stopAnimation() // grabbing the sheet mid-snap: the finger takes over from where it is
+    },
     onPanResponderMove: (event, g) => {
+      if (closing.current) return
       samples.current.push({ t: stamp(event), y: g.dy }); if (samples.current.length > 24) samples.current.shift()
       drag.setValue(dragOffset(g.dy, live.current.snap, resizable && !fixedHeight))
     },
     onPanResponderRelease: (event, g) => {
+      if (closing.current) return
       // react-native-web's g.vy is just the last move's delta over the gap before it (and ~0 for a one-move flick); use a window.
       const vy = web ? releaseVelocity(samples.current, stamp(event)) : g.vy
       const outcome = dragOutcome({ dy: g.dy, vy, snap: live.current.snap, resizable: resizable && !fixedHeight, height: panelHeight.current || undefined })
@@ -61,8 +70,16 @@ export function BottomSheet({ onClose, panelStyle, pillColor, resizable = false,
       if (outcome === 'expand') setSnap('tall')
       if (outcome === 'collapse') setSnap('compact')
       if (outcome === 'dismiss') {
-        // Slide a little further down, then ask to close. If the owner keeps the sheet (a "discard?" prompt), it springs back.
-        Animated.timing(drag, { toValue: g.dy + 140, duration: 120, useNativeDriver: native }).start(() => { live.current.onClose(); back() })
+        // One animation: slide off the bottom, then ask to close (the owner unmounts the sheet, so nothing else moves it).
+        // If the owner keeps it (a "discard?" prompt) it is still mounted a moment later and springs back once.
+        if (closing.current) return
+        closing.current = true
+        drag.stopAnimation()
+        Animated.timing(drag, { toValue: dismissTarget(g.dy, panelHeight.current, live.current.lift), duration: 160, easing: Easing.out(Easing.quad), useNativeDriver: native }).start(({ finished }) => {
+          if (!finished) { closing.current = false; return }
+          live.current.onClose()
+          setTimeout(() => { closing.current = false; if (mounted.current) back() }, 250)
+        })
         return
       }
       back()

@@ -367,7 +367,7 @@ function ToastBody({ text }: { text: string }) {
 const s = StyleSheet.create({
   screen: { flex: 1, backgroundColor: C.bg },
   center: { flex: 1, padding: 24, justifyContent: 'center', gap: 12 },
-  top: { flex: 1, padding: 24, paddingTop: 48, gap: 12 },
+  top: { flex: 1, padding: 24, paddingTop: 24, gap: 12 },
   wordmark: { fontSize: 22, fontWeight: '800', color: C.ink, marginBottom: 24 },
   title: { fontSize: 28, fontWeight: '800', color: C.ink },
   body: { fontSize: 16, color: C.body },

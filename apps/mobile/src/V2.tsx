@@ -10,6 +10,7 @@ import {
 } from './flows/view'
 import { amountWidth } from './flows/amount'
 import { middleEllipsis } from './flows/composer'
+import { Ionicons } from '@expo/vector-icons'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { SelectInput } from './SelectInput'
 import { BottomSheet } from './BottomSheet'
@@ -54,19 +55,22 @@ const symbolOf = (currency: string) => {
   try { return new Intl.NumberFormat('en', { style: 'currency', currency }).formatToParts(0).find((part) => part.type === 'currency')?.value ?? currency } catch { return currency }
 }
 
-/** Back chevron and share arrow are drawn with Views, not font glyphs: a glyph sits on the text baseline and looks low in the circle. */
+/** Header icons: Ionicons vector glyphs (clean outlines, designed on a centred em box), sized to the button with no line-height or font padding so they sit in the middle of the circle. */
+const ICONS: Record<string, { name: 'chevron-back' | 'share-outline' | 'create-outline'; testID: string }> = {
+  '‹': { name: 'chevron-back', testID: 'icon-chevron' },
+  '⇪': { name: 'share-outline', testID: 'icon-share' },
+  '✎': { name: 'create-outline', testID: 'icon-edit' },
+}
+const ICON_SIZE = 24
+void Ionicons.loadFont().catch(() => undefined) // start loading the icon font at import so the first header does not flash empty
+
 function IconShape({ glyph }: { glyph: string }) {
-  if (glyph === '‹') return <View style={k.icChevron} testID="icon-chevron" />
-  if (glyph === '⇪') {
-    return (
-      <View style={k.icBox} testID="icon-share">
-        <View style={k.icTray} />
-        <View style={k.icStem} />
-        <View style={k.icHead} />
-      </View>
-    )
-  }
-  return <Text style={k.ibText} accessible={false}>{glyph}</Text>
+  const icon = ICONS[glyph]
+  if (!icon) return <Text style={k.ibText} accessible={false}>{glyph}</Text>
+  return (
+    <Ionicons name={icon.name} size={ICON_SIZE} color={T.ink} testID={icon.testID} accessible={false}
+      style={{ width: ICON_SIZE, height: ICON_SIZE, lineHeight: ICON_SIZE, textAlign: 'center', textAlignVertical: 'center', includeFontPadding: false }} />
+  )
 }
 
 function IconButton({ label, glyph, onPress, testID }: { label: string; glyph: string; onPress: () => void; testID?: string }) {
@@ -758,13 +762,6 @@ const k = StyleSheet.create({
   h1c: { fontSize: 28, fontWeight: '900', letterSpacing: -0.8, color: T.ink, textAlign: 'center' },
   ib: { width: 40, height: 40, borderRadius: 20, backgroundColor: T.card, borderWidth: 1, borderColor: T.line, alignItems: 'center', justifyContent: 'center' },
   ibText: { fontSize: 20, lineHeight: 24, fontWeight: '800', color: T.ink, textAlign: 'center', textAlignVertical: 'center', includeFontPadding: false },
-  // 40x40 button: the chevron is a 11px square's left+bottom edges turned 45deg, shifted right (in screen space) so its visual middle is the circle's centre.
-  icChevron: { width: 11, height: 11, borderLeftWidth: 2.5, borderBottomWidth: 2.5, borderColor: T.ink, borderRadius: 1, transform: [{ translateX: 3 }, { rotate: '45deg' }] },
-  // share: an 18x18 box with an open tray along the bottom and an arrow rising out of it
-  icBox: { width: 18, height: 18 },
-  icTray: { position: 'absolute', left: 0, right: 0, bottom: 0, height: 8, borderWidth: 2.5, borderTopWidth: 0, borderColor: T.ink, borderBottomLeftRadius: 3, borderBottomRightRadius: 3 },
-  icStem: { position: 'absolute', left: 8, top: 1, width: 2.5, height: 11, backgroundColor: T.ink },
-  icHead: { position: 'absolute', left: 4.75, top: 1.5, width: 8, height: 8, borderLeftWidth: 2.5, borderTopWidth: 2.5, borderColor: T.ink, transform: [{ rotate: '45deg' }] },
   card: { backgroundColor: T.card, borderWidth: 1, borderColor: T.line, borderRadius: 20, paddingHorizontal: 16, paddingVertical: 12 },
   hero: { backgroundColor: T.teal, borderRadius: 24, paddingVertical: 18, paddingHorizontal: 20 },
   heroK: { color: '#ffffffbf', fontSize: 12, fontWeight: '800', letterSpacing: 1.1, textTransform: 'uppercase' },

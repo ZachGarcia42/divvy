@@ -30,6 +30,7 @@ export function basePaddingBottom(style: unknown): number {
  */
 export function useKeyboardLift(): number {
   const [height, setHeight] = useState(0)
+  const { bottom } = useSafeAreaInsets() // the nav-bar inset RN leaves out of the keyboard height on Android
   useEffect(() => {
     if (Platform.OS === 'web') return
     const ios = Platform.OS === 'ios'
@@ -37,5 +38,5 @@ export function useKeyboardLift(): number {
     const hide = Keyboard.addListener(ios ? 'keyboardWillHide' : 'keyboardDidHide', () => setHeight(0))
     return () => { show.remove(); hide.remove() }
   }, [])
-  return keyboardLift(height, Platform.OS)
+  return keyboardLift(height, Platform.OS, bottom)
 }

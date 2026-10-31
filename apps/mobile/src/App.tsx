@@ -2,7 +2,7 @@ import { formatMoney, splitFromStored } from '@divvy/domain'
 import { editConflict } from './flows/errors'
 import { joinedFeedback } from './flows/composer'
 import { draftFromSpec, majorString } from './flows/split'
-import { SNACK_MS, snackOwner, snackStays, startScreen, groupIcon, type HistoryEntry } from './flows/view'
+import { contentTopGap, SNACK_MS, snackOwner, snackStays, startScreen, groupIcon, type HistoryEntry } from './flows/view'
 import { AccountScreen, AddSheet, CreateGroupSheet, ExpenseDetail, Fab, GroupsHome, GroupView, InviteCard, PasteCard, SettleScreen, Snack, SwitcherSheet, TabBar, todayIso, type SheetSave, type Tab } from './V2'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import * as SecureStore from 'expo-secure-store'
@@ -1047,7 +1047,7 @@ function Ledger({
   )
 }
 
-const v2scroll = { padding: 18, paddingBottom: 110 }
+const v2scroll = { padding: 18, paddingTop: contentTopGap(Platform.OS), paddingBottom: 110 }
 
 const styles = StyleSheet.create({
   flex: { flex: 1 },

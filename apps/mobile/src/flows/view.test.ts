@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { NEW_GROUP_CURRENCY, SNACK_MS, snackOwner, snackStays, breakdown, dateHeading, groupByDate, historyLines, methodPhrase, netTone, overallUsd, paidPhrase, signedMoney, groupIcon, PICKER_EMOJIS, splitGroupName, startScreen, updatedPhrase, yourPosition } from './view'
+import { contentTopGap, NEW_GROUP_CURRENCY, SNACK_MS, snackOwner, snackStays, breakdown, dateHeading, groupByDate, historyLines, methodPhrase, netTone, overallUsd, paidPhrase, signedMoney, groupIcon, PICKER_EMOJIS, splitGroupName, startScreen, updatedPhrase, yourPosition } from './view'
 
 const g = (id: string, net: number, extra: object = {}) => ({ id, name: id, currency: 'USD', yourNetMinor: net, archived: false, ...extra })
 
@@ -146,5 +146,13 @@ describe('undo snackbar lifetime', () => {
     expect(snackStays(owner, 'settle', 'g1')).toBe(false)
     expect(snackStays(owner, 'group', 'g2')).toBe(false)
     expect(snackStays(undefined, 'group', 'g1')).toBe(false)
+  })
+})
+
+describe('contentTopGap', () => {
+  it('phones keep only a small gap below the (single) safe-area inset; web has no inset and keeps 18', () => {
+    expect(contentTopGap('android')).toBeLessThanOrEqual(4)
+    expect(contentTopGap('ios')).toBeLessThanOrEqual(4)
+    expect(contentTopGap('web')).toBe(18)
   })
 })
