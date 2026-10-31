@@ -1,6 +1,6 @@
 // Design v2 split editor: pure state + validation for the "+ Add expense" sheet (kept out of the UI so it is unit-tested).
 // The server is the authority (it re-validates and refuses a split that does not add up); this mirrors it live.
-import { allocateByWeights, computeShares, exponentOf, formatMoney, LedgerError, parseMajor, type SplitMethod, type SplitSpec } from '@divvy/domain'
+import { allocateByWeights, computeShares, exponentOf, formatMoney, LedgerError, maxExpenseMinor, parseMajor, type SplitMethod, type SplitSpec } from '@divvy/domain'
 
 export const METHOD_LABELS: Record<SplitMethod, string> = { equal: 'Equal', exact: 'Exact', percent: '%', shares: 'Shares', adjust: 'Adjust' }
 export const METHODS: SplitMethod[] = ['equal', 'exact', 'percent', 'shares', 'adjust']
@@ -34,6 +34,8 @@ export type Evaluation = {
   spec: SplitSpec | null
   /** Label for the bottom button. */
   cta: string
+  /** The problem is the main amount (over the cap), not a per-person field. */
+  amountBad?: boolean
 }
 
 export function majorString(minor: number, currency: string) {
@@ -96,15 +98,31 @@ export function adjustDisplay(value: string): string {
 }
 
 /**
- * The stored cell after the user typed `text` into a field that held `prev`. A sign typed in the field wins; otherwise the
- * cell keeps its sign (set with the +/- button), so "+1.00" can never become "++1.00" and a plain "5" stays "+5".
+ * What an amount field keeps of typed or pasted text: digits and one decimal point, no signs or letters, at most the
+ * currency's decimals. With no dot, a comma is a decimal comma ("1,5" is 1.5) unless it is clearly thousands ("1,000"); with a dot, commas are thousands marks.
  */
-export function adjustTyped(prev: string, text: string): string {
-  const match = /^\s*([+\-−]*)\s*(.*)$/.exec(text.replace(/−/g, '-'))
-  const signs = match?.[1] ?? ''
-  const digits = (match?.[2] ?? '').trim()
-  const sign = signs ? (signs.endsWith('-') ? '-' : '+') : adjustSign(prev)
-  if (digits === '') return signs ? sign : ''
+export function sanitizeAmountText(text: string, exp = 2): string {
+  let t = text.replace(/\s/g, '')
+  if (!t.includes('.') && t.includes(',') && !/^\d{1,3}(,\d{3})+$/.test(t)) t = t.replace(',', '.')
+  t = t.replace(/[^\d.]/g, '')
+  const dot = t.indexOf('.')
+  if (dot === -1) return t
+  const whole = t.slice(0, dot)
+  const fraction = t.slice(dot + 1).replace(/\./g, '').slice(0, exp)
+  return exp === 0 ? whole : `${whole}.${fraction}`
+}
+
+/**
+ * The stored cell after the user typed `text` into a field that held `prev`. The last sign typed anywhere in the field wins
+ * ("10-" makes it -10); with no sign typed the cell keeps its sign (set with the +/- button). The cell never holds two signs,
+ * so "+1.00" can never become "++1.00" and a plain "5" stays "+5".
+ */
+export function adjustTyped(prev: string, text: string, exp = 2): string {
+  const typed = text.replace(/−/g, '-')
+  const signs = typed.match(/[+-]/g) ?? []
+  const digits = sanitizeAmountText(typed.replace(/[+-]/g, ''), exp)
+  const sign = signs.length ? signs[signs.length - 1]! : adjustSign(prev)
+  if (digits === '') return signs.length ? sign : ''
   return `${sign}${digits}`
 }
 
@@ -130,6 +148,11 @@ const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? o
 
 function totalOf(amountText: string, currency: string): number | null {
   try { return parseMajor(amountText, currency) } catch { return null }
+}
+
+/** True when the amount is a well-formed number above the per-expense cap (the API's cap, 100,000 major units). */
+export function amountTooLarge(amountText: string, currency: string): boolean {
+  try { parseMajor(amountText, currency); return false } catch (reason) { return reason instanceof LedgerError && reason.code === 'TOO_LARGE' }
 }
 
 function gcd(a: number, b: number): number { return b === 0 ? a : gcd(b, a % b) }
@@ -179,6 +202,9 @@ export function evaluate(draft: Draft, memberIds: string[], amountText: string, 
   const done = (spec: SplitSpec, left: string): Evaluation => {
     const rows = computeShares(total as number, spec, currency, { payerId })
     return { ok: true, results: Object.fromEntries(rows.map((row) => [row.participantId, row.minor])), bar: { tone: 'ok', left, right: '✓ Adds up' }, spec, cta: 'Add expense' }
+  }
+  if (total === null && amountTooLarge(amountText, currency)) {
+    return { ok: false, results: {}, bar: { tone: 'bad', left: `Max is ${money(maxExpenseMinor(currency))}`, right: 'Lower the amount' }, spec: null, cta: 'Lower the amount', amountBad: true }
   }
   if (draft.method === 'equal') {
     const ids = memberIds.filter((id) => draft.included[id])

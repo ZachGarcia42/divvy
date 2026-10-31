@@ -53,3 +53,9 @@ export function dragOffset(dy: number, snap: SheetSnap, resizable: boolean): num
   if (dy >= 0) return dy
   return resizable && snap === 'compact' ? Math.max(dy, -120) : dy / 8
 }
+
+/** How far a sheet lifts to clear the on-screen keyboard (px). The web browser lifts its own page, so there it is 0; a bad height is 0. */
+export function keyboardLift(height: number, os: string): number {
+  if (os === 'web') return 0
+  return Number.isFinite(height) && height > 0 ? Math.round(height) : 0
+}

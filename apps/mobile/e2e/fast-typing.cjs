@@ -21,6 +21,7 @@ const check = (name, ok, extra = '') => { console.log(ok ? 'PASS' : 'FAIL', name
     }
     check(`exact: select-all then fast-typing "${label}" x${ROUNDS}`, bad.length === 0, bad.slice(0, 5).join(' '))
   }
+  // (an unselected 7.77 + typed 1.50 is now sanitized down to 7.77: two decimals at most)
   // 2. Tab into the field (focus without a click) and type immediately; the old setTimeout select() ate the first key
   const bad = []
   for (let i = 0; i < ROUNDS; i++) {
@@ -31,7 +32,7 @@ const check = (name, ok, extra = '') => { console.log(ok ? 'PASS' : 'FAIL', name
     await id(field).focus()
     await p.keyboard.type('1.50', { delay: 0 })
     const got = await id(field).inputValue()
-    if (got !== '1.50' && got !== '7.771.50') bad.push(got)
+    if (got !== '1.50' && got !== '7.77') bad.push(got)
   }
   check(`exact: focus then type immediately replaces the old value (x${ROUNDS})`, bad.length === 0, bad.slice(0, 5).join(' '))
   // 3. other money fields behave the same

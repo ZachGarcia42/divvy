@@ -5,8 +5,8 @@
 // The sheet slides in on its own while the scrim fades, so the dimmed layer never travels up with the panel (a stock
 // `animationType="slide"` Modal slides everything, scrim included, which shows as a dark band above the panel).
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { Animated, Dimensions, Easing, KeyboardAvoidingView, Modal, PanResponder, Platform, Pressable, StyleSheet, View, type StyleProp, type ViewStyle } from 'react-native'
-import { basePaddingBottom, useBottomInset } from './insets'
+import { Animated, Dimensions, Easing, Modal, PanResponder, Platform, Pressable, StyleSheet, View, type StyleProp, type ViewStyle } from 'react-native'
+import { basePaddingBottom, useBottomInset, useKeyboardLift } from './insets'
 import { dragOffset, dragOutcome, releaseVelocity, type DragSample, type SheetSnap } from './flows/sheet'
 
 const web = Platform.OS === 'web'
@@ -31,6 +31,7 @@ export function BottomSheet({ onClose, panelStyle, pillColor, resizable = false,
   const samples = useRef<DragSample[]>([]) // recent pointer positions with performance.now times, for the web flick speed
   const native = !web
   const inset = useBottomInset()
+  const lift = useKeyboardLift() // the keyboard's height: the sheet sits above it (see insets.ts)
 
   useEffect(() => {
     const run = Animated.parallel([
@@ -75,9 +76,9 @@ export function BottomSheet({ onClose, panelStyle, pillColor, resizable = false,
       <View style={styles.root}>
         <Animated.View style={[StyleSheet.absoluteFill, styles.scrim, { opacity: fade }]} pointerEvents="none" />
         <Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityRole="button" accessibilityLabel="Close" tabIndex={-1} />
-        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.wrap} pointerEvents="box-none">
+        <View style={[styles.wrap, lift ? { paddingBottom: lift } : null]} pointerEvents="box-none">
           <Animated.View
-            style={[panelStyle, !fixedHeight && snap === 'tall' && styles.tall, inset ? { paddingBottom: basePaddingBottom(panelStyle) + inset } : null, { transform: [{ translateY: Animated.add(enter, drag) }] }]}
+            style={[panelStyle, !fixedHeight && snap === 'tall' && styles.tall, lift ? styles.aboveKeyboard : null, inset ? { paddingBottom: basePaddingBottom(panelStyle) + inset } : null, { transform: [{ translateY: Animated.add(enter, drag) }] }]}
             testID={testID}
             onLayout={(e) => { panelHeight.current = e.nativeEvent.layout.height }}
           >
@@ -94,7 +95,7 @@ export function BottomSheet({ onClose, panelStyle, pillColor, resizable = false,
             </View>
             {children}
           </Animated.View>
-        </KeyboardAvoidingView>
+        </View>
       </View>
     </Modal>
   )
@@ -105,6 +106,7 @@ const styles = StyleSheet.create({
   scrim: { backgroundColor: 'rgba(20,34,28,0.45)' },
   wrap: { position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, justifyContent: 'flex-end', pointerEvents: 'box-none' } as object,
   tall: { height: '92%' },
+  aboveKeyboard: { maxHeight: '100%' },
   pillHit: { alignSelf: 'stretch', height: 24, marginTop: -8, alignItems: 'center', justifyContent: 'center' },
   pill: { width: 40, height: 5, borderRadius: 3 },
 })

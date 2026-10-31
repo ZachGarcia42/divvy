@@ -70,6 +70,17 @@ describe('group screen rows', () => {
     const pct = breakdown(gas, (id) => id, 'percent', { parts: [{ participantId: 'maya', bps: 2550 }] })
     expect(pct.find((r) => r.id === 'maya')!.note).toBe('25.5%')
   })
+  it('lists members with $0 or 0 shares as owing nothing (exact, shares, percent)', () => {
+    const members = ['you', 'maya', 'leo', 'priya']
+    const only = { ...groceries, payers: payers('you', 'You', 12000), shares: [{ participantId: 'you', minor: 8000 }, { participantId: 'maya', minor: 4000 }] }
+    for (const method of ['exact', 'shares', 'percent']) {
+      const rows = breakdown(only, (id) => id, method, null, members)
+      expect(rows.map((r) => r.id)).toEqual(members)
+      expect(rows.find((r) => r.id === 'priya')).toMatchObject({ paid: 0, share: 0, net: 0 })
+    }
+    expect(breakdown(only, (id) => id, 'equal', null, members).map((r) => r.id)).toEqual(['you', 'maya'])
+    expect(breakdown(only, (id) => id, 'exact', null).map((r) => r.id)).toEqual(['you', 'maya'])
+  })
 })
 
 describe('history lines', () => {

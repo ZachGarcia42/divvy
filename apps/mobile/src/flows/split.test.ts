@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SplitMethod } from '@divvy/domain'
-import { adjustDisplay, adjustSign, adjustTyped, toggleAdjustSign, bpsText, draftFromSpec, evaluate, groupedMajor, isDirty, newDraft, parseAmountText, parsePercentBps, sharesFromWeights, switchMethod, type Draft } from './split'
+import { amountTooLarge, sanitizeAmountText, adjustDisplay, adjustSign, adjustTyped, toggleAdjustSign, bpsText, draftFromSpec, evaluate, groupedMajor, isDirty, newDraft, parseAmountText, parsePercentBps, sharesFromWeights, switchMethod, type Draft } from './split'
 
 const ids = ['you', 'maya', 'leo', 'priya']
 const names: Record<string, string> = { you: 'You', maya: 'Maya', leo: 'Leo', priya: 'Priya' }
@@ -425,5 +425,42 @@ describe('driving the Adjust cells like the sheet does', () => {
     const newAmount = tab(viaPercent, 'adjust', '20.02')
     expect(ev(newAmount, '20.02').ok).toBe(true)
     expect(ev(newAmount, '20.02').results).toEqual(ev(viaPercent, '20.02').results)
+  })
+})
+
+describe('QA chunk 2 fixes', () => {
+  it('a sign typed after the digits sets the sign; the cell never holds two signs', () => {
+    expect(adjustTyped('+10', '+10-')).toBe('-10')
+    expect(adjustTyped('', '10-')).toBe('-10')
+    expect(adjustTyped('-10', '-10+')).toBe('+10')
+    expect(adjustTyped('+1', '+-1-+')).toBe('+1')
+    expect(adjustDisplay(adjustTyped('+10', '+10-'))).toBe('-10')
+    expect(adjustTyped('+10', '+10-').match(/[+-]/g)).toHaveLength(1)
+    expect(adjustTyped('-2', '-2.555')).toBe('-2.55')
+    expect(adjustTyped('+1', '+1a')).toBe('+1')
+  })
+  it('an amount over the API cap says the max instead of "Enter an amount"', () => {
+    const e = evaluate(newDraft(ids), ids, '100000.01', 'USD', 'you')
+    expect(e).toMatchObject({ ok: false, cta: 'Lower the amount', amountBad: true, bar: { tone: 'bad', left: 'Max is $100,000.00' } })
+    expect(evaluate(newDraft(ids), ids, '100000', 'USD', 'you').ok).toBe(true)
+    expect(evaluate(newDraft(ids), ids, '9999999999999999999999', 'USD', 'you').bar.left).toBe('Max is $100,000.00')
+    expect(evaluate(newDraft(ids), ids, 'abc', 'USD', 'you').cta).toBe('Enter an amount')
+    expect(evaluate(newDraft(ids), ids, '', 'USD', 'you').bar.left).not.toMatch(/Max/)
+    expect(amountTooLarge('100000.01', 'USD')).toBe(true)
+    expect(amountTooLarge('100,000.00', 'USD')).toBe(false)
+    expect(amountTooLarge('12.345', 'USD')).toBe(false)
+  })
+  it('amount fields keep digits and one decimal point, at most two decimals, no sign', () => {
+    expect(sanitizeAmountText('12.345')).toBe('12.34')
+    expect(sanitizeAmountText('abc')).toBe('')
+    expect(sanitizeAmountText('-5')).toBe('5')
+    expect(sanitizeAmountText('1,5')).toBe('1.5')
+    expect(sanitizeAmountText('1,')).toBe('1.')   // typing "1,5" key by key
+    expect(sanitizeAmountText('1,000.50')).toBe('1000.50')
+    expect(sanitizeAmountText('1,000')).toBe('1000')
+    expect(sanitizeAmountText('1.2.3')).toBe('1.23')
+    expect(sanitizeAmountText('.5')).toBe('.5')
+    expect(sanitizeAmountText(' 7 ')).toBe('7')
+    expect(sanitizeAmountText('12.5', 0)).toBe('12')
   })
 })

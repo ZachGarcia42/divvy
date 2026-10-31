@@ -142,10 +142,12 @@ export function groupByDate<T extends ExpenseLike>(expenses: T[], todayIso: stri
 
 export type DetailRow = { id: string; name: string; paid: number; share: number; net: number; note: string }
 
-/** Per-person breakdown for the expense detail: paid, share, and net (paid − share). */
-export function breakdown(expense: ExpenseLike, nameOf: (id: string) => string, method: string, inputs: unknown): DetailRow[] {
+/** Per-person breakdown for the expense detail: paid, share, and net (paid − share). `memberIds` are the group's members. */
+export function breakdown(expense: ExpenseLike, nameOf: (id: string) => string, method: string, inputs: unknown, memberIds: string[] = []): DetailRow[] {
   const ids: string[] = []
   for (const row of [...expense.payers, ...(expense.shares ?? [])]) if (!ids.includes(row.participantId)) ids.push(row.participantId)
+  // Exact, shares and percent splits leave out anyone at $0 / 0 shares / 0%; they still owe $0.00 (as in equal and adjust).
+  if (method === 'exact' || method === 'shares' || method === 'percent') for (const id of memberIds) if (!ids.includes(id)) ids.push(id)
   const weightOf = new Map<string, number>()
   const total = (() => {
     const list = (inputs as { parts?: { participantId: string; weight?: number; bps?: number }[] } | null)?.parts

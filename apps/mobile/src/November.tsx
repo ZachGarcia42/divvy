@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { AccessibilityInfo, ActivityIndicator, Modal, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native'
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
-import { useBottomInset } from './insets'
+import { useBottomInset, useKeyboardLift } from './insets'
 import { DEAD_TITLE, deadCopy, type JoinView } from './flows/join'
 import { checkName, saveNameError } from './flows/names'
 import { cooldownAnnouncement, resendButton, sendErrorMessage } from './flows/signin'
@@ -270,10 +270,11 @@ export function NameSheet({ initial, onSave, onSaved, onClose }: {
 }) {
   const form = useNameForm(initial, onSave, onSaved)
   const inset = useBottomInset()
+  const lift = useKeyboardLift()
   return (
     <Modal transparent animationType="slide" onRequestClose={onClose} visible statusBarTranslucent navigationBarTranslucent>
       <Pressable style={s.scrim} onPress={onClose} accessibilityRole="button" accessibilityLabel="Close without saving" />
-      <View style={[s.sheet, Platform.OS === 'web' && s.sheetWeb, { paddingBottom: 32 + inset }]} testID="name-sheet">
+      <View style={[s.sheet, Platform.OS === 'web' && s.sheetWeb, { paddingBottom: 32 + inset + lift }]} testID="name-sheet">
         <View style={s.grabber} accessible={false} importantForAccessibility="no" />
         <Text style={s.sheetTitle} accessibilityRole="header">Your name</Text>
         <Text style={s.muted}>Friends see this in every group.</Text>

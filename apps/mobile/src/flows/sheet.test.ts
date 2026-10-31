@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { dragOffset, dragOutcome, releaseVelocity, type DragSample } from './sheet'
+import { dragOffset, dragOutcome, keyboardLift, releaseVelocity, type DragSample } from './sheet'
 
 describe('grab pill gesture', () => {
   const o = (dy: number, vy: number, snap: 'compact' | 'tall', resizable = true, height?: number) => dragOutcome({ dy, vy, snap, resizable, height })
@@ -87,5 +87,18 @@ describe('release velocity from recent move samples', () => {
     expect(releaseVelocity(s([4457, 0], [4534, 100]), 4767 - 150)).toBeGreaterThan(0.7)
     // ...but timed by when the handlers ran (down 4469, move 4698 after a 160ms stall) it is only 0.44 px/ms
     expect(releaseVelocity(s([4469, 0], [4698, 100]), 4781)).toBeLessThan(0.7)
+  })
+})
+
+describe('keyboardLift', () => {
+  it('lifts a sheet by the keyboard height on Android and iOS, never on web', () => {
+    expect(keyboardLift(312.4, 'android')).toBe(312)
+    expect(keyboardLift(336, 'ios')).toBe(336)
+    expect(keyboardLift(300, 'web')).toBe(0)
+  })
+  it('is 0 when the keyboard is hidden or the height is not a usable number', () => {
+    expect(keyboardLift(0, 'android')).toBe(0)
+    expect(keyboardLift(-5, 'android')).toBe(0)
+    expect(keyboardLift(Number.NaN, 'ios')).toBe(0)
   })
 })
