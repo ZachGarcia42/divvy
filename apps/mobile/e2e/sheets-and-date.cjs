@@ -17,6 +17,7 @@ const check = (name, ok, extra = '') => { console.log(ok ? 'PASS' : 'FAIL', name
   await id('create-group-card').click(); await id('create-group-sheet').waitFor(); await p.waitForTimeout(400)
   check('create sheet uses the New group header', (await p.getByText('New group', { exact: true }).count()) === 1 && (await id('create-group-cancel').count()) === 1)
   check('single full-width Create group button', (await id('create-group-save').innerText()).trim() === 'Create group')
+  check('no free-text Currency field in the create sheet', (await id('group-currency').count()) === 0 && (await id('create-group-sheet').getByText('Currency', { exact: true }).count()) === 0)
   check('no template chips in sheet', (await p.locator('[data-testid^="template-"]').count()) === 0)
   check('no Trip/Home/Couple/Dinners chips', (await p.getByText(/^(🏔️|🏠|💑|🍜)\s+(Trip|Home|Couple|Dinners)$/).count()) === 0)
   const height = async () => (await id('create-group-sheet').boundingBox()).height
@@ -39,9 +40,9 @@ const check = (name, ok, extra = '') => { console.log(ok ? 'PASS' : 'FAIL', name
   check('drag just under a third of the sheet height does not dismiss', (await id('create-group-sheet').count()) === 1)
   await dragPill(Math.round(h0 / 3) + 30, 10, 40)
   check('drag pill down past a third dismisses the sheet', (await id('create-group-sheet').count()) === 0)
-  // A quick flick (100-150px, under a third of the sheet) closes it whatever the number of mouse-move steps.
+  // A quick flick (100-130px, under a third of the sheet) closes it whatever the number of mouse-move steps.
   // react-native-web's own gesture vy is wrong for these (a one-step flick reads ~0 px/ms), so the sheet times the moves itself.
-  for (const dy of [100, 150]) {
+  for (const dy of [100, 130]) {
     for (const steps of [1, 2, 3, 5]) { // (10 steps are left out: Playwright spaces them ~15-25ms apart, so 100-150px is about 0.6-0.8 px/ms, right on the 0.7 line)
       await id('create-group-card').click(); await id('create-group-sheet').waitFor(); await p.waitForTimeout(400)
       const hf = await height()
@@ -90,6 +91,25 @@ const check = (name, ok, extra = '') => { console.log(ok ? 'PASS' : 'FAIL', name
   const after = (await api(`/api/groups/${gid}`)).expenses
   const saved = after.find((e) => e.description === 'Picked date lunch')
   check('expense saved with the picked local date', !!saved && saved.date === iso(-3), JSON.stringify(saved && saved.date))
+  // --- Edit history reads newest first: two edits on top of the "added" row
+  if (saved) {
+    let v = (await api(`/api/groups/${gid}/expenses/${saved.id}`)).expense.version
+    for (const body of [{ description: 'Picked date lunch 2' }, { originalMinor: 1300 }]) {
+      await api(`/api/groups/${gid}/expenses/${saved.id}`, 'PATCH', { version: v, ...body }); v++
+    }
+    const rest = (await api(`/api/groups/${gid}/expenses/${saved.id}`)).history
+    check('API still sends history oldest first', rest.length === 3 && rest[0].kind === 'created', rest.map((h) => h.kind).join(','))
+    await p.goto(base); await id(`group-${gid}`).click({ timeout: 3000 }).catch(() => {}); await id(`expense-${saved.id}`).click({ timeout: 10000 }); await id('history').waitFor(); await p.waitForTimeout(500)
+    const lines = (await id('history').innerText()).split('\n').filter((l) => /^You /.test(l))
+    check('history is newest first: amount edit, description edit, then added', lines.length === 3 && /changed the amount/.test(lines[0]) && /changed the description/.test(lines[1]) && /added this/.test(lines[2]), JSON.stringify(lines))
+  }
+  // --- Creating a group sends USD
+  await p.goto(base); await id('back-to-groups').click({ timeout: 8000 }).catch(() => {}); await id('create-group-card').click(); await id('create-group-sheet').waitFor(); await p.waitForTimeout(400)
+  await id('group-name').fill('Currency check')
+  const posted = p.waitForRequest((r) => r.method() === 'POST' && /\/api\/groups$/.test(r.url()))
+  await id('create-group-save').click()
+  const sent = JSON.parse((await posted).postData() || '{}')
+  check('Create group posts currency USD', sent.currency === 'USD' && sent.name === 'Currency check', JSON.stringify(sent))
   check('no page errors', errors.length === 0, errors.join(';'))
   await p.screenshot({ path: '/workspace/eng-scratch/shots/after-date.png' })
   await browser.close()

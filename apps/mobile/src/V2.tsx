@@ -5,7 +5,7 @@ import { useMemo, useState, type ReactNode } from 'react'
 import { Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native'
 import { adjustDisplay, adjustSign, adjustTyped, evaluate, groupedMajor, majorString, METHOD_LABELS, METHODS, newDraft, switchMethod, toggleAdjustSign, type Draft } from './flows/split'
 import {
-  breakdown, groupByDate, historyLines, methodPhrase, monthDay, netTone, NET_WORDS, overallUsd, paidPhrase, peopleCount,
+  breakdown, groupByDate, historyLines, NEW_GROUP_CURRENCY, methodPhrase, monthDay, netTone, NET_WORDS, overallUsd, paidPhrase, peopleCount,
   signedMoney, groupIcon, PICKER_EMOJIS, DEFAULT_EMOJI, updatedPhrase, yourPosition, type HistoryEntry,
 } from './flows/view'
 import { amountWidth } from './flows/amount'
@@ -151,9 +151,8 @@ export function CreateGroupSheet({ busy, error, onCreate, onClose }: {
 }) {
   const [name, setName] = useState('')
   const [emoji, setEmoji] = useState<string>(DEFAULT_EMOJI)
-  const create = () => onCreate(name.trim(), currency.toUpperCase(), emoji)
-  const [currency, setCurrency] = useState('USD')
-  const valid = name.trim().length > 0 && name.trim().length <= 80 && /^[A-Za-z]{3}$/.test(currency)
+  const create = () => onCreate(name.trim(), NEW_GROUP_CURRENCY, emoji)
+  const valid = name.trim().length > 0 && name.trim().length <= 80
   return (
     <BottomSheet onClose={onClose} panelStyle={[k.lightSheet, web && k.sheetWeb]} pillColor="#14221c26" resizable testID="create-group-sheet">
       <ScrollView style={k.sheetScroll} contentContainerStyle={k.sheetScrollBody} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
@@ -172,8 +171,6 @@ export function CreateGroupSheet({ busy, error, onCreate, onClose }: {
             </Pressable>
           ))}
         </View>
-        <Text style={k.label}>Currency</Text>
-        <TextInput testID="group-currency" value={currency} onChangeText={(text) => setCurrency(text.toUpperCase().slice(0, 3))} autoCapitalize="characters" autoCorrect={false} style={[k.input, noOutline, { width: 110 }]} />
         {error && <Text style={k.error} testID="create-group-error">{error}</Text>}
         <Text style={k.helper}>You'll get an invite link to share as soon as the group is created.</Text>
         <View style={{ marginTop: 'auto', paddingTop: 8 }}>

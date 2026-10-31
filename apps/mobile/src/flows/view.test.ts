@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { SNACK_MS, snackOwner, snackStays, breakdown, dateHeading, groupByDate, historyLines, methodPhrase, netTone, overallUsd, paidPhrase, signedMoney, groupIcon, PICKER_EMOJIS, splitGroupName, startScreen, updatedPhrase, yourPosition } from './view'
+import { NEW_GROUP_CURRENCY, SNACK_MS, snackOwner, snackStays, breakdown, dateHeading, groupByDate, historyLines, methodPhrase, netTone, overallUsd, paidPhrase, signedMoney, groupIcon, PICKER_EMOJIS, splitGroupName, startScreen, updatedPhrase, yourPosition } from './view'
 
 const g = (id: string, net: number, extra: object = {}) => ({ id, name: id, currency: 'USD', yourNetMinor: net, archived: false, ...extra })
 
@@ -83,13 +83,29 @@ describe('history lines', () => {
       { id: '5', kind: 'deleted', actorId: null, actorName: null, changes: null, at: 'e' },
     ], 'you', 'USD', name, (iso) => `@${iso}`)
     expect(lines.map((l) => l.text)).toEqual([
-      'You added this',
-      'Maya changed the split to shares',
-      'You changed the amount to $25.00 and the description to “Gas”',
-      'You edited this',
       'Someone deleted this',
+      'You edited this',
+      'You changed the amount to $25.00 and the description to “Gas”',
+      'Maya changed the split to shares',
+      'You added this',
     ])
-    expect(lines[0]!.time).toBe('@a')
+    expect(lines[0]!.time).toBe('@e')
+    expect(lines[4]!.time).toBe('@a')
+  })
+  it('lists newest first without touching the order it was given', () => {
+    const rows = [
+      { id: '1', kind: 'created', actorId: 'you', actorName: 'Zach', changes: null, at: '2026-10-01T10:00:00Z' },
+      { id: '2', kind: 'edited', actorId: 'you', actorName: 'Zach', changes: null, at: '2026-10-02T10:00:00Z' },
+    ]
+    expect(historyLines(rows, 'you', 'USD', name, (iso) => iso).map((l) => l.id)).toEqual(['2', '1'])
+    expect(rows.map((r) => r.id)).toEqual(['1', '2'])
+    expect(historyLines([], 'you', 'USD', name, (iso) => iso)).toEqual([])
+  })
+})
+
+describe('new groups', () => {
+  it('are always created in USD', () => {
+    expect(NEW_GROUP_CURRENCY).toBe('USD')
   })
 })
 

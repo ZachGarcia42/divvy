@@ -178,9 +178,12 @@ function describeChange(change: { field: string; from: unknown; to: unknown }, c
   }
 }
 
-/** One line per history row: "You added this", "You changed the split to shares". */
+/** Every new group is created in USD (the Create group sheet has no currency field). */
+export const NEW_GROUP_CURRENCY = 'USD'
+
+/** One line per history row, newest first (the API sends oldest first): "You changed the split to shares", "You added this". */
 export function historyLines(history: HistoryEntry[], youId: string, currency: string, nameOf: (id: string) => string, timeText: (iso: string) => string) {
-  return history.map((entry) => {
+  return [...history].reverse().map((entry) => {
     const who = entry.actorId === youId ? 'You' : (entry.actorName ?? 'Someone')
     const verb = (() => {
       if (entry.kind === 'created') return 'added this'

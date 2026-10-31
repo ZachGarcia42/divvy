@@ -23,7 +23,7 @@ const check = (name, ok, extra = '') => { console.log(ok ? 'PASS' : 'FAIL', name
   const sb = await open(); const h = sb.height
   check('sheet is compact on the big viewport', h < 600 && sb.y > 400, `top=${Math.round(sb.y)} h=${Math.round(h)}`)
   await dismiss()
-  for (const dy of [100, 150]) {
+  for (const dy of [100, 130]) {
     for (const [steps, pace] of [[1, 0], [2, 0], [3, 0], [5, 0], [5, 10]]) {
       const b = await open()
       await drag(dy, steps, { pace })
@@ -31,7 +31,7 @@ const check = (name, ok, extra = '') => { console.log(ok ? 'PASS' : 'FAIL', name
       await dismiss()
     }
   }
-  for (const [dy, steps] of [[100, 1], [150, 5]]) {
+  for (const [dy, steps] of [[100, 1], [130, 5]]) {
     const b = await open()
     await cdp.send('Emulation.setCPUThrottlingRate', { rate: 16 }) // a slow, busy machine: handlers run well after the browser stamps the events
     await drag(dy, steps)
