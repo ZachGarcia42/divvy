@@ -27,9 +27,9 @@ const check = (name, ok, extra = '') => { console.log(ok ? 'PASS' : 'FAIL', name
   check('the equal split runs on the converted total', /\$26\.91/.test(await bar()), await bar())
   await saveAndWait()
   await p.getByText(/Dinner in Lisbon/).first().waitFor()
-  check('the list row carries the original amount', /€100\.00/.test(await p.getByText(/Dinner in Lisbon/).first().locator('xpath=ancestor::*[@data-testid][1]').innerText().catch(() => '')) || (await p.getByText('€100.00').count()) > 0)
   const exp = (await api(`/api/groups/${gid}`)).expenses.find((e) => e.description === 'Dinner in Lisbon')
   check('API stored original, converted, rate', exp.originalMinor === 10000 && exp.originalCurrency === 'EUR' && exp.settlementMinor === 10765 && exp.rate === '1.0765', JSON.stringify(exp))
+  check('the list row shows the original amount under the amount, not in the grey line', /€100\.00/.test(await text(`expense-original-${exp.id}`)) && !/€100\.00\s*·/.test(await text(`expense-${exp.id}`)), await text(`expense-${exp.id}`))
 
   // 2. Detail shows original, converted and rate
   await id(`expense-${exp.id}`).click(); await id('expense-conversion').waitFor()

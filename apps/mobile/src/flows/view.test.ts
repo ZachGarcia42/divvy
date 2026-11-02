@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { contentTopGap, NEW_GROUP_CURRENCY, SNACK_MS, snackOwner, snackStays, breakdown, dateHeading, groupByDate, historyLines, methodPhrase, netTone, overallUsd, paidPhrase, signedMoney, groupIcon, PICKER_EMOJIS, splitGroupName, startScreen, updatedPhrase, yourPosition } from './view'
+import { contentTopGap, NEW_GROUP_CURRENCY, SNACK_MS, snackOwner, snackStays, breakdown, dateHeading, groupByDate, historyLines, methodPhrase, netTone, overallUsd, paidPhrase, rowSubtitle, signedMoney, groupIcon, PICKER_EMOJIS, splitGroupName, startScreen, updatedPhrase, yourPosition } from './view'
+import { originalText } from './fx'
 
 const g = (id: string, net: number, extra: object = {}) => ({ id, name: id, currency: 'USD', yourNetMinor: net, archived: false, ...extra })
 
@@ -45,6 +46,14 @@ describe('group screen rows', () => {
     expect(methodPhrase('shares')).toBe('shares')
     expect(methodPhrase('equal')).toBe('split equally')
     expect(methodPhrase(undefined)).toBe('custom split')
+  })
+  it('keeps the original amount out of the grey line: it sits under the amount instead', () => {
+    const eur = { ...groceries, id: 'e3', settlementMinor: 10765, originalMinor: 4200, originalCurrency: 'EUR', payers: payers('you', 'You', 10765) }
+    expect(rowSubtitle(eur, 'you', 'USD')).toBe('You paid $107.65 · shares')
+    expect(originalText(eur, 'USD')).toBe('€42.00')
+    expect(rowSubtitle(groceries, 'you', 'USD')).toBe('You paid $120.00 · shares')
+    expect(originalText({ ...groceries, originalMinor: 12000, originalCurrency: 'USD' }, 'USD')).toBeNull()
+    expect(originalText(groceries, 'USD')).toBeNull()
   })
   it('groups by date, newest first', () => {
     const older = { ...gas, id: 'e0', date: '2026-10-24' }
