@@ -393,7 +393,7 @@ function FeedRowView({ entry, first, youId, today, showGroup, onOpen }: { entry:
       {row.amount && (
         <View style={k.feedAmtCol}>
           <Text style={[k.feedAmt, row.struckAmount && k.struckAmt]} testID={`feed-amount-${entry.id}`}>{row.amount}</Text>
-          {row.originalAmount && <Text style={k.feedWas} testID={`feed-original-${entry.id}`}>{row.originalAmount}</Text>}
+          {row.originalAmount && <Text style={k.feedOrig} testID={`feed-original-${entry.id}`}>{row.originalAmount}</Text>}
           {row.previousAmount && <Text style={k.feedWas} testID={`feed-was-${entry.id}`}>{row.previousAmount}</Text>}
         </View>
       )}
@@ -1180,6 +1180,7 @@ const k = StyleSheet.create({
   feedMeta: { fontSize: 12.5, color: T.hint, fontWeight: '600', marginTop: 3 },
   feedAmtCol: { alignItems: 'flex-end', flexShrink: 0, paddingTop: 1 },
   feedAmt: { fontSize: 16, fontWeight: '900', color: T.ink, fontVariant: ['tabular-nums'] },
+  feedOrig: { fontSize: 12, color: T.hint, fontWeight: '600', fontVariant: ['tabular-nums'], marginTop: 2 },
   feedWas: { fontSize: 12, color: T.hint, fontWeight: '600', textDecorationLine: 'line-through', fontVariant: ['tabular-nums'], marginTop: 2 },
   struck: { textDecorationLine: 'line-through', color: T.muted },
   struckAmt: { textDecorationLine: 'line-through', color: T.muted },
