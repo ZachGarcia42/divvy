@@ -139,6 +139,12 @@ describe('expenses in another currency', () => {
     // the history says what changed
     const history = (await call('GET', `/api/groups/${groupId}/expenses/${made.json.id}`)).json.history
     expect(history.map((h: any) => h.kind)).toEqual(['created', 'edited', 'edited', 'edited'])
+    const fields = (i: number) => history[i].changes.map((c: any) => c.field)
+    expect(fields(1)).toContain('date')
+    expect(fields(1)).toContain('amount')
+    expect(history[1].changes.find((c: any) => c.field === 'rate')).toMatchObject({ from: '1.1000', to: '1.2000' })
+    expect(history[2].changes.find((c: any) => c.field === 'currency')).toMatchObject({ from: 'EUR', to: 'JPY' })
+    expect(fields(2)).not.toContain('rate')
   })
 
   it('takes a manual rate, keeps it on later edits, and marks the source', async () => {

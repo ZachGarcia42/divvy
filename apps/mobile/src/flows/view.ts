@@ -171,6 +171,8 @@ function describeChange(change: { field: string; from: unknown; to: unknown }, c
   switch (change.field) {
     case 'amount': return `the amount to ${formatMoney(Number(change.to), currency)}`
     case 'description': return change.to ? `the description to “${String(change.to)}”` : 'the description'
+    case 'currency': return `the currency to ${String(change.to)}`
+    case 'rate': return `the exchange rate to ${String(change.to)}`
     case 'date': return `the date to ${monthDay(String(change.to))}`
     case 'category': return 'the category'
     case 'payer': return `who paid to ${((change.to as string[]) ?? []).map(nameOf).join(', ')}`

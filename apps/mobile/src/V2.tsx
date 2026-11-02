@@ -1,6 +1,6 @@
 // Design v2 screens: Groups home, group view, Add-expense ink sheet, expense detail, settle up.
 // Data logic stays in App.tsx (Ledger) and flows/*; these components only render and report taps.
-import { exponentOf, formatMoney, parseMajor, type SplitMethod, type SplitSpec } from '@divvy/domain'
+import { exponentOf, formatMoney, parseMajor, searchCurrencies, type SplitMethod, type SplitSpec } from '@divvy/domain'
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native'
 import { adjustDisplay, adjustSign, adjustTyped, sanitizeAmountText, evaluate, groupedMajor, majorString, METHOD_LABELS, METHODS, newDraft, switchMethod, toggleAdjustSign, type Draft } from './flows/split'
@@ -16,6 +16,7 @@ import { SelectInput } from './SelectInput'
 import { BottomSheet } from './BottomSheet'
 import { DateChip } from './DatePicker'
 import { dateToSave } from './flows/date'
+import { amountPlaceholder, conversionLines, manualRateOrNull, originalText, RATE_DOWN_MESSAGE, rateLabel, rateSourceText, sheetMoney, type Quote } from './flows/fx'
 import type { Expense, GroupDetail, Home, HomeGroup, Payment, Settlement } from './types'
 
 export const T = {
@@ -165,12 +166,35 @@ export function EmptyGroups({ onCreate, onPaste }: { onCreate: () => void; onPas
   )
 }
 
+/** Search-and-pick list of currencies (ECB-published ones), for the Add sheet (dark) and New group (light). */
+export function CurrencyPicker({ value, onPick, dark, prefix }: { value: string; onPick: (code: string) => void; dark?: boolean; prefix: string }) {
+  const [query, setQuery] = useState('')
+  const rows = useMemo(() => searchCurrencies(query), [query])
+  return (
+    <View style={[k.cpBox, dark && k.cpBoxDark]} testID={`${prefix}-picker`}>
+      <TextInput testID={`${prefix}-search`} value={query} onChangeText={setQuery} autoCapitalize="characters" autoCorrect={false} placeholder="Search currency" placeholderTextColor={dark ? '#ffffff59' : T.hint} style={[k.cpSearch, dark && k.cpSearchDark, noOutline]} accessibilityLabel="Search currency" />
+      <ScrollView style={{ maxHeight: 220 }} nestedScrollEnabled keyboardShouldPersistTaps="handled">
+        {rows.length === 0 && <Text style={dark ? k.inkHint : k.m}>No currency matches “{query}”.</Text>}
+        {rows.map((row) => (
+          <Pressable key={row.code} style={k.cpRow} onPress={() => onPick(row.code)} accessibilityRole="button" accessibilityState={{ selected: row.code === value }} accessibilityLabel={`${row.code}, ${row.name}`} testID={`${prefix}-${row.code}`}>
+            <Text style={[k.cpCode, dark && { color: '#e6efe9' }]}>{row.code}</Text>
+            <Text style={[k.cpName, dark && { color: '#b9c9c1' }]} numberOfLines={1}>{row.name}</Text>
+            <Text style={[k.cpCode, dark && { color: T.ok }]} accessible={false}>{row.code === value ? '✓' : ''}</Text>
+          </Pressable>
+        ))}
+      </ScrollView>
+    </View>
+  )
+}
+
 export function CreateGroupSheet({ busy, error, onCreate, onClose }: {
   busy: boolean; error: string | null; onCreate: (name: string, currency: string, emoji: string) => void; onClose: () => void
 }) {
   const [name, setName] = useState('')
   const [emoji, setEmoji] = useState<string>(DEFAULT_EMOJI)
-  const create = () => onCreate(name.trim(), NEW_GROUP_CURRENCY, emoji)
+  const [currency, setCurrency] = useState<string>(NEW_GROUP_CURRENCY)
+  const [pickCurrency, setPickCurrency] = useState(false)
+  const create = () => onCreate(name.trim(), currency, emoji)
   const valid = name.trim().length > 0 && name.trim().length <= 80
   return (
     <BottomSheet onClose={onClose} panelStyle={[k.lightSheet, web && k.sheetWeb]} pillColor="#14221c26" resizable testID="create-group-sheet">
@@ -190,6 +214,13 @@ export function CreateGroupSheet({ busy, error, onCreate, onClose }: {
             </Pressable>
           ))}
         </View>
+        <Text style={k.label}>Currency</Text>
+        <Pressable style={k.curRow} onPress={() => setPickCurrency((v) => !v)} accessibilityRole="button" accessibilityState={{ expanded: pickCurrency }} accessibilityLabel={`Group currency, ${currency}`} testID="group-currency">
+          <Text style={k.t}>{currency}</Text>
+          <Text style={k.m}>{pickCurrency ? 'Choose one' : 'Balances and settle-up are in this currency'}</Text>
+          <Text style={k.caret} accessible={false}>▾</Text>
+        </Pressable>
+        {pickCurrency && <CurrencyPicker value={currency} onPick={(code) => { setCurrency(code); setPickCurrency(false) }} prefix="group-currency" />}
         {error && <Text style={k.error} testID="create-group-error">{error}</Text>}
         <Text style={k.helper}>You'll get an invite link to share as soon as the group is created.</Text>
         <View style={{ marginTop: 'auto', paddingTop: 8 }}>
@@ -315,7 +346,7 @@ export function GroupView({ detail, today, banner, footer, onBack, onSwitcher, o
                   <View style={k.expIcon}><Text style={{ fontSize: 18 }} accessible={false}>🧾</Text></View>
                   <View style={k.grow}>
                     <Text style={k.t} numberOfLines={1}>{expense.description.trim() || 'Expense'}</Text>
-                    <Text style={k.m} numberOfLines={1}>{paidPhrase(expense, detail.yourParticipantId, detail.currency)} · {methodPhrase(expense.splitMethod)}</Text>
+                    <Text style={k.m} numberOfLines={1}>{[originalText(expense, detail.currency), paidPhrase(expense, detail.yourParticipantId, detail.currency), methodPhrase(expense.splitMethod)].filter(Boolean).join(' · ')}</Text>
                   </View>
                   <View style={k.right}>
                     {pos.kind === 'none' ? <Text style={[k.amt, k.zero]}>not involved</Text> : (
@@ -353,12 +384,14 @@ export function InviteCard({ url, onShare }: { url: string | null; onShare: () =
 
 // ───────────────────────── Add / edit expense (ink sheet) ─────────────────────────
 
-export type SheetInitial = { amountText: string; description: string; draft: Draft; payerId: string; date: string | null }
-export type SheetSave = { description: string; minor: number; payerId: string; spec: SplitSpec; date: string | null }
+export type SheetInitial = { amountText: string; description: string; draft: Draft; payerId: string; date: string | null; currency?: string; quote?: Quote | null }
+/** `minor` is in `currency` (the currency the expense was entered in); `manualRate` is set only when the rate was typed by hand. */
+export type SheetSave = { description: string; minor: number; currency: string; manualRate: string | null; payerId: string; spec: SplitSpec; date: string | null }
+export type RateState = { state: 'idle' } | { state: 'loading' } | { state: 'ok'; quote: Quote } | { state: 'error' }
 
-export function AddSheet({ members, youId, currency, groupName, initial, onClose, onSave }: {
+export function AddSheet({ members, youId, currency, groupName, initial, fetchRate, onClose, onSave }: {
   members: { id: string; name: string }[]; youId: string; currency: string; groupName: string
-  initial: SheetInitial | null; onClose: () => void; onSave: (value: SheetSave) => Promise<void>
+  initial: SheetInitial | null; fetchRate?: (from: string, date: string) => Promise<Quote>; onClose: () => void; onSave: (value: SheetSave) => Promise<void>
 }) {
   const ids = useMemo(() => members.map((m) => m.id), [members])
   const nameOf = (id: string) => (id === youId ? 'You' : members.find((m) => m.id === id)?.name ?? 'Someone')
@@ -369,18 +402,40 @@ export function AddSheet({ members, youId, currency, groupName, initial, onClose
   const [today] = useState(() => todayIso())
   const [date, setDate] = useState<string>(initial?.date ?? today)
   const [pickPayer, setPickPayer] = useState(false)
+  // `currency` is the group's. The expense itself can be in any currency; it is converted at the rate for its date.
+  const [expCurrency, setExpCurrency] = useState(initial?.currency ?? currency)
+  const [pickCurrency, setPickCurrency] = useState(false)
+  const [rateState, setRateState] = useState<RateState>({ state: 'idle' })
+  const [manualText, setManualText] = useState<string | null>(null)
+  const [rateAttempt, setRateAttempt] = useState(0)
+  const foreign = expCurrency !== currency
   const [confirmDiscard, setConfirmDiscard] = useState(false)
   const [focused, setFocused] = useState<string | null>(null)
   const [lastEdited, setLastEdited] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const ev = useMemo(() => evaluate(draft, ids, amountText, currency, payerId, nameOf), [draft, ids, amountText, currency, payerId])
+  const byHand = manualText !== null
+  const manualRate = byHand ? manualRateOrNull(manualText) : null
+  const rate = foreign ? (byHand ? manualRate : rateState.state === 'ok' ? rateState.quote.rate : null) : null
+  const money = useMemo(() => sheetMoney(amountText, expCurrency, currency, rate), [amountText, expCurrency, currency, rate])
+  // The split works in the group currency, on the converted total; the rest of the sheet is unchanged.
+  const splitText = foreign ? (money.converted === null ? '' : majorString(money.converted, currency)) : amountText
+  const ev = useMemo(() => evaluate(draft, ids, splitText, currency, payerId, nameOf), [draft, ids, splitText, currency, payerId])
   const alone = ids.length < 2
-  const canSave = ev.ok && !saving && !alone
+  const canSave = ev.ok && !saving && !alone && money.original !== null && (!foreign || money.converted !== null)
+  useEffect(() => {
+    if (!foreign || byHand) { setRateState({ state: 'idle' }); return }
+    if (initial?.quote && expCurrency === initial.currency && date === (initial.date ?? today)) { setRateState({ state: 'ok', quote: initial.quote }); return }
+    if (!fetchRate) { setRateState({ state: 'error' }); return }
+    let live = true
+    setRateState({ state: 'loading' })
+    fetchRate(expCurrency, date).then((quote) => { if (live) setRateState({ state: 'ok', quote }) }, () => { if (live) setRateState({ state: 'error' }) })
+    return () => { live = false }
+  }, [foreign, byHand, expCurrency, date, rateAttempt])
   const dirty = useMemo(() => {
-    if (initial) return JSON.stringify([amountText, description, draft, payerId, date]) !== JSON.stringify([initial.amountText, initial.description, initial.draft, initial.payerId, initial.date ?? today])
-    return !!amountText.trim() || !!description.trim() || payerId !== youId || date !== today || draft.method !== 'equal' || ids.some((id) => !draft.included[id] || draft.shares[id] !== 1 || draft.exact[id] || draft.percent[id] || draft.adjust[id])
-  }, [initial, amountText, description, draft, payerId, date, today, ids, youId])
+    if (initial) return JSON.stringify([amountText, description, draft, payerId, date, expCurrency, manualText]) !== JSON.stringify([initial.amountText, initial.description, initial.draft, initial.payerId, initial.date ?? today, initial.currency ?? currency, null])
+    return expCurrency !== currency || !!amountText.trim() || !!description.trim() || payerId !== youId || date !== today || draft.method !== 'equal' || ids.some((id) => !draft.included[id] || draft.shares[id] !== 1 || draft.exact[id] || draft.percent[id] || draft.adjust[id])
+  }, [initial, amountText, description, draft, payerId, date, today, ids, youId, expCurrency, manualText, currency])
   const tryClose = () => (dirty && !saving ? setConfirmDiscard(true) : onClose())
   const patch = (key: 'exact' | 'percent' | 'adjust', id: string, text: string) => {
     setLastEdited(id)
@@ -389,19 +444,19 @@ export function AddSheet({ members, youId, currency, groupName, initial, onClose
   }
   const save = async () => {
     if (!canSave || !ev.spec) return
-    let minor: number
-    try { minor = parseMajor(amountText, currency) } catch { return }
+    const minor = money.original
+    if (minor === null) return
     setSaving(true)
     setError(null)
     try {
-      await onSave({ description: description.trim(), minor, payerId, spec: ev.spec, date: dateToSave(date, initial?.date ?? null, today) })
+      await onSave({ description: description.trim(), minor, currency: expCurrency, manualRate: byHand ? manualRate : null, payerId, spec: ev.spec, date: dateToSave(date, initial?.date ?? null, today) })
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Could not save that')
       setSaving(false)
     }
   }
   // A server error describes what was sent; once anything in the form changes it no longer applies.
-  useEffect(() => { setError(null) }, [amountText, description, draft, payerId, date])
+  useEffect(() => { setError(null) }, [amountText, description, draft, payerId, date, expCurrency, manualText])
   const barBad = ev.bar.tone === 'bad'
   const overField = barBad && !ev.amountBad ? lastEdited : null
   const title = initial ? 'Edit expense' : `New expense · ${groupName}`
@@ -419,14 +474,57 @@ export function AddSheet({ members, youId, currency, groupName, initial, onClose
             </Pressable>
           </View>, body: <ScrollView key="body" style={ord(0)} keyboardShouldPersistTaps="handled" contentContainerStyle={{ paddingBottom: 12 }}>
             <View style={k.bigRow}>
-              <Text style={k.bigC}>{symbolOf(currency)}</Text>
-              <TextInput testID="expense-amount" autoFocus value={amountText} onChangeText={(text) => { setError(null); setAmount(text) }} placeholder="0.00" placeholderTextColor="#ffffff40" keyboardType="decimal-pad" inputMode="decimal" style={[k.big, noOutline, { width: amountWidth(amountText, '0.00', 54) }]} accessibilityLabel="Amount" />
+              <Text style={k.bigC}>{symbolOf(expCurrency)}</Text>
+              <TextInput testID="expense-amount" autoFocus value={amountText} onChangeText={(text) => { setError(null); setAmount(text) }} placeholder={amountPlaceholder(expCurrency)} placeholderTextColor="#ffffff40" keyboardType="decimal-pad" inputMode="decimal" style={[k.big, noOutline, { width: amountWidth(amountText, amountPlaceholder(expCurrency), 54) }]} accessibilityLabel={`Amount in ${expCurrency}`} />
             </View>
             <TextInput testID="expense-description" value={description} onChangeText={setDescription} maxLength={80} placeholder="What was it for?" placeholderTextColor="#ffffff59" style={[k.desc, noOutline]} accessibilityLabel="Description" />
             <View style={k.pick}>
               <Pressable style={k.dp} onPress={() => setPickPayer((v) => !v)} accessibilityRole="button" testID="payer-chip"><Text style={k.dpText}>Paid by <Text style={k.dpB}>{nameOf(payerId)} ▾</Text></Text></Pressable>
               <DateChip value={date} today={today} onChange={setDate} style={k.dp} activeStyle={k.dpRing} textStyle={k.dpText} boldStyle={k.dpB} testID="date-chip" />
+              <Pressable style={[k.dp, foreign && k.dpRing]} onPress={() => setPickCurrency((v) => !v)} accessibilityRole="button" accessibilityState={{ expanded: pickCurrency }} accessibilityLabel={`Currency, ${expCurrency}`} testID="currency-chip"><Text style={k.dpText}>Currency <Text style={k.dpB}>{expCurrency} ▾</Text></Text></Pressable>
             </View>
+            {pickCurrency && (
+              <View style={{ paddingHorizontal: 14, paddingTop: 6 }}>
+                <CurrencyPicker dark value={expCurrency} prefix="currency" onPick={(code) => { setExpCurrency(code); setPickCurrency(false); setManualText(null) }} />
+              </View>
+            )}
+            {foreign && (
+              <View style={k.fx} testID="fx-box">
+                <Text style={k.fxMain} accessibilityLiveRegion="polite" testID="fx-converted">
+                  {money.converted !== null ? `≈ ${formatMoney(money.converted, currency)}` : money.error ?? `Converted to ${currency} at the rate for ${monthDay(date)}`}
+                </Text>
+                {!byHand && rateState.state === 'loading' && <Text style={k.fxSub} testID="fx-loading">Getting the {monthDay(date)} rate…</Text>}
+                {!byHand && rateState.state === 'ok' && (
+                  <View style={k.fxLine}>
+                    <Text style={[k.fxSub, k.grow]} testID="fx-rate">{rateLabel(expCurrency, currency, rateState.quote.rate)} · {rateSourceText(rateState.quote.source, rateState.quote.rateDate, date)}</Text>
+                    <Pressable onPress={() => setManualText(rateState.quote.rate)} accessibilityRole="button" accessibilityLabel="Change the exchange rate" testID="fx-rate-edit"><Text style={k.fxLink}>Change</Text></Pressable>
+                  </View>
+                )}
+                {!byHand && rateState.state === 'error' && (
+                  <>
+                    <Text style={k.fxErr} accessibilityLiveRegion="polite" testID="fx-error">{RATE_DOWN_MESSAGE}</Text>
+                    <View style={k.fxLine}>
+                      <Pressable onPress={() => setRateAttempt((n) => n + 1)} accessibilityRole="button" testID="fx-retry"><Text style={k.fxLink}>Try again</Text></Pressable>
+                      <Pressable onPress={() => setManualText('')} accessibilityRole="button" accessibilityLabel="Enter the exchange rate yourself" testID="fx-rate-edit"><Text style={k.fxLink}>Enter rate</Text></Pressable>
+                    </View>
+                  </>
+                )}
+                {byHand && (
+                  <>
+                    <View style={k.fxLine}>
+                      <Text style={k.fxSub}>1 {expCurrency} =</Text>
+                      <TextInput testID="fx-rate-input" value={manualText ?? ''} onChangeText={setManualText} keyboardType="decimal-pad" inputMode="decimal" autoFocus placeholder="0.0000" placeholderTextColor="#ffffff59" style={[k.fxInput, noOutline]} accessibilityLabel={`Exchange rate, ${currency} per 1 ${expCurrency}`} />
+                      <Text style={k.fxSub}>{currency}</Text>
+                    </View>
+                    <View style={k.fxLine}>
+                      <Text style={[k.fxSub, k.grow]}>{manualText && !manualRate ? 'Enter a positive number like 1.0765' : 'Entered by hand'}</Text>
+                      <Pressable onPress={() => { setManualText(null); setRateAttempt((n) => n + 1) }} accessibilityRole="button" testID="fx-rate-auto"><Text style={k.fxLink}>Use the ECB rate</Text></Pressable>
+                    </View>
+                  </>
+                )}
+                {(draft.method === 'exact' || draft.method === 'adjust') && <Text style={k.fxSub}>Amounts below are in {currency}.</Text>}
+              </View>
+            )}
             {pickPayer && (
               <View style={k.payerList}>
                 {members.map((m) => (
@@ -438,7 +536,7 @@ export function AddSheet({ members, youId, currency, groupName, initial, onClose
             )}
             <View style={k.seg} accessibilityRole="tablist">
               {METHODS.map((method) => (
-                <Pressable key={method} style={[k.segItem, draft.method === method && k.segOn]} onPress={() => { setLastEdited(null); setDraft((d) => switchMethod(d, method as SplitMethod, ids, amountText, currency, payerId)) }} accessibilityRole="tab" accessibilityState={{ selected: draft.method === method }} testID={`method-${method}`}>
+                <Pressable key={method} style={[k.segItem, draft.method === method && k.segOn]} onPress={() => { setLastEdited(null); setDraft((d) => switchMethod(d, method as SplitMethod, ids, splitText, currency, payerId)) }} accessibilityRole="tab" accessibilityState={{ selected: draft.method === method }} testID={`method-${method}`}>
                   <Text style={[k.segText, draft.method === method && k.segTextOn]}>{METHOD_LABELS[method]}</Text>
                 </Pressable>
               ))}
@@ -561,6 +659,7 @@ export function ExpenseDetail({ detail, expense, history, canEdit, whyNoEdit, bu
   const method = expense.splitMethod ?? 'exact'
   const rows = breakdown(expense, nameOf, method, expense.splitInputs, detail.members.map((m) => m.id))
   const pos = yourPosition(expense, you)
+  const conv = conversionLines(expense, detail.currency)
   const lines = history ? historyLines(history, you, detail.currency, nameOf, timeText) : null
   const payerText = (() => {
     const paying = expense.payers.filter((p) => p.minor > 0)
@@ -578,6 +677,13 @@ export function ExpenseDetail({ detail, expense, history, canEdit, whyNoEdit, bu
         <View style={[k.expIcon, { width: 52, height: 52, borderRadius: 16 }]}><Text style={{ fontSize: 24 }} accessible={false}>🧾</Text></View>
         <Text style={k.detailTitle}>{expense.description.trim() || 'Expense'}</Text>
         <Text style={k.detailAmt} testID="expense-total">{formatMoney(expense.settlementMinor, detail.currency)}</Text>
+        {conv && (
+          <View style={k.convBox} testID="expense-conversion">
+            <Text style={k.convMain} testID="expense-original">{conv.original} <Text style={k.convArrow}>→</Text> {conv.converted}</Text>
+            <Text style={k.m} testID="expense-rate">{conv.rate}</Text>
+            <Text style={k.m} testID="expense-rate-source">{conv.source}</Text>
+          </View>
+        )}
         <Text style={k.m}>Paid by {payerText} · {monthDay(expense.date)} · {emoji} {title}</Text>
         <View style={k.methodChip}><Text style={k.methodChipText} testID="method-chip">Split {methodPhrase(method).replace(/^split /, '')}</Text></View>
       </View>
@@ -842,6 +948,24 @@ const k = StyleSheet.create({
   bigC: { color: '#7fa597', fontSize: 34, fontWeight: '900', position: 'absolute', left: 22 },
   big: { color: 'white', fontSize: 54, fontWeight: '900', letterSpacing: -2, flexShrink: 1, minWidth: 0, marginHorizontal: 44, textAlign: 'center', padding: 0 },
   desc: { marginHorizontal: 18, marginTop: 6, textAlign: 'center', fontSize: 17, fontWeight: '700', color: '#e6efe9', borderBottomWidth: 1, borderBottomColor: '#ffffff26', paddingTop: 8, paddingBottom: 12 },
+  cpBox: { backgroundColor: T.card, borderWidth: 1, borderColor: T.line, borderRadius: 14, padding: 8, gap: 4 },
+  cpBoxDark: { backgroundColor: '#ffffff10', borderColor: '#ffffff22' },
+  cpSearch: { borderWidth: 1, borderColor: T.line, borderRadius: 10, paddingVertical: 8, paddingHorizontal: 12, color: T.ink, fontSize: 15 },
+  cpSearchDark: { borderColor: '#ffffff22', color: '#ffffff' },
+  cpRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 9, paddingHorizontal: 6, minHeight: 40 },
+  cpCode: { fontWeight: '800', fontSize: 14, color: T.ink, width: 44 },
+  cpName: { flex: 1, fontSize: 14, color: T.muted },
+  curRow: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: T.card, borderWidth: 1.5, borderColor: T.line, borderRadius: 12, padding: 14 },
+  fx: { marginHorizontal: 18, marginTop: 10, padding: 12, borderRadius: 14, backgroundColor: '#ffffff12', gap: 4 },
+  fxMain: { color: '#ffffff', fontSize: 17, fontWeight: '800' },
+  fxSub: { color: '#b9c9c1', fontSize: 13 },
+  fxErr: { color: T.bad, fontSize: 13, fontWeight: '700' },
+  fxLine: { flexDirection: 'row', alignItems: 'center', gap: 10, minHeight: 32 },
+  fxLink: { color: T.ok, fontWeight: '800', fontSize: 13, paddingVertical: 6 },
+  fxInput: { flex: 1, minWidth: 90, color: '#ffffff', fontSize: 16, fontWeight: '800', borderBottomWidth: 1, borderBottomColor: '#ffffff40', paddingVertical: 4 },
+  convBox: { alignItems: 'center', gap: 2, marginTop: 2 },
+  convMain: { fontSize: 16, fontWeight: '800', color: T.body },
+  convArrow: { color: T.muted },
   pick: { flexDirection: 'row', gap: 8, paddingHorizontal: 18, paddingTop: 12, paddingBottom: 4, justifyContent: 'center', flexWrap: 'wrap' },
   payerList: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingHorizontal: 18, paddingTop: 4, justifyContent: 'center' },
   dp: { backgroundColor: '#ffffff14', borderWidth: 1, borderColor: '#ffffff22', borderRadius: 999, paddingVertical: 8, paddingHorizontal: 12 },

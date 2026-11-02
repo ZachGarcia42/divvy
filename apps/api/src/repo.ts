@@ -2436,6 +2436,8 @@ type PreparedForDiff = {
   payers: { participantId: string; minor: number }[]
   shares: { participantId: string; minor: number }[]
   splitMethod: string
+  originalCurrency?: string
+  rate?: string | null
 }
 
 /** What an edit changed, as {field, from, to} rows for the expense history. Payers and shares are {participantId: minor} maps. */
@@ -2448,6 +2450,11 @@ export function diffExpense(current: ExpenseRecord, next: PreparedForDiff) {
     Object.fromEntries([...rows].sort((a, b) => (a.participantId < b.participantId ? -1 : 1)).map((row) => [row.participantId, row.minor]))
   const lines = (role: string) => current.lines.filter((line) => line.role === role).map((line) => ({ participantId: line.participant_id, minor: line.minor }))
   push('amount', current.settlement_minor, next.settlementMinor)
+  // Entered in another currency, or priced at another day's rate (the date moved): the amount line alone would not say why it changed.
+  if (next.originalCurrency !== undefined) {
+    if (current.original_currency !== next.originalCurrency) push('currency', current.original_currency, next.originalCurrency)
+    else if (next.rate !== undefined && current.rate !== null && next.rate !== null) push('rate', current.rate, next.rate)
+  }
   push('description', current.description, next.description)
   push('date', current.expense_date, next.date)
   push('category', current.category_id, next.categoryId)
