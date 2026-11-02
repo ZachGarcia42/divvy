@@ -39,3 +39,6 @@ export type GroupDetail = {
   settlements: Settlement[]
   currency: string
 }
+
+/** A receipt photo on an expense (the picture itself is fetched separately, with the sign-in token). */
+export type PhotoInfo = { id: string; contentType: string; bytes: number; at: string; byId?: string | null; byName?: string | null }

@@ -2,6 +2,8 @@ import { LedgerError } from '@divvy/domain'
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { createWebDist } from './web.ts'
+import { bodyLimit } from 'hono/body-limit'
+import { createPhotoStore, defaultPhotoDir, PHOTO_MAX_BYTES, type PhotoStore } from './photos.ts'
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie'
 import { readFileSync } from 'node:fs'
 import type { Sql } from './db.ts'
@@ -142,6 +144,10 @@ export function createApp(sql: Sql, options?: {
   rateLimit?: { max: number; windowMs: number } | false
   /** Trust the last X-Forwarded-For entry as the client IP (only behind a proxy you control). */
   trustProxy?: boolean
+  /** Where receipt photos are stored (default PHOTO_DIR, else <data>/photos). Created on the first upload. */
+  photoDir?: string
+  /** Test hook: replace the photo store. */
+  photoStore?: PhotoStore
   /** Build id reported by /api/health (defaults to resolveBuild()). */
   build?: string
   /** Allowed Google OAuth client ids (aud). Defaults to GOOGLE_CLIENT_IDS; empty means /api/auth/google is 503. */
@@ -243,6 +249,7 @@ export function createApp(sql: Sql, options?: {
     now: options?.now ?? (() => new Date()),
     rateFor: options?.rateFor ?? ((from, to, date) => defaultRate(sql, from, to, date)),
     webOrigin: (options?.webOrigin ?? process.env.WEB_ORIGIN ?? 'http://localhost:5173').trim().replace(/\/+$/, ''),
+    photos: options?.photoStore ?? createPhotoStore(options?.photoDir ?? defaultPhotoDir()),
   })
   const app = new Hono()
   app.use('*', async (c, next) => {
@@ -276,6 +283,7 @@ export function createApp(sql: Sql, options?: {
         : error.code === 'STALE' || error.code === 'EMAIL_IN_USE' ? 409
         : error.code === 'RATE_LIMITED' ? 429
         : error.code === 'ARCHIVED' ? 410
+        : error.code === 'PHOTO_TOO_LARGE' ? 413
         : 400
       return c.json({ error: { code: error.code, message: error.message } }, status)
     }
@@ -547,6 +555,31 @@ export function createApp(sql: Sql, options?: {
   app.post('/api/groups/:id/expenses/:expenseId/images', async (c) => {
     const body = await c.req.json<{ contentType: string; dataBase64: string }>()
     return c.json(await repo.addImage(await actor(c), c.req.param('id'), c.req.param('expenseId'), body.contentType, body.dataBase64))
+  })
+  // Receipt photo: one per expense. Raw image bytes in the body (not JSON); members only, checked on every request.
+  const photoTooBig = (c: { json: Function }) => c.json({ error: { code: 'PHOTO_TOO_LARGE', message: 'That photo is over 5 MB. Choose a smaller one.' } }, 413)
+  app.put('/api/groups/:id/expenses/:expenseId/photo', bodyLimit({ maxSize: PHOTO_MAX_BYTES, onError: photoTooBig as never }), async (c) => {
+    const who = await actor(c)
+    const bytes = new Uint8Array(await c.req.arrayBuffer())
+    return c.json({ photo: await repo.setExpensePhoto(who, c.req.param('id'), c.req.param('expenseId'), bytes) })
+  })
+  app.get('/api/groups/:id/expenses/:expenseId/photo', async (c) => {
+    const found = await repo.readExpensePhoto(await actor(c), c.req.param('id'), c.req.param('expenseId'))
+    return new Response(found.bytes as unknown as ArrayBuffer, {
+      status: 200,
+      headers: {
+        'content-type': found.contentType,
+        'content-length': String(found.bytes.length),
+        'cache-control': 'private, no-store',
+        'content-disposition': 'inline',
+        'content-security-policy': "default-src 'none'; sandbox",
+        'cross-origin-resource-policy': 'same-origin',
+      },
+    })
+  })
+  app.delete('/api/groups/:id/expenses/:expenseId/photo', async (c) => {
+    await repo.removeExpensePhoto(await actor(c), c.req.param('id'), c.req.param('expenseId'))
+    return c.json({ ok: true })
   })
   app.post('/api/groups/:id/settlements', async (c) => c.json(await repo.createSettlement(await actor(c), c.req.param('id'), await c.req.json())))
   app.delete('/api/groups/:id/settlements/:settlementId', async (c) => {

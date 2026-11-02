@@ -176,6 +176,7 @@ function describeChange(change: { field: string; from: unknown; to: unknown }, c
     case 'payer': return `who paid to ${((change.to as string[]) ?? []).map(nameOf).join(', ')}`
     case 'method': return `the split to ${methodPhrase(String(change.to))}`
     case 'split': return 'who owes what'
+    case 'photo': return 'the receipt photo'
     default: return change.field
   }
 }
@@ -193,6 +194,10 @@ export function historyLines(history: HistoryEntry[], youId: string, currency: s
       if (entry.kind === 'restored') return 'restored this'
       if (entry.kind === 'moved') return 'moved this'
       const changes = entry.changes ?? []
+      // A photo change is its own history row: say what happened to it.
+      if (changes.length === 1 && changes[0]!.field === 'photo') {
+        return changes[0]!.to === 'removed' ? 'removed the receipt photo' : changes[0]!.to === 'replaced' ? 'replaced the receipt photo' : 'added a receipt photo'
+      }
       // The split method already says it all when the amounts moved along with it.
       const shown = changes.some((c) => c.field === 'method') ? changes.filter((c) => c.field !== 'split') : changes
       if (shown.length === 0) return 'edited this'

@@ -38,6 +38,7 @@ import {
 } from '@divvy/domain'
 import { createHash, randomBytes, randomInt, randomUUID, timingSafeEqual } from 'node:crypto'
 import type { Sql } from './db.ts'
+import { checkPhoto, newPhotoId, type PhotoStore } from './photos.ts'
 
 type Actor = { userId: string; email: string; participantId: string; displayName: string; homeCurrency: string }
 
@@ -89,6 +90,8 @@ export class Repo {
       now: () => Date
       rateFor: (from: string, to: string, date: string) => Promise<string>
       webOrigin: string
+      /** Where receipt photo files live. Left out, photos are refused (503) so a bare Repo never touches the disk. */
+      photos?: PhotoStore
     },
   ) {}
 
@@ -817,6 +820,7 @@ export class Repo {
     )
     return {
       expense,
+      photo: await this.photoInfo(expenseId),
       history: rows.map((row) => ({
         id: row.id,
         kind: row.kind,
@@ -1286,6 +1290,109 @@ export class Repo {
     const id = newId()
     await this.sql.query(`insert into images (id, expense_id, content_type, data_base64) values ($1,$2,$3,$4)`, [id, expenseId, contentType, dataBase64])
     return { id }
+  }
+
+  // ───────────── Receipt photos (one per expense; files on disk, served only through an authenticated route) ─────────────
+
+  private photoStore() {
+    if (!this.deps.photos) throw new LedgerError('NOT_CONFIGURED', 'Photo storage is not set up')
+    return this.deps.photos
+  }
+
+  private async photoRow(expenseId: string) {
+    return this.one<{ id: string; content_type: string; bytes: number; created_at: unknown; uploaded_by: string | null; uploader_name: string | null }>(
+      `select ph.id, ph.content_type, ph.bytes, ph.created_at, ph.uploaded_by, p.display_name as uploader_name
+       from expense_photos ph left join participants p on p.id = ph.uploaded_by where ph.expense_id = $1`,
+      [expenseId],
+    )
+  }
+
+  /** What the clients need to show a photo: its id (a cache key), type, size, when it was set and by whom. null when there is none. */
+  async photoInfo(expenseId: string) {
+    const row = await this.photoRow(expenseId)
+    if (!row) return null
+    return {
+      id: row.id,
+      contentType: row.content_type,
+      bytes: Number(row.bytes),
+      at: row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at),
+      byId: row.uploaded_by,
+      byName: row.uploader_name,
+    }
+  }
+
+  /** Adds or replaces the photo. Does not bump the expense version (a photo never conflicts with an open edit). */
+  async setExpensePhoto(actor: Actor, groupId: string, expenseId: string, bytes: Uint8Array) {
+    await this.requireMember(actor, groupId)
+    const current = await this.mustExpense(groupId, expenseId)
+    if (current.deleted_at) throw new LedgerError('NOT_FOUND', 'Expense not found')
+    const contentType = checkPhoto(bytes)
+    const store = this.photoStore()
+    const id = newPhotoId()
+    await store.put(id, bytes)
+    let previous: string | null = null
+    try {
+      await this.sql.tx(async (sql) => {
+        const old = await sql.query<{ id: string }>(`select id from expense_photos where expense_id = $1`, [expenseId])
+        previous = old[0]?.id ?? null
+        await sql.query(
+          `insert into expense_photos (id, expense_id, content_type, bytes, uploaded_by) values ($1,$2,$3,$4,$5)
+           on conflict (expense_id) do update set id = excluded.id, content_type = excluded.content_type, bytes = excluded.bytes,
+             uploaded_by = excluded.uploaded_by, created_at = now()`,
+          [id, expenseId, contentType, bytes.length, actor.participantId],
+        )
+        await this.history(sql, expenseId, actor.participantId, 'edited', [
+          previous ? { field: 'photo', from: 'added', to: 'replaced' } : { field: 'photo', from: null, to: 'added' },
+        ])
+      })
+    } catch (error) {
+      await store.remove(id).catch(() => undefined)
+      throw error
+    }
+    if (previous) await store.remove(previous).catch(() => undefined)
+    return (await this.photoInfo(expenseId))!
+  }
+
+  async removeExpensePhoto(actor: Actor, groupId: string, expenseId: string) {
+    await this.requireMember(actor, groupId)
+    const current = await this.mustExpense(groupId, expenseId)
+    if (current.deleted_at) throw new LedgerError('NOT_FOUND', 'Expense not found')
+    const store = this.photoStore()
+    let removed: string | null = null
+    await this.sql.tx(async (sql) => {
+      const old = await sql.query<{ id: string }>(`select id from expense_photos where expense_id = $1`, [expenseId])
+      removed = old[0]?.id ?? null
+      if (!removed) return
+      await sql.query(`delete from expense_photos where expense_id = $1`, [expenseId])
+      await this.history(sql, expenseId, actor.participantId, 'edited', [{ field: 'photo', from: 'added', to: 'removed' }])
+    })
+    if (removed) await store.remove(removed).catch(() => undefined)
+  }
+
+  /** Members only. A deleted expense keeps its photo (Undo restores it), so it is still readable until the expense is purged. */
+  async readExpensePhoto(actor: Actor, groupId: string, expenseId: string) {
+    await this.requireMember(actor, groupId)
+    await this.mustExpense(groupId, expenseId)
+    const row = await this.photoRow(expenseId)
+    if (!row) throw new LedgerError('NOT_FOUND', 'No photo on this expense')
+    const bytes = await this.photoStore().get(row.id)
+    if (!bytes) throw new LedgerError('NOT_FOUND', 'No photo on this expense')
+    return { id: row.id, contentType: row.content_type, bytes }
+  }
+
+  /**
+   * Permanently removes expenses that were deleted at least `retentionDays` ago, with their photo files. Not scheduled yet:
+   * a deleted expense (and its photo) stays restorable until something calls this.
+   */
+  async purgeDeletedExpenses(retentionDays = 30) {
+    const cutoff = new Date(this.deps.now().getTime() - retentionDays * 24 * 60 * 60 * 1000).toISOString()
+    const rows = await this.sql.query<{ id: string }>(`select id from expenses where deleted_at is not null and deleted_at <= $1`, [cutoff])
+    for (const row of rows) {
+      const photo = await this.photoRow(row.id)
+      await this.sql.tx(async (sql) => { await sql.query(`delete from expenses where id = $1`, [row.id]) })
+      if (photo && this.deps.photos) await this.deps.photos.remove(photo.id).catch(() => undefined)
+    }
+    return { purged: rows.length }
   }
 
   async createRecurrence(actor: Actor, groupId: string, input: {
