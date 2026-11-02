@@ -56,6 +56,12 @@ export function originalText(expense: Row, groupCurrency: string): string | null
   return isForeign(expense, groupCurrency) ? formatMoney(expense.originalMinor!, expense.originalCurrency!) : null
 }
 
+/** The group-list row's line under the amount: "of €42.00" (the whole expense, since the amount above is your share). Null for an expense in the group currency. */
+export function rowOriginalText(expense: Row, groupCurrency: string): string | null {
+  const original = originalText(expense, groupCurrency)
+  return original ? `of ${original}` : null
+}
+
 /** The three lines the expense detail shows for a converted expense; null for an expense in the group currency. */
 export function conversionLines(expense: Row, groupCurrency: string): { original: string; converted: string; rate: string; source: string } | null {
   if (!isForeign(expense, groupCurrency)) return null

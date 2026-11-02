@@ -29,7 +29,7 @@ const check = (name, ok, extra = '') => { console.log(ok ? 'PASS' : 'FAIL', name
   await p.getByText(/Dinner in Lisbon/).first().waitFor()
   const exp = (await api(`/api/groups/${gid}`)).expenses.find((e) => e.description === 'Dinner in Lisbon')
   check('API stored original, converted, rate', exp.originalMinor === 10000 && exp.originalCurrency === 'EUR' && exp.settlementMinor === 10765 && exp.rate === '1.0765', JSON.stringify(exp))
-  check('the list row shows the original amount under the amount, not in the grey line', /€100\.00/.test(await text(`expense-original-${exp.id}`)) && !/€100\.00\s*·/.test(await text(`expense-${exp.id}`)), await text(`expense-${exp.id}`))
+  check('the list row shows the original amount under the amount as "of €100.00", not in the grey line', /^of €100\.00$/.test(await text(`expense-original-${exp.id}`)) && /of €100\.00 total/.test(await id(`expense-original-${exp.id}`).getAttribute('aria-label') ?? '') && !/€100\.00\s*·/.test(await text(`expense-${exp.id}`)), await text(`expense-${exp.id}`))
 
   // 2. Detail shows original, converted and rate
   await id(`expense-${exp.id}`).click(); await id('expense-conversion').waitFor()
