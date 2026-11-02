@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { contentTopGap, NEW_GROUP_CURRENCY, SNACK_MS, snackOwner, snackStays, breakdown, dateHeading, groupByDate, historyLines, methodPhrase, netTone, overallUsd, paidPhrase, rowSubtitle, signedMoney, groupIcon, PICKER_EMOJIS, splitGroupName, startScreen, updatedPhrase, yourPosition } from './view'
-import { originalText } from './fx'
+import { originalText, rowOriginalText } from './fx'
 
 const g = (id: string, net: number, extra: object = {}) => ({ id, name: id, currency: 'USD', yourNetMinor: net, archived: false, ...extra })
 
@@ -51,6 +51,9 @@ describe('group screen rows', () => {
     const eur = { ...groceries, id: 'e3', settlementMinor: 10765, originalMinor: 4200, originalCurrency: 'EUR', payers: payers('you', 'You', 10765) }
     expect(rowSubtitle(eur, 'you', 'USD')).toBe('You paid $107.65 · shares')
     expect(originalText(eur, 'USD')).toBe('€42.00')
+    expect(rowOriginalText(eur, 'USD')).toBe('of €42.00')
+    expect(rowOriginalText({ ...eur, originalCurrency: 'JPY', originalMinor: 15000 }, 'USD')).toBe('of ¥15,000')
+    expect(rowOriginalText(groceries, 'USD')).toBeNull()
     expect(rowSubtitle(groceries, 'you', 'USD')).toBe('You paid $120.00 · shares')
     expect(originalText({ ...groceries, originalMinor: 12000, originalCurrency: 'USD' }, 'USD')).toBeNull()
     expect(originalText(groceries, 'USD')).toBeNull()

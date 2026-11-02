@@ -17,7 +17,7 @@ import { SelectInput } from './SelectInput'
 import { BottomSheet } from './BottomSheet'
 import { DateChip } from './DatePicker'
 import { dateToSave } from './flows/date'
-import { amountPlaceholder, conversionLines, manualRateOrNull, originalText, RATE_DOWN_MESSAGE, rateLabel, rateSourceText, sheetMoney, type Quote } from './flows/fx'
+import { amountPlaceholder, conversionLines, manualRateOrNull, rowOriginalText, RATE_DOWN_MESSAGE, rateLabel, rateSourceText, sheetMoney, type Quote } from './flows/fx'
 import type { Expense, GroupDetail, Home, HomeGroup, PhotoInfo, Payment, Settlement } from './types'
 import { KEEP_PHOTO, photoDirty, removeDraft, shownPhoto, type PhotoDraft, type PickedPhoto, type ReceiptSource } from './flows/photo'
 import { ReceiptCard, ReceiptRow, ReceiptSourceSheet, ReceiptViewer } from './Receipt'
@@ -518,9 +518,9 @@ export function GroupView({ detail, today, banner, footer, onBack, onSwitcher, o
           <View style={k.card}>
             {day.items.map((expense, i) => {
               const pos = yourPosition(expense, detail.yourParticipantId)
-              const original = originalText(expense, detail.currency)
+              const original = rowOriginalText(expense, detail.currency)
               return (
-                <Pressable key={expense.id} style={[k.row, i > 0 && k.rowLine]} onPress={() => onOpenExpense(expense.id)} accessibilityRole="button" accessibilityLabel={`${expense.description || 'Expense'}, ${formatMoney(expense.settlementMinor, detail.currency)}${original ? `, entered as ${original}` : ''}`} testID={`expense-${expense.id}`}>
+                <Pressable key={expense.id} style={[k.row, i > 0 && k.rowLine]} onPress={() => onOpenExpense(expense.id)} accessibilityRole="button" accessibilityLabel={`${expense.description || 'Expense'}, ${formatMoney(expense.settlementMinor, detail.currency)}${original ? `, ${original} total` : ''}`} testID={`expense-${expense.id}`}>
                   <View style={k.expIcon}><Text style={{ fontSize: 18 }} accessible={false}>🧾</Text></View>
                   <View style={k.grow}>
                     <Text style={k.t} numberOfLines={1}>{expense.description.trim() || 'Expense'}</Text>
@@ -533,7 +533,7 @@ export function GroupView({ detail, today, banner, footer, onBack, onSwitcher, o
                         <Text style={k.sm}>you {pos.kind}</Text>
                       </>
                     )}
-                    {original && <Text style={k.rowWas} testID={`expense-original-${expense.id}`} accessibilityLabel={`entered as ${original}`}>{original}</Text>}
+                    {original && <Text style={k.rowWas} testID={`expense-original-${expense.id}`} accessibilityLabel={`${original} total`}>{original}</Text>}
                   </View>
                 </Pressable>
               )
