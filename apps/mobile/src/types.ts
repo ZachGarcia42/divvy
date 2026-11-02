@@ -1,4 +1,5 @@
 // Shapes the mobile client reads from the API (additive: new fields are optional so older servers still work).
+import type { PayHandles } from '@divvy/domain'
 export type HomeGroup = {
   id: string
   name: string
@@ -9,8 +10,9 @@ export type HomeGroup = {
   members?: string[]
   latest?: { description: string; date: string } | null
 }
-export type Home = { you: { name: string }; groups: HomeGroup[] }
-export type Member = { id: string; name: string; removed: boolean }
+export type Home = { you: { name: string; pay?: PayHandles }; groups: HomeGroup[] }
+/** Venmo / PayPal.me / Cash App names. Members only see these for people in their own groups. */
+export type Member = { id: string; name: string; removed: boolean; pay?: PayHandles }
 export type Expense = {
   id: string
   date: string

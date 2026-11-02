@@ -39,6 +39,10 @@ export {
   type MoneyFields,
 } from './fx.ts'
 export { settleItemizedBill, sharesFromItems, type DraftItem } from './itemization.ts'
+export {
+  PAY_FIELD, PAY_LABELS, PAY_PROVIDERS, payAmountText, assertHandle, buildPayLink, checkHandle, payLinksFor, payNote, providerSupports,
+  type PayHandles, type PayLink, type PayProvider,
+} from './pay.ts'
 export { defaultSplitSpec, sharesFromDefault, startingSplit } from './defaults.ts'
 export { nextOccurrence, occurrenceOn, type Frequency } from './recurrence.ts'
 export { categoryTotals, chartEntries, monthlyTotals, personalChartShares, type ChartExpense } from './charts.ts'

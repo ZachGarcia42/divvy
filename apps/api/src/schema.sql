@@ -298,3 +298,8 @@ create table if not exists expense_photos (
   uploaded_by text,
   created_at timestamptz not null default now()
 );
+
+-- Payment links: each person's own Venmo / PayPal.me / Cash App names (nullable, validated by the API).
+alter table users add column if not exists venmo_handle text;
+alter table users add column if not exists paypal_handle text;
+alter table users add column if not exists cashapp_handle text;
