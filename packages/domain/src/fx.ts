@@ -1,5 +1,22 @@
 import { LedgerError, assertMinor, exponentOf } from './money.ts'
 
+/** A rate typed or fetched as text: a positive plain decimal (no exponent), at most 12 decimal places. */
+export function assertRate(rate: unknown): string {
+  if (typeof rate !== 'string') throw new LedgerError('BAD_RATE', 'Exchange rate must be a positive decimal')
+  const trimmed = rate.trim()
+  parseRate(trimmed)
+  if ((trimmed.split('.')[1] ?? '').length > 12) throw new LedgerError('BAD_RATE', 'Exchange rate has too many decimal places')
+  if (trimmed.replace('.', '').replace(/^0+/, '').length > 18) throw new LedgerError('BAD_RATE', 'Exchange rate has too many digits')
+  return trimmed
+}
+
+/** A rate from a JSON number as plain decimal text (never 1e-7), trimmed of trailing zeros. */
+export function rateText(value: number): string {
+  if (!Number.isFinite(value) || value <= 0 || value >= 1e9) throw new LedgerError('BAD_RATE', 'Exchange rate must be a positive decimal')
+  const plain = value.toFixed(12).replace(/0+$/, '').replace(/\.$/, '')
+  return assertRate(plain)
+}
+
 function parseRate(rate: string): { num: bigint; den: bigint } {
   if (!/^\d+(\.\d+)?$/.test(rate) || rate === '0' || /^0\.0+$/.test(rate)) {
     throw new LedgerError('BAD_RATE', 'Exchange rate must be a positive decimal')

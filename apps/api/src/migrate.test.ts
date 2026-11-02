@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { PGlite } from '@electric-sql/pglite'
 import { FIXED_CATEGORIES } from '@divvy/domain'
-import { inferSplit, migrateSplitStorage } from './migrate.ts'
+import { inferSplit, migrateCurrencies, migrateSplitStorage } from './migrate.ts'
 import type { Sql } from './db.ts'
 import { createApp } from './app.ts'
 
@@ -144,6 +144,35 @@ describe('migration to split storage (design v2)', () => {
       const after = await (await app.request('/api/groups/g1/expenses/equal3', { headers })).json() as { expense: { shares: { minor: number }[] }; history: { kind: string }[] }
       expect(after.expense.shares.map((s) => s.minor)).toEqual([1000, 1000, 1000])
       expect(after.history.map((h) => h.kind)).toEqual(['created', 'edited', 'edited'])
+      await db.close()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  }, 60_000)
+
+  it('the currency migration is additive: group-currency expenses stay at rate 1 and keep every amount, and it is idempotent', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'divvy-mig-'))
+    try {
+      const dir = join(root, 'db')
+      await seedLegacy(dir)
+      const db = new PGlite(dir)
+      await db.exec(v2Schema)
+      const sql = wrap(db)
+      await migrateSplitStorage(sql)
+      // One expense a v1 foreign-currency entry left behind: EUR in a USD group with a stored rate.
+      await sql.query(`insert into expenses (id, group_id, expense_date, description, category_id, kind, original_currency, original_minor, settlement_minor, rate, split_method, split_inputs)
+        values ('abroad','g1','2026-09-04','Hotel','${FIXED_CATEGORIES[0]!.id}','expense','EUR',20000,21600,'1.08','equal','{}')`)
+      const snapshot = async () => ({
+        expenses: await sql.query(`select id, original_currency, original_minor, settlement_minor, rate, overridden, version from expenses order by id`),
+        lines: await sql.query(`select expense_id, participant_id, role, minor from expense_lines order by 1,2,3`),
+      })
+      const before = await snapshot()
+      expect(await migrateCurrencies(sql)).toEqual({ currencies: 0, rates: 1 })
+      expect(await migrateCurrencies(sql)).toEqual({ currencies: 0, rates: 0 })
+      expect(await snapshot()).toEqual(before)
+      const rows = Object.fromEntries((await sql.query<{ id: string; rate: string | null; rate_source: string | null; rate_date: string | null; original_currency: string }>(`select id, rate, rate_source, rate_date, original_currency from expenses`)).map((r) => [r.id, r]))
+      expect(rows.equal3).toMatchObject({ original_currency: 'USD', rate: null, rate_source: null })
+      expect(rows.abroad).toMatchObject({ rate: '1.08', rate_source: 'ecb', rate_date: '2026-09-04' })
       await db.close()
     } finally {
       rmSync(root, { recursive: true, force: true })

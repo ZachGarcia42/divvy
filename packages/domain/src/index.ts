@@ -30,8 +30,10 @@ export {
   type PartyAmount,
 } from './ledger.ts'
 export {
+  assertRate,
   convertMinor,
   fillFromRate,
+  rateText,
   nextMoneyFields,
   retargetSettlement,
   type MoneyFields,
@@ -42,3 +44,4 @@ export { nextOccurrence, occurrenceOn, type Frequency } from './recurrence.ts'
 export { categoryTotals, chartEntries, monthlyTotals, personalChartShares, type ChartExpense } from './charts.ts'
 export { DEFAULT_CATEGORY_ID, FIXED_CATEGORIES } from './categories.ts'
 export { shareGapMessage, splitPhrase } from './labels.ts'
+export { FX_CURRENCIES, currencyName, searchCurrencies } from './currencies.ts'
