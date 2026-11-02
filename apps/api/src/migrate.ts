@@ -13,6 +13,24 @@ export async function migrateSplitStorage(sql: Sql): Promise<{ methods: number; 
   return { methods, history }
 }
 
+/**
+ * Multiple-currencies migration. Additive and idempotent: the new columns come from schema.sql (`add column if not exists`), and this fills
+ * only what is blank, never an amount:
+ *  - an expense with no original currency was entered in its group's currency;
+ *  - an expense that already has a stored rate (entered abroad before this release) is labelled as an ECB rate for its own date.
+ * Everything else keeps its meaning: an expense in the group currency has rate 1 (stored as null), so every balance is unchanged.
+ */
+export async function migrateCurrencies(sql: Sql): Promise<{ currencies: number; rates: number }> {
+  const currencies = await sql.query<{ id: string }>(
+    `update expenses set original_currency = (select settlement_currency from groups where groups.id = expenses.group_id)
+     where original_currency is null or original_currency = '' returning id`,
+  )
+  const rates = await sql.query<{ id: string }>(
+    `update expenses set rate_source = 'ecb', rate_date = expense_date where rate is not null and rate_source is null returning id`,
+  )
+  return { currencies: currencies.length, rates: rates.length }
+}
+
 type Line = { participant_id: string; minor: number }
 
 /** How a legacy set of share lines was most likely entered. Exposed for tests. */

@@ -20,6 +20,10 @@ export type Expense = {
   settlementMinor: number
   originalMinor?: number
   originalCurrency?: string
+  /** The rate used to convert it to the group currency (group currency per 1 original); null when it was entered in the group currency. */
+  rate?: string | null
+  rateSource?: string | null
+  rateDate?: string | null
   kind?: string
   version?: number
   splitMethod?: string

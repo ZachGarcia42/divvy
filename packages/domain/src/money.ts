@@ -53,7 +53,11 @@ export function assertExpenseCap(minor: number, currency: string): void {
   if (minor > cap) throw new LedgerError('TOO_LARGE', `An expense can be at most ${formatMoney(cap, currency)}`)
 }
 
-export function parseMajor(input: string, currency: string): number {
+/**
+ * Parses a typed amount into integer minor units. By default it also enforces the per-expense cap; pass `{ cap: false }`
+ * for an amount in the currency the expense was *entered* in, because the cap applies to the converted (group-currency) amount.
+ */
+export function parseMajor(input: string, currency: string, options?: { cap?: boolean }): number {
   // Thousands separators are fine when well placed: 1,000,000.00
   const raw = input.trim()
   const trimmed = /^\d{1,3}(,\d{3})+(\.\d+)?$/.test(raw) ? raw.replace(/,/g, '') : raw
@@ -68,7 +72,7 @@ export function parseMajor(input: string, currency: string): number {
   const padded = frac.padEnd(exp, '0')
   const minor = Number(whole + padded)
   if (minor <= 0) throw new LedgerError('BAD_AMOUNT', AMOUNT_ERROR)
-  assertExpenseCap(minor, currency)
+  if (options?.cap !== false) assertExpenseCap(minor, currency)
   assertAmount(minor, 'Amount')
   return minor
 }

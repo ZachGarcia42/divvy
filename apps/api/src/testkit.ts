@@ -18,9 +18,17 @@ export async function sessionFor(app: ReturnType<typeof createApp>['app'], email
 }
 
 /** A group of Alex (signed in) plus the named people, with a tiny fetch helper. */
-export async function groupOf(names: string[], now = '2026-10-27T15:00:00Z') {
+export async function groupOf(
+  names: string[],
+  now = '2026-10-27T15:00:00Z',
+  options: { currency?: string; rateFor?: (from: string, to: string, date: string) => Promise<string>; fxFetch?: typeof fetch } = {},
+) {
   const sql = await createMemorySql()
-  const { app } = createApp(sql, { now: () => new Date(now), dev: true, rateFor: async () => '1' })
+  const { app } = createApp(sql, {
+    now: () => new Date(now),
+    dev: true,
+    ...(options.fxFetch ? { fxFetch: options.fxFetch } : { rateFor: options.rateFor ?? (async () => '1') }),
+  })
   const token = await sessionFor(app, 'alex@example.com')
   const headers = { authorization: `Bearer ${token}`, 'content-type': 'application/json', 'x-divvy-platform': 'ios' }
   const call = async <T = any>(method: string, path: string, body?: unknown) => {
@@ -28,7 +36,7 @@ export async function groupOf(names: string[], now = '2026-10-27T15:00:00Z') {
     const json = await res.json().catch(() => null) as T
     return { status: res.status, json }
   }
-  const created = (await call<{ group: { id: string }; members: { id: string }[] }>('POST', '/api/groups', { name: 'Trip', currency: 'USD', timezone: 'UTC' })).json
+  const created = (await call<{ group: { id: string }; members: { id: string }[] }>('POST', '/api/groups', { name: 'Trip', currency: options.currency ?? 'USD', timezone: 'UTC' })).json
   const groupId = created.group.id
   const ids = [created.members[0]!.id]
   for (const name of names) {

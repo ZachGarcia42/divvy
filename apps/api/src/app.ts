@@ -6,6 +6,7 @@ import { deleteCookie, getCookie, setCookie } from 'hono/cookie'
 import { readFileSync } from 'node:fs'
 import type { Sql } from './db.ts'
 import { createVerifier, googleMayLink, hashNonce, parseClientIds, type IdTokenVerifier } from './oauth.ts'
+import { createFxService } from './fx.ts'
 import { cleanNextPath, CodeError, normalizeEmail, Repo } from './repo.ts'
 
 const COOKIE = 'divvy_session'
@@ -16,13 +17,6 @@ class RateLimitError extends LedgerError {
   }
 }
 
-/** USD is the only currency for now. A missing value is fine (callers default it); anything else is a 400 BAD_CURRENCY. Existing non-USD groups stay readable. */
-function onlyUsd(body: unknown, field: string): string | undefined {
-  const value = body && typeof body === 'object' ? (body as Record<string, unknown>)[field] : undefined
-  if (value === undefined) return undefined
-  if (typeof value !== 'string' || value.trim().toUpperCase() !== 'USD') throw new LedgerError('BAD_CURRENCY', 'Only USD is supported right now')
-  return 'USD'
-}
 const LINK_TOKEN = /^[A-Za-z0-9_-]{16,128}$/
 const isLinkToken = (value: unknown): value is string => typeof value === 'string' && LINK_TOKEN.test(value)
 const safeNextPath = (next: string | undefined) => {
@@ -132,6 +126,8 @@ export const isLoopback = (ip: string | null) =>
 export function createApp(sql: Sql, options?: {
   now?: () => Date
   rateFor?: (from: string, to: string, date: string) => Promise<string>
+  /** fetch used for exchange rates (default: global fetch). */
+  fxFetch?: typeof fetch
   webOrigin?: string
   /** Directory of the Expo web export to serve (default WEB_DIST); null turns it off. */
   webDist?: string | null
@@ -239,9 +235,15 @@ export function createApp(sql: Sql, options?: {
       for (const [key, list] of hits) if (!list.some((at) => now - at < limit.windowMs)) hits.delete(key)
     }
   }
+  const fx = createFxService(sql, { now: options?.now, fetch: options?.fxFetch })
+  // Tests inject a plain rate function; production uses the cached ECB service. Either way a quote carries the day it was published for.
+  const quote = options?.rateFor
+    ? async (from: string, to: string, date: string) => ({ rate: await options.rateFor!(from, to, date), rateDate: date })
+    : fx.quote
   const repo = new Repo(sql, {
     now: options?.now ?? (() => new Date()),
-    rateFor: options?.rateFor ?? ((from, to, date) => defaultRate(sql, from, to, date)),
+    rateFor: async (from, to, date) => (await quote(from, to, date)).rate,
+    quote,
     webOrigin: (options?.webOrigin ?? process.env.WEB_ORIGIN ?? 'http://localhost:5173').trim().replace(/\/+$/, ''),
   })
   const app = new Hono()
@@ -270,7 +272,7 @@ export function createApp(sql: Sql, options?: {
     }
     if (error instanceof LedgerError) {
       const status = error.code === 'UNAUTHENTICATED' || error.code === 'BAD_TOKEN' ? 401
-        : error.code === 'NOT_CONFIGURED' ? 503
+        : error.code === 'NOT_CONFIGURED' || error.code === 'RATE_UNAVAILABLE' ? 503
         : error.code === 'FORBIDDEN' || error.code === 'EMAIL_UNVERIFIED' || error.code === 'SUSPENDED' || error.code === 'BLOCKED' ? 403
         : error.code === 'NOT_FOUND' ? 404
         : error.code === 'STALE' || error.code === 'EMAIL_IN_USE' ? 409
@@ -482,12 +484,11 @@ export function createApp(sql: Sql, options?: {
   app.get('/api/home', async (c) => c.json(await repo.home(await actor(c))))
   app.post('/api/groups', async (c) => {
     const body = await c.req.json()
-    return c.json(await repo.createGroup(await actor(c), { ...body, currency: onlyUsd(body, 'currency') ?? 'USD' }))
+    return c.json(await repo.createGroup(await actor(c), { ...body, currency: body.currency === undefined ? 'USD' : body.currency }))
   })
   app.get('/api/groups/:id', async (c) => c.json(await repo.groupDetail(await actor(c), c.req.param('id'))))
   app.patch('/api/groups/:id', async (c) => {
     const body = await c.req.json()
-    onlyUsd(body, 'currency')
     return c.json(await repo.updateGroup(await actor(c), c.req.param('id'), body))
   })
   app.post('/api/groups/:id/archive', async (c) => c.json(await repo.archive(await actor(c), c.req.param('id'), true)))
@@ -518,13 +519,13 @@ export function createApp(sql: Sql, options?: {
   })
   app.post('/api/groups/:id/expenses', async (c) => {
     const body = await c.req.json()
-    onlyUsd(body, 'originalCurrency')
     return c.json(await repo.createExpense(await actor(c), c.req.param('id'), body))
   })
+  /** The exchange rate an expense in ?from= dated ?date= would get in this group's currency (cached; same call the save makes). */
+  app.get('/api/groups/:id/fx', async (c) => c.json(await repo.fxQuote(await actor(c), c.req.param('id'), c.req.query('from') ?? '', c.req.query('date') ?? '')))
   app.get('/api/groups/:id/expenses/:expenseId', async (c) => c.json(await repo.expenseDetail(await actor(c), c.req.param('id'), c.req.param('expenseId'))))
   app.patch('/api/groups/:id/expenses/:expenseId', async (c) => {
     const body = await c.req.json()
-    onlyUsd(body, 'originalCurrency')
     await repo.updateExpense(await actor(c), c.req.param('id'), c.req.param('expenseId'), body)
     return c.json({ ok: true })
   })
@@ -650,52 +651,4 @@ export function createApp(sql: Sql, options?: {
   })
 
   return { app, repo }
-}
-
-async function defaultRate(sql: Sql, from: string, to: string, date: string) {
-  const base = from.toUpperCase()
-  const quote = to.toUpperCase()
-  if (base === quote) return '1'
-  const cached = await sql.query<{ rate: string }>(
-    `select rate from fx_rates where base = $1 and quote = $2 and rate_date = $3`,
-    [base, quote, date],
-  )
-  if (cached[0]) return String(cached[0].rate)
-  let cursor = date
-  for (let attempt = 0; attempt < 6; attempt += 1) {
-    try {
-      const response = await fetch(`https://api.frankfurter.app/${cursor}?from=${base}&to=${quote}`, { signal: AbortSignal.timeout(2500) })
-      if (response.ok) {
-        const body = await response.json() as { rates?: Record<string, number> }
-        const rate = body.rates?.[quote]
-        if (rate) {
-          await sql.query(
-            `insert into fx_rates (base, quote, rate_date, rate) values ($1,$2,$3,$4) on conflict do nothing`,
-            [base, quote, date, String(rate)],
-          )
-          return String(rate)
-        }
-      }
-    } catch {
-      // Try the previous published day.
-    }
-    cursor = previousDate(cursor)
-  }
-  const fallback: Record<string, string> = {
-    'EUR:USD': '1.08',
-    'USD:EUR': '0.925926',
-    'USD:GBP': '0.8',
-    'GBP:USD': '1.25',
-    'EUR:GBP': '0.86',
-    'GBP:EUR': '1.162791',
-  }
-  const known = fallback[`${base}:${quote}`]
-  if (known) return known
-  throw new LedgerError('BAD_RATE', `No exchange rate for ${base} to ${quote}`)
-}
-
-function previousDate(iso: string) {
-  const [year, month, day] = iso.split('-').map(Number)
-  const date = new Date(Date.UTC(year!, month! - 1, day! - 1))
-  return date.toISOString().slice(0, 10)
 }

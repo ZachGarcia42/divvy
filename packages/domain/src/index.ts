@@ -30,8 +30,10 @@ export {
   type PartyAmount,
 } from './ledger.ts'
 export {
+  assertRate,
   convertMinor,
   fillFromRate,
+  rateText,
   nextMoneyFields,
   retargetSettlement,
   type MoneyFields,
@@ -67,3 +69,4 @@ export {
   type FeedTone,
   type RawActivity,
 } from './feed.ts'
+export { FX_CURRENCIES, currencyName, searchCurrencies } from './currencies.ts'

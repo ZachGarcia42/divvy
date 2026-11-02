@@ -6,6 +6,8 @@ import {
   assertAmount,
   assertExpenseCap,
   assertInvolved,
+  assertIsoDate,
+  assertRate,
   assertNotFuture,
   assertPayers,
   buildFeedEntry,
@@ -57,6 +59,8 @@ type ExpenseInput = {
   originalMinor?: number
   originalCurrency?: string
   settlementMinor?: number
+  /** A rate typed by the user (target units per 1 source unit). Wins over the fetched ECB rate. */
+  rate?: string
   payers?: { participantId: string; minor: number }[]
   split?: SplitSpec
   /** Default (absent or 'payer'): leftover cents go to the payer first, then member order. 'legacy' keeps the old lowest-id rule. */
@@ -96,6 +100,8 @@ export class Repo {
     private deps: {
       now: () => Date
       rateFor: (from: string, to: string, date: string) => Promise<string>
+      /** Like rateFor but also says which day's published rate it was (weekends and holidays use the previous business day). */
+      quote: (from: string, to: string, date: string) => Promise<{ rate: string; rateDate: string }>
       webOrigin: string
     },
   ) {}
@@ -411,6 +417,7 @@ export class Repo {
   async createGroup(actor: Actor, input: { name: string; currency: string; timezone: string; emoji?: string | null }) {
     const name = cleanName(input.name)
     const emoji = cleanEmoji(input.emoji) ?? null
+    if (typeof input.currency !== 'string') throw new LedgerError('BAD_CURRENCY', 'Choose a currency')
     const currency = input.currency.toUpperCase()
     exponentOf(currency)
     calendarDateInTimeZone(input.timezone, this.deps.now())
@@ -522,6 +529,7 @@ export class Repo {
       )
       await this.notifyGroup(groupId, actor.participantId, 'Simplify debts', `${actor.displayName} turned simplify ${patch.simplify ? 'on' : 'off'}`)
     }
+    if (patch.currency !== undefined && typeof patch.currency !== 'string') throw new LedgerError('BAD_CURRENCY', 'Choose a currency')
     if (patch.currency && patch.currency.toUpperCase() !== group.settlement_currency) {
       const nextCurrency = patch.currency.toUpperCase()
       exponentOf(nextCurrency)
@@ -786,7 +794,7 @@ export class Repo {
       await sql.query(`delete from expense_extras where expense_id = $1`, [expenseId])
       await sql.query(
         `update expenses set expense_date=$1, description=$2, category_id=$3, kind=$4, original_currency=$5, original_minor=$6,
-         settlement_minor=$7, rate=$8, overridden=$9, split_method=$11, split_inputs=$12, version=version+1 where id=$10`,
+         settlement_minor=$7, rate=$8, overridden=$9, split_method=$11, split_inputs=$12, rate_source=$13, rate_date=$14, version=version+1 where id=$10`,
         [
           prepared.date,
           prepared.description,
@@ -800,6 +808,8 @@ export class Repo {
           expenseId,
           prepared.splitMethod,
           prepared.splitInputs,
+          prepared.rateSource,
+          prepared.rateDate,
         ],
       )
       await this.insertLines(sql, expenseId, prepared)
@@ -1868,6 +1878,13 @@ export class Repo {
   }
 
   private async changeCurrency(actor: Actor, group: GroupRow, nextCurrency: string) {
+    // A group's currency is chosen when it is created. After that every stored amount, rate and payment is in it, so changing it
+    // would move people's balances; it is only allowed while the group has no expenses or payments at all.
+    const used = await this.one<{ n: number }>(
+      `select (select count(*) from expenses where group_id = $1) + (select count(*) from settlements where group_id = $1) as n`,
+      [group.id],
+    )
+    if (Number(used?.n ?? 0) > 0) throw new LedgerError('CURRENCY_LOCKED', 'This group already has expenses, so its currency can’t change. Start a new group in the other currency.')
     const ledger = await this.loadLedger(group.id)
     const updates: { id: string; settlementMinor: number; rate: string | null; overridden: boolean }[] = []
     for (const expense of ledger.raw) {
@@ -1917,6 +1934,19 @@ export class Repo {
     await this.notifyGroup(group.id, actor.participantId, 'Currency change', `${actor.displayName} changed the group currency to ${nextCurrency}`)
   }
 
+  /** The rate a new expense in `from` on `date` would get in this group's currency: what the add-expense sheet previews. */
+  async fxQuote(actor: Actor, groupId: string, fromRaw: string, date: string) {
+    const { group } = await this.requireMember(actor, groupId)
+    const from = fromRaw.trim().toUpperCase()
+    exponentOf(from)
+    assertIsoDate(date)
+    assertNotFuture(date, calendarDateInTimeZone(group.timezone, this.deps.now()))
+    const to = group.settlement_currency
+    if (from === to) return { from, to, date, rate: '1', rateDate: date, source: null }
+    const quote = await this.deps.quote(from, to, date)
+    return { from, to, date, rate: quote.rate, rateDate: quote.rateDate, source: 'ecb' as const }
+  }
+
   private async prepareExpense(actor: Actor, groupId: string, input: ExpenseInput, current: ExpenseRecord | null) {
     const { group } = await this.requireMember(actor, groupId)
     const today = calendarDateInTimeZone(group.timezone, this.deps.now())
@@ -1930,10 +1960,27 @@ export class Repo {
     if (originalMinor === undefined) throw new LedgerError('BAD_AMOUNT', 'Enter an amount')
     if (typeof originalMinor === 'number' && originalMinor <= 0) throw new LedgerError('BAD_AMOUNT', AMOUNT_ERROR)
     assertAmount(originalMinor, 'Amount')
-    assertExpenseCap(originalMinor, originalCurrency)
+    exponentOf(originalCurrency)
     const categoryId = input.categoryId ?? current?.category_id ?? DEFAULT_CATEGORY_ID
     await this.mustCategory(categoryId, groupId)
-    const marketRate = originalCurrency === group.settlement_currency ? null : await this.deps.rateFor(originalCurrency, group.settlement_currency, date)
+    // Which rate applies. Same currency: none (rate 1). A rate typed by the user wins. An edit that leaves the currency and date alone
+    // keeps the rate stored on the expense, so balances never shift afterwards. Anything else gets that day's published rate.
+    const groupCurrency = group.settlement_currency
+    const sameCurrency = originalCurrency === groupCurrency
+    const manualRate = input.rate === undefined || input.rate === null || input.rate === '' ? null : assertRate(input.rate)
+    const fxUnchanged = !!current && current.rate !== null && current.original_currency === originalCurrency && current.expense_date === date
+    let applied: { rate: string; source: 'ecb' | 'manual'; rateDate: string } | null = null
+    if (!sameCurrency) {
+      if (fxUnchanged && (!manualRate || manualRate === current!.rate)) {
+        applied = { rate: current!.rate!, source: (current!.rate_source as 'ecb' | 'manual' | null) ?? 'ecb', rateDate: current!.rate_date ?? current!.expense_date }
+      } else if (manualRate) {
+        applied = { rate: manualRate, source: 'manual', rateDate: date }
+      } else {
+        const quote = await this.deps.quote(originalCurrency, groupCurrency, date)
+        applied = { rate: quote.rate, source: 'ecb', rateDate: quote.rateDate }
+      }
+    }
+    const marketRate = applied?.rate ?? null
     const base = current
       ? {
           originalMinor: current.original_minor,
@@ -1944,7 +1991,7 @@ export class Repo {
           rate: current.rate,
         }
       : {
-          ...fillFromRate({ originalMinor, originalCurrency, groupCurrency: group.settlement_currency, rate: marketRate }),
+          ...fillFromRate({ originalMinor, originalCurrency, groupCurrency, rate: marketRate }),
           originalMinor,
           originalCurrency,
           date,
@@ -1957,9 +2004,11 @@ export class Repo {
         ...(input.date !== undefined ? { date } : {}),
         ...(input.settlementMinor !== undefined ? { settlementMinor: input.settlementMinor } : {}),
       },
-      groupCurrency: group.settlement_currency,
+      groupCurrency,
       rateFor: () => marketRate,
     })
+    // The $100,000 limit is on what the expense counts as in the group's currency (the converted amount), not on the typed amount.
+    assertExpenseCap(fields.settlementMinor, groupCurrency)
     let settlementMinor = fields.settlementMinor
     const payers = input.payers ?? current?.lines.filter((line) => line.role === 'payer').map((line) => ({ participantId: line.participant_id, minor: line.minor }))
     if (!payers) throw new LedgerError('BAD_SPLIT', 'Choose who paid')
@@ -1989,6 +2038,7 @@ export class Repo {
       fields.settlementMinor = itemized.settlementMinor
       fields.rate = itemized.rate
       fields.overridden = false
+      assertExpenseCap(fields.settlementMinor, groupCurrency)
       shares = itemized.shares
       itemRows = input.items
       stored = null
@@ -2015,6 +2065,8 @@ export class Repo {
       originalMinor: fields.originalMinor,
       settlementMinor: fields.settlementMinor,
       rate: fields.rate,
+      rateSource: fields.rate ? (applied?.source ?? null) : null,
+      rateDate: fields.rate ? (applied?.rateDate ?? date) : null,
       overridden: fields.overridden,
       payers,
       shares,
@@ -2028,8 +2080,8 @@ export class Repo {
 
   private async insertExpense(sql: Sql, id: string, groupId: string, prepared: Awaited<ReturnType<Repo['prepareExpense']>>, recurrenceId: string | null) {
     await sql.query(
-      `insert into expenses (id, group_id, expense_date, description, category_id, kind, original_currency, original_minor, settlement_minor, rate, overridden, recurrence_id, split_method, split_inputs)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+      `insert into expenses (id, group_id, expense_date, description, category_id, kind, original_currency, original_minor, settlement_minor, rate, overridden, recurrence_id, split_method, split_inputs, rate_source, rate_date)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
       [
         id,
         groupId,
@@ -2045,6 +2097,8 @@ export class Repo {
         recurrenceId,
         prepared.splitMethod,
         prepared.splitInputs,
+        prepared.rateSource,
+        prepared.rateDate,
       ],
     )
     await this.insertLines(sql, id, prepared)
@@ -2108,6 +2162,8 @@ export class Repo {
       original_minor: Number(row.original_minor),
       settlement_minor: Number(row.settlement_minor),
       rate: row.rate ? String(row.rate) : null,
+      rate_source: row.rate_source ? String(row.rate_source) : null,
+      rate_date: row.rate_date ? String(row.rate_date) : null,
       overridden: row.overridden === true || row.overridden === 't' || row.overridden === 'true',
       version: Number(row.version),
       split_method: row.split_method ? String(row.split_method) : null,
@@ -2143,6 +2199,8 @@ export class Repo {
         settlementMinor: expense.settlement_minor,
         currency: group.settlement_currency,
         rate: expense.rate,
+        rateSource: expense.rate ? (expense.rate_source ?? 'ecb') : null,
+        rateDate: expense.rate ? (expense.rate_date ?? expense.expense_date) : null,
         overridden: expense.overridden,
         version: expense.version,
         splitMethod: expense.split_method ?? 'exact',
@@ -2462,6 +2520,8 @@ type ExpenseRecord = {
   original_minor: number
   settlement_minor: number
   rate: string | null
+  rate_source: string | null
+  rate_date: string | null
   overridden: boolean
   version: number
   split_method: string | null
@@ -2490,7 +2550,6 @@ function expenseToInput(expense: ExpenseRecord): ExpenseInput {
     kind: expense.kind,
     originalMinor: expense.original_minor,
     originalCurrency: expense.original_currency,
-    settlementMinor: expense.settlement_minor,
     payers: expense.lines.filter((line) => line.role === 'payer').map((line) => ({ participantId: line.participant_id, minor: line.minor })),
   }
 }
@@ -2503,6 +2562,8 @@ type PreparedForDiff = {
   payers: { participantId: string; minor: number }[]
   shares: { participantId: string; minor: number }[]
   splitMethod: string
+  originalCurrency?: string
+  rate?: string | null
 }
 
 /** What an edit changed, as {field, from, to} rows for the expense history. Payers and shares are {participantId: minor} maps. */
@@ -2515,6 +2576,11 @@ export function diffExpense(current: ExpenseRecord, next: PreparedForDiff) {
     Object.fromEntries([...rows].sort((a, b) => (a.participantId < b.participantId ? -1 : 1)).map((row) => [row.participantId, row.minor]))
   const lines = (role: string) => current.lines.filter((line) => line.role === role).map((line) => ({ participantId: line.participant_id, minor: line.minor }))
   push('amount', current.settlement_minor, next.settlementMinor)
+  // Entered in another currency, or priced at another day's rate (the date moved): the amount line alone would not say why it changed.
+  if (next.originalCurrency !== undefined) {
+    if (current.original_currency !== next.originalCurrency) push('currency', current.original_currency, next.originalCurrency)
+    else if (next.rate !== undefined && current.rate !== null && next.rate !== null) push('rate', current.rate, next.rate)
+  }
   push('description', current.description, next.description)
   push('date', current.expense_date, next.date)
   push('category', current.category_id, next.categoryId)

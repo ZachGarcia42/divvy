@@ -280,3 +280,10 @@ create table if not exists used_id_tokens (
 
 -- Design v2: an optional single emoji icon per group (set from a template or the picker).
 alter table groups add column if not exists emoji text;
+
+-- Multiple currencies: where each expense's rate came from, and which day it was published for.
+-- (original_currency, original_minor, settlement_minor, rate already exist; same-currency expenses are rate 1 and keep rate null.)
+alter table expenses add column if not exists rate_source text;
+alter table expenses add column if not exists rate_date text;
+alter table fx_rates add column if not exists source_date text;
+alter table fx_rates add column if not exists fetched_at timestamptz not null default now();

@@ -3,6 +3,7 @@ import { editConflict } from './flows/errors'
 import { joinedFeedback } from './flows/composer'
 import { draftFromSpec, majorString } from './flows/split'
 import { emptyFeed, feedArrived, feedFailed, feedPath, feedRefreshed, feedRequested, feedSnack, feedTarget, canLoadMore, originStays, returnsToFeed, shouldAutoLoad, type FeedEntry, type FeedOrigin, type FeedPage, type FeedState } from './flows/feed'
+import { isForeign, type Quote } from './flows/fx'
 import { contentTopGap, SNACK_MS, snackOwner, snackStays, startScreen, groupIcon, type HistoryEntry } from './flows/view'
 import { AccountScreen, ActivityScreen, AddSheet, CreateGroupSheet, DeletedExpense, ExpenseDetail, Fab, GroupsHome, GroupView, InviteCard, PasteCard, SettleScreen, Snack, SwitcherSheet, TabBar, todayIso, type SheetSave, type Tab } from './V2'
 import AsyncStorage from '@react-native-async-storage/async-storage'
@@ -825,13 +826,21 @@ function Ledger({
 
   const members = (detail?.members ?? []).filter((member) => !member.removed)
 
+  /** The day's rate for the Add sheet's preview; the server fetches and caches it, and uses the same figure when the expense is saved. */
+  const fetchRate = async (from: string, date: string): Promise<Quote> => {
+    if (!detail) throw new Error('No group')
+    const quote = await call<{ rate: string; rateDate: string }>(token, `/api/groups/${detail.group.id}/fx?from=${encodeURIComponent(from)}&date=${encodeURIComponent(date)}`)
+    return { rate: quote.rate, rateDate: quote.rateDate, source: 'ecb' }
+  }
+
   // Add or edit: the sheet reports a valid split; the server re-validates and has the last word.
   async function saveExpense(value: SheetSave, editing: Expense | null) {
     if (!detail) return
     const payload = {
       description: value.description,
       originalMinor: value.minor,
-      originalCurrency: detail.currency,
+      originalCurrency: value.currency,
+      ...(value.manualRate ? { rate: value.manualRate } : {}),
       payers: [{ participantId: value.payerId, minor: value.minor }],
       split: value.spec,
       rounding: 'payer' as const,
@@ -1023,11 +1032,10 @@ function Ledger({
 
   const today = todayIso()
   const expense = detail && expenseId ? detail.expenses.find((row) => row.id === expenseId) ?? null : null
-  // Edit reuses the Add sheet; expenses in another currency, reimbursements and the like stay view-only.
+  // Edit reuses the Add sheet; reimbursements and the like stay view-only.
   const editBlock = (row: Expense) => {
     if (!detail) return 'Loading…'
     if (row.kind && row.kind !== 'expense') return 'This type of entry can’t be edited here.'
-    if (row.originalCurrency && row.originalCurrency !== detail.currency) return `Entered in ${row.originalCurrency}; editing those isn’t available yet.`
     return null
   }
   const sheetMembers = (() => {
@@ -1044,8 +1052,12 @@ function Ledger({
     const ids = sheetMembers.map((member) => member.id)
     const spec = splitFromStored(edit.splitMethod, edit.splitInputs)
     const payer = edit.payers.find((p) => p.minor > 0)?.participantId ?? detail.yourParticipantId
+    const foreign = isForeign(edit, detail.currency)
     return {
-      amountText: majorString(edit.settlementMinor, detail.currency),
+      // An expense is edited in the currency it was entered in; the group-currency figure follows from the stored rate.
+      amountText: foreign ? majorString(edit.originalMinor!, edit.originalCurrency!) : majorString(edit.settlementMinor, detail.currency),
+      currency: foreign ? edit.originalCurrency! : detail.currency,
+      quote: foreign && edit.rate ? { rate: edit.rate, rateDate: edit.rateDate ?? edit.date, source: edit.rateSource === 'manual' ? 'manual' as const : 'ecb' as const } : null,
       description: edit.description,
       draft: draftFromSpec(spec ?? { type: 'exact', amounts: (edit.shares ?? []).map((s) => ({ participantId: s.participantId, minor: s.minor })) }, ids, detail.currency),
       payerId: payer,
@@ -1168,7 +1180,7 @@ function Ledger({
       {showTabs && <TabBar tab={tab} onTab={onTabPress} />}
       {adding && detail && (
         <AddSheet members={sheetMembers} youId={detail.yourParticipantId} currency={detail.currency} groupName={groupIcon(detail.group).title}
-          initial={sheetInitial} onClose={() => setAdding(null)} onSave={(value) => saveExpense(value, adding.edit)} />
+          initial={sheetInitial} fetchRate={fetchRate} onClose={() => setAdding(null)} onSave={(value) => saveExpense(value, adding.edit)} />
       )}
       {switcher && home && <SwitcherSheet groups={home.groups} currentId={groupId} onPick={openGroup} onAll={() => { setSwitcher(false); goGroups() }} onClose={() => setSwitcher(false)} />}
       {creating && <CreateGroupSheet busy={createBusy} error={createError} onCreate={createGroup} onClose={() => setCreating(null)} />}
