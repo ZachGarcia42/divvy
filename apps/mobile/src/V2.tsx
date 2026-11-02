@@ -1,15 +1,15 @@
 // Design v2 screens: Groups home, group view, Add-expense ink sheet, expense detail, settle up.
 // Data logic stays in App.tsx (Ledger) and flows/*; these components only render and report taps.
 import { exponentOf, formatMoney, parseMajor, type SplitMethod, type SplitSpec } from '@divvy/domain'
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
-import { Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native'
+import { useEffect, useMemo, useState, type ComponentProps, type ReactNode } from 'react'
+import { ActivityIndicator, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native'
 import { adjustDisplay, adjustSign, adjustTyped, sanitizeAmountText, evaluate, groupedMajor, majorString, METHOD_LABELS, METHODS, newDraft, switchMethod, toggleAdjustSign, type Draft } from './flows/split'
 import {
   breakdown, groupByDate, historyLines, NEW_GROUP_CURRENCY, methodPhrase, monthDay, netTone, NET_WORDS, overallUsd, paidPhrase, peopleCount,
   signedMoney, groupIcon, PICKER_EMOJIS, DEFAULT_EMOJI, updatedPhrase, yourPosition, type HistoryEntry,
 } from './flows/view'
 import { amountWidth } from './flows/amount'
-import { canLoadMore, feedRow, groupFeedByDay, type FeedEntry, type FeedState, type FeedTone } from './flows/feed'
+import { canLoadMore, feedRow, feedView, groupFeedByDay, TONE_ICON, type FeedEntry, type FeedState, type FeedTone } from './flows/feed'
 import { middleEllipsis } from './flows/composer'
 import { Ionicons } from '@expo/vector-icons'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
@@ -57,10 +57,11 @@ const symbolOf = (currency: string) => {
 }
 
 /** Header icons: Ionicons vector glyphs (clean outlines, designed on a centred em box), sized to the button with no line-height or font padding so they sit in the middle of the circle. */
-const ICONS: Record<string, { name: 'chevron-back' | 'share-outline' | 'create-outline'; testID: string }> = {
+const ICONS: Record<string, { name: 'chevron-back' | 'share-outline' | 'create-outline' | 'time-outline'; testID: string }> = {
   '‹': { name: 'chevron-back', testID: 'icon-chevron' },
   '⇪': { name: 'share-outline', testID: 'icon-share' },
   '✎': { name: 'create-outline', testID: 'icon-edit' },
+  '◷': { name: 'time-outline', testID: 'icon-clock' },
 }
 const ICON_SIZE = 24
 void Ionicons.loadFont().catch(() => undefined) // start loading the icon font at import so the first header does not flash empty
@@ -76,7 +77,7 @@ function IconShape({ glyph }: { glyph: string }) {
 
 function IconButton({ label, glyph, onPress, testID }: { label: string; glyph: string; onPress: () => void; testID?: string }) {
   return (
-    <Pressable style={k.ib} onPress={onPress} accessibilityRole="button" accessibilityLabel={label} testID={testID}>
+    <Pressable style={k.ib} onPress={onPress} hitSlop={4} accessibilityRole="button" accessibilityLabel={label} testID={testID}>
       <IconShape glyph={glyph} />
     </Pressable>
   )
@@ -232,68 +233,161 @@ export function SwitcherSheet({ groups, currentId, onPick, onAll, onClose }: {
 
 // ───────────────────────── Activity ─────────────────────────
 
-const TONE_COLORS: Record<FeedTone, [string, string]> = {
-  add: [T.soft, T.teal], edit: [T.amberS, T.amber], delete: [T.redS, T.red], undo: ['#e4e1fb', '#4b3fa8'], settle: ['#d9efe9', T.tealD], move: ['#e1eefb', '#245a9c'],
+/** Tile colours per tone: teal, neutral and red only. `solid` fills the tile (payments, the one event that matters most); `border` is the white undo tile. */
+const TONE_STYLE: Record<FeedTone, { bg: string; fg: string; border?: string }> = {
+  add: { bg: '#e3f1ec', fg: T.teal },
+  edit: { bg: '#ebeeea', fg: T.ink },
+  delete: { bg: T.redS, fg: T.red },
+  settle: { bg: T.teal, fg: '#ffffff' },
+  undo: { bg: '#ffffff', fg: T.muted, border: '#cfd6d1' },
+  move: { bg: '#ebeeea', fg: T.ink },
+}
+type IconName = ComponentProps<typeof Ionicons>['name']
+const ROW_MIN = 64
+
+function FeedSkeleton() {
+  const block = (w: number | `${number}%`, h: number, extra?: object) => <View style={[k.skel, { width: w, height: h }, extra]} />
+  const row = (i: number) => (
+    <View key={i} style={[k.feedRow, i > 0 && k.rowLine]}>
+      {block(36, 36, { borderRadius: 12 })}
+      <View style={k.grow}>{block('70%', 14)}{block('45%', 11, { marginTop: 8 })}</View>
+      {block(52, 16)}
+    </View>
+  )
+  return (
+    <View testID="activity-loading" accessible accessibilityLabel="Loading activity" accessibilityLiveRegion="polite">
+      {[2, 3].map((n, section) => (
+        <View key={section}>
+          <View style={[k.skel, { width: 120, height: 11, marginTop: 20, marginBottom: 8, marginLeft: 4 }]} />
+          <View style={k.feedCard}>{Array.from({ length: n }, (_, i) => row(i))}</View>
+        </View>
+      ))}
+    </View>
+  )
 }
 
-/** The Activity feed: who did what, how much, and when, newest first, a page at a time. `groupName` set = one group, unset = all your groups. */
-export function ActivityScreen({ groupName, feed, youId, today, onBack, onOpen, onMore, onRetry }: {
-  groupName?: string; feed: FeedState; youId: string | null; today: string
-  onBack?: () => void; onOpen: (entry: FeedEntry) => void; onMore: () => void; onRetry: () => void
+function FeedMessage({ icon, tone, title, body, action, onAction, testID, actionTestID }: {
+  icon: IconName; tone: 'teal' | 'red'; title: string; body: string; action: string; onAction: () => void; testID: string; actionTestID: string
+}) {
+  const red = tone === 'red'
+  return (
+    <View style={[k.feedMsg, red && k.feedMsgCard]} testID={testID} accessibilityLiveRegion="polite">
+      <View style={[k.feedMsgIcon, red ? { backgroundColor: T.redS, borderColor: '#f3d6da' } : { backgroundColor: T.soft, borderColor: T.mint }]}>
+        <Ionicons name={icon} size={30} color={red ? T.red : T.teal} accessible={false} />
+      </View>
+      <Text style={k.feedMsgTitle} accessibilityRole="header">{title}</Text>
+      <Text style={k.feedMsgBody}>{body}</Text>
+      <Pressable style={[k.btn, k.ghost, { marginTop: 18, minHeight: 46, paddingVertical: 12, alignSelf: 'stretch' }]} onPress={onAction} accessibilityRole="button" testID={actionTestID}>
+        <Text style={[k.btnText, { color: T.teal, fontSize: 15 }]}>{action}</Text>
+      </Pressable>
+    </View>
+  )
+}
+
+/**
+ * The Activity feed: who did what, how much, and when, newest first, a page at a time. `group` set = one group, unset = all your groups.
+ * Paging is by scrolling (App watches the scroll position); the states are skeleton rows, a friendly error, and an empty state with a button.
+ */
+export function ActivityScreen({ group, feed, youId, today, onBack, onOpen, onMore, onRetry, onEmptyAction }: {
+  group?: { emoji: string; title: string }; feed: FeedState; youId: string | null; today: string
+  onBack?: () => void; onOpen: (entry: FeedEntry) => void; onMore: () => void; onRetry: () => void; onEmptyAction: () => void
 }) {
   const days = groupFeedByDay(feed.items, today)
-  const busy = feed.loading && feed.items.length === 0
+  const view = feedView(feed)
   return (
     <>
       <View style={k.top}>
         {onBack ? <IconButton label="Back to the group" glyph="‹" onPress={onBack} testID="back-from-activity" /> : null}
-        <Text style={[k.h1, onBack && { fontSize: 24 }, k.grow]} accessibilityRole="header" numberOfLines={1}>{groupName ? `${groupName} activity` : 'Activity'}</Text>
+        <Text style={[k.h1, k.grow]} accessibilityRole="header" numberOfLines={1}>Activity</Text>
       </View>
-      {!groupName && <Text style={[k.m, { marginHorizontal: 4, marginBottom: 2 }]}>Everything that happened in your groups, newest first.</Text>}
-      {busy && <View style={[k.card, { marginTop: 14 }]}><Text style={k.m} testID="activity-loading">Loading…</Text></View>}
-      {feed.error && (
-        <View style={[k.card, { marginTop: 14 }]} accessibilityLiveRegion="polite">
-          <Text style={[k.m, { color: T.red }]} testID="activity-error">Couldn’t load activity. {feed.error}</Text>
-          <Pressable style={[k.btn, k.ghost, { marginTop: 10, paddingVertical: 12 }]} onPress={feed.items.length > 0 ? onMore : onRetry} accessibilityRole="button" testID="activity-retry">
-            <Text style={[k.btnText, { color: T.teal, fontSize: 15 }]}>Try again</Text>
-          </Pressable>
+      {group ? (
+        <View style={k.feedChip} testID="activity-group-chip"><Text style={k.groupEmojiSm} accessible={false}>{group.emoji}</Text><Text style={k.feedChipText} numberOfLines={1}>{group.title}</Text></View>
+      ) : (
+        <Text style={[k.m, { marginHorizontal: 4, marginBottom: 2 }]}>Everything that happened in your groups, newest first.</Text>
+      )}
+      {view === 'loading' && <FeedSkeleton />}
+      {view === 'error' && (
+        <View style={{ marginTop: 14 }}>
+          <FeedMessage icon="alert-circle-outline" tone="red" title="Couldn’t load activity" body="Check your connection and try again." action="Try again" onAction={onRetry} testID="activity-error" actionTestID="activity-retry" />
         </View>
       )}
-      {feed.loaded && !feed.error && feed.items.length === 0 && (
-        <View style={[k.card, { marginTop: 14 }]} testID="activity-empty">
-          <Text style={k.t}>No activity yet</Text>
-          <Text style={k.m}>{groupName ? 'Adds, edits, deletes and payments show up here.' : 'Add an expense in any group and it shows up here.'}</Text>
-        </View>
+      {view === 'empty' && (
+        <FeedMessage
+          icon="time-outline" tone="teal" title="Nothing’s happened yet" testID="activity-empty" actionTestID="activity-empty-action"
+          body={group ? 'Add an expense and it shows up here.' : 'Adds, edits, deletes and payments from all your groups show up here as they happen.'}
+          action={group ? 'Add expense' : 'Go to Groups'} onAction={onEmptyAction} />
       )}
       {days.map((day) => (
         <View key={day.day || 'unknown'}>
-          <Text style={k.date}>{day.heading}</Text>
-          <View style={k.card}>
-            {day.items.map((entry, i) => {
-              const row = feedRow(entry, youId, { showGroup: !groupName })
-              const [bg, fg] = TONE_COLORS[row.tone]
-              return (
-                <Pressable key={entry.id} style={[k.row, i > 0 && k.rowLine, { alignItems: 'flex-start' }]} onPress={() => onOpen(entry)} accessibilityRole="button" accessibilityLabel={row.label} testID={`feed-${entry.id}`}>
-                  <View style={[k.feedGlyph, { backgroundColor: bg }]}><Text style={{ fontSize: 15, fontWeight: '900', color: fg }} accessible={false}>{row.glyph}</Text></View>
-                  <View style={k.grow}>
-                    <Text style={[k.feedTitle, row.struck && k.struck]}>{row.title}</Text>
-                    {row.amount && <Text style={k.feedAmt}>{row.amount}</Text>}
-                    {row.detail && <Text style={k.m}>{row.detail}</Text>}
-                    <Text style={[k.m, { color: T.hint }]}>{row.meta}</Text>
-                  </View>
-                </Pressable>
-              )
-            })}
+          <Text style={k.date} accessibilityRole="header">{day.heading}</Text>
+          <View style={k.feedCard}>
+            {day.items.map((entry, i) => <FeedRowView key={entry.id} entry={entry} first={i === 0} youId={youId} today={today} showGroup={!group} onOpen={onOpen} />)}
           </View>
         </View>
       ))}
-      {canLoadMore(feed) && (
-        <Pressable style={[k.btn, k.ghost, { marginTop: 16, paddingVertical: 12 }]} onPress={onMore} accessibilityRole="button" testID="activity-more">
+      {feed.loadingMore && <ActivityIndicator style={{ marginTop: 16 }} color={T.teal} accessibilityLabel="Loading older activity" testID="activity-loading-more" />}
+      {view === 'list' && feed.error !== null && canLoadMore(feed) && (
+        <Pressable style={[k.btn, k.ghost, { marginTop: 16, minHeight: 46, paddingVertical: 12 }]} onPress={onMore} accessibilityRole="button" testID="activity-more">
           <Text style={[k.btnText, { color: T.teal, fontSize: 15 }]}>Show older</Text>
         </Pressable>
       )}
-      {feed.loadingMore && <Text style={[k.m, { textAlign: 'center', marginTop: 16 }]}>Loading…</Text>}
-      {feed.loaded && feed.items.length > 0 && feed.nextCursor === null && !feed.error && <Text style={[k.m, { textAlign: 'center', marginTop: 16, color: T.hint }]} testID="activity-end">That’s everything.</Text>}
+      {feed.loaded && feed.items.length > 0 && feed.nextCursor === null && feed.error === null && <Text style={[k.m, { textAlign: 'center', marginTop: 16, color: T.hint }]} testID="activity-end">That’s everything.</Text>}
+    </>
+  )
+}
+
+function FeedRowView({ entry, first, youId, today, showGroup, onOpen }: { entry: FeedEntry; first: boolean; youId: string | null; today: string; showGroup: boolean; onOpen: (entry: FeedEntry) => void }) {
+  const row = feedRow(entry, youId, { showGroup, today })
+  const tone = TONE_STYLE[row.tone]
+  return (
+    <Pressable style={[k.feedRow, !first && k.rowLine]} onPress={() => onOpen(entry)} accessibilityRole="button" accessibilityLabel={row.label} testID={`feed-${entry.id}`}>
+      <View style={[k.feedTile, { backgroundColor: tone.bg }, tone.border ? { borderWidth: 1.5, borderColor: tone.border } : null]} accessible={false}>
+        <Ionicons name={row.icon as IconName} size={19} color={tone.fg} accessible={false} testID={`feed-icon-${row.icon}`} />
+      </View>
+      <View style={k.grow}>
+        <Text style={k.feedTitle} numberOfLines={2}>
+          {row.segments.map((part, i) => (
+            <Text key={i} style={part.style === 'plain' ? k.feedVerb : [k.feedStrong, part.style === 'label' && row.struckLabel && k.struck]}>{part.text}</Text>
+          ))}
+        </Text>
+        {row.details.map((line) => <Text key={line} style={k.feedDetail}>{line}</Text>)}
+        <Text style={k.feedMeta} numberOfLines={1}>{row.meta}</Text>
+      </View>
+      {row.amount && (
+        <View style={k.feedAmtCol}>
+          <Text style={[k.feedAmt, row.struckAmount && k.struckAmt]} testID={`feed-amount-${entry.id}`}>{row.amount}</Text>
+          {row.previousAmount && <Text style={k.feedWas} testID={`feed-was-${entry.id}`}>{row.previousAmount}</Text>}
+        </View>
+      )}
+    </Pressable>
+  )
+}
+
+/** A deleted expense, read only: what it was and a Restore button. Built from the feed row, since deleted expenses are not in the group's list. */
+export function DeletedExpense({ entry, youId, timeText, busy, onBack, onRestore }: {
+  entry: FeedEntry; youId: string | null; timeText: (iso: string) => string; busy: boolean; onBack: () => void; onRestore: () => void
+}) {
+  const label = entry.target.label.trim() || 'Expense'
+  const { emoji, title } = groupIcon({ name: entry.group.name, emoji: entry.group.emoji })
+  const who = entry.actor.id && entry.actor.id === youId ? 'You' : entry.actor.name?.trim() || 'Someone'
+  return (
+    <>
+      <View style={k.top}>
+        <IconButton label="Back" glyph="‹" onPress={onBack} testID="back-from-deleted" />
+        <Text style={k.topTitle} accessibilityRole="header">Deleted expense</Text>
+        <View style={{ width: 44 }} />
+      </View>
+      <View style={[k.card, { alignItems: 'center', gap: 4 }]} testID="deleted-header">
+        <View style={[k.expIcon, { width: 52, height: 52, borderRadius: 16, backgroundColor: T.redS }]}><Ionicons name="trash-outline" size={24} color={T.red} accessible={false} /></View>
+        <Text style={[k.detailTitle, k.struck]}>{label}</Text>
+        {entry.amountMinor !== null && <Text style={[k.detailAmt, k.struckAmt]} testID="deleted-total">{formatMoney(entry.amountMinor, entry.currency)}</Text>}
+        <Text style={k.m}>{emoji} {title}</Text>
+        <Text style={[k.m, { textAlign: 'center', marginTop: 6 }]}>This expense was deleted. It no longer counts toward balances. Restore it to bring it back as it was.</Text>
+        <Text style={[k.m, { color: T.hint }]}>{`${who} ${entry.kind === 'expense.deleted' ? 'deleted it' : 'last changed it'} · ${timeText(entry.at)}`}</Text>
+      </View>
+      <Pressable style={[k.btn, { marginTop: 14, minHeight: 50 }, busy && { opacity: 0.6 }]} disabled={busy} onPress={onRestore} accessibilityRole="button" accessibilityLabel="Restore expense" testID="restore-deleted">
+        <Text style={k.btnText}>{busy ? 'Restoring…' : 'Restore'}</Text>
+      </Pressable>
     </>
   )
 }
@@ -340,6 +434,7 @@ export function GroupView({ detail, today, banner, footer, onBack, onSwitcher, o
           <Text style={k.titleChipText} numberOfLines={1}>{title}</Text>
           <Text style={k.caret} accessible={false}>▾</Text>
         </Pressable>
+        {onActivity && <IconButton label="Activity in this group" glyph="◷" onPress={onActivity} testID="group-activity" />}
         <IconButton label="Share group link" glyph="⇪" onPress={onShare} testID="share-group-link" />
       </View>
       {banner}
@@ -367,13 +462,6 @@ export function GroupView({ detail, today, banner, footer, onBack, onSwitcher, o
           <Pressable style={[k.btn, k.ghost, { marginTop: 10, paddingVertical: 12 }]} onPress={onSettle} accessibilityRole="button" testID="settle-up"><Text style={[k.btnText, { color: T.teal, fontSize: 15 }]}>See recorded payments</Text></Pressable>
         )}
       </View>
-      {onActivity && (
-        <Pressable style={[k.card, k.row, { marginTop: 14, paddingVertical: 14 }]} onPress={onActivity} accessibilityRole="button" accessibilityLabel="Activity. Everything that happened in this group" testID="group-activity">
-          <View style={k.feedGlyph}><Text style={{ fontSize: 16, color: T.teal }} accessible={false}>◷</Text></View>
-          <View style={k.grow}><Text style={k.t}>Activity</Text><Text style={k.m}>Adds, edits, deletes and payments</Text></View>
-          <Text style={k.edit} accessible={false}>›</Text>
-        </Pressable>
-      )}
       {detail.expenses.length === 0 && (
         <View style={[k.card, { marginTop: 14 }]}>
           <Text style={k.t}>No expenses yet</Text>
@@ -648,7 +736,7 @@ export function ExpenseDetail({ detail, expense, history, canEdit, whyNoEdit, bu
       <View style={k.top}>
         <IconButton label="Back to group" glyph="‹" onPress={onBack} testID="back-to-group" />
         <Text style={k.topTitle} accessibilityRole="header">Expense</Text>
-        {canEdit ? <IconButton label="Edit expense" glyph="✎" onPress={onEdit} testID="edit-expense" /> : <View style={{ width: 40 }} />}
+        {canEdit ? <IconButton label="Edit expense" glyph="✎" onPress={onEdit} testID="edit-expense" /> : <View style={{ width: 44 }} />}
       </View>
       <View style={[k.card, { alignItems: 'center', gap: 4 }]} testID="expense-header">
         <View style={[k.expIcon, { width: 52, height: 52, borderRadius: 16 }]}><Text style={{ fontSize: 24 }} accessible={false}>🧾</Text></View>
@@ -739,7 +827,7 @@ export function SettleScreen({ detail, busyKey, onBack, onRecord, onUndo }: {
       <View style={k.top}>
         <IconButton label="Back to group" glyph="‹" onPress={onBack} testID="back-to-group" />
         <Text style={k.topTitle} accessibilityRole="header">Settle up</Text>
-        <View style={{ width: 40 }} />
+        <View style={{ width: 44 }} />
       </View>
       {current ? (
         <View style={[k.card, { alignItems: 'center', gap: 6 }]} testID="settle-card">
@@ -836,7 +924,7 @@ const k = StyleSheet.create({
   topTitle: { fontSize: 17, fontWeight: '900', color: T.ink },
   h1: { fontSize: 30, fontWeight: '900', letterSpacing: -1, color: T.ink },
   h1c: { fontSize: 28, fontWeight: '900', letterSpacing: -0.8, color: T.ink, textAlign: 'center' },
-  ib: { width: 40, height: 40, borderRadius: 20, backgroundColor: T.card, borderWidth: 1, borderColor: T.line, alignItems: 'center', justifyContent: 'center' },
+  ib: { width: 44, height: 44, borderRadius: 22, backgroundColor: T.card, borderWidth: 1, borderColor: T.line, alignItems: 'center', justifyContent: 'center' },
   ibText: { fontSize: 20, lineHeight: 24, fontWeight: '800', color: T.ink, textAlign: 'center', textAlignVertical: 'center', includeFontPadding: false },
   card: { backgroundColor: T.card, borderWidth: 1, borderColor: T.line, borderRadius: 20, paddingHorizontal: 16, paddingVertical: 12 },
   hero: { backgroundColor: T.teal, borderRadius: 24, paddingVertical: 18, paddingHorizontal: 20 },
@@ -903,10 +991,27 @@ const k = StyleSheet.create({
   fab: { position: 'absolute', right: 18, bottom: 18, backgroundColor: T.teal, borderRadius: 22, paddingVertical: 17, paddingHorizontal: 22, shadowColor: T.teal, shadowOpacity: 0.35, shadowRadius: 12, shadowOffset: { width: 0, height: 8 }, elevation: 6 },
   fabText: { color: 'white', fontWeight: '900', fontSize: 17 },
   tabBar: { flexDirection: 'row', justifyContent: 'space-around', backgroundColor: T.card, borderTopWidth: 1, borderTopColor: T.line, paddingTop: 8, paddingBottom: 14 },
-  feedGlyph: { width: 34, height: 34, borderRadius: 12, backgroundColor: T.soft, alignItems: 'center', justifyContent: 'center', marginTop: 1 },
-  feedTitle: { fontSize: 15, fontWeight: '700', color: T.ink },
-  feedAmt: { fontSize: 15, fontWeight: '800', color: T.body, marginTop: 1 },
+  feedCard: { backgroundColor: T.card, borderWidth: 1, borderColor: T.line, borderRadius: 20, overflow: 'hidden' },
+  feedRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 12, minHeight: ROW_MIN, paddingVertical: 12, paddingHorizontal: 16 },
+  feedTile: { width: 36, height: 36, borderRadius: 12, alignItems: 'center', justifyContent: 'center', marginTop: 1 },
+  feedTitle: { fontSize: 15, lineHeight: 20, color: T.body },
+  feedStrong: { fontWeight: '800', color: T.ink },
+  feedVerb: { fontWeight: '500', color: T.body },
+  feedDetail: { fontSize: 13, color: T.muted, fontWeight: '600', marginTop: 2 },
+  feedMeta: { fontSize: 12.5, color: T.hint, fontWeight: '600', marginTop: 3 },
+  feedAmtCol: { alignItems: 'flex-end', flexShrink: 0, paddingTop: 1 },
+  feedAmt: { fontSize: 16, fontWeight: '900', color: T.ink, fontVariant: ['tabular-nums'] },
+  feedWas: { fontSize: 12, color: T.hint, fontWeight: '600', textDecorationLine: 'line-through', fontVariant: ['tabular-nums'], marginTop: 2 },
   struck: { textDecorationLine: 'line-through', color: T.muted },
+  struckAmt: { textDecorationLine: 'line-through', color: T.muted },
+  skel: { backgroundColor: '#e9eeea', borderRadius: 8 },
+  feedChip: { flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start', backgroundColor: T.card, borderWidth: 1, borderColor: T.line, borderRadius: 16, paddingVertical: 6, paddingHorizontal: 12, marginTop: 2, marginBottom: 2, maxWidth: '100%' },
+  feedChipText: { fontSize: 13.5, fontWeight: '800', color: T.ink, flexShrink: 1 },
+  feedMsg: { alignItems: 'center', paddingHorizontal: 22, paddingTop: 56, paddingBottom: 24 },
+  feedMsgCard: { backgroundColor: T.card, borderWidth: 1, borderColor: T.line, borderRadius: 20, paddingTop: 28 },
+  feedMsgIcon: { width: 68, height: 68, borderRadius: 22, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
+  feedMsgTitle: { fontSize: 20, fontWeight: '900', color: T.ink, marginTop: 16, textAlign: 'center' },
+  feedMsgBody: { fontSize: 14.5, color: T.body, fontWeight: '500', marginTop: 6, textAlign: 'center', lineHeight: 21 },
   tabItem: { alignItems: 'center', paddingHorizontal: 24, paddingVertical: 2 },
   tabGlyph: { fontSize: 20, color: T.hint },
   tabLabel: { fontSize: 11, fontWeight: '800', color: T.hint, marginTop: 2 },

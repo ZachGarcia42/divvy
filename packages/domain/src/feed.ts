@@ -38,6 +38,8 @@ export type FeedEntry = {
     /** True when the expense or payment still counts toward balances (not deleted or undone). */
     live: boolean
   }
+  /** Expenses: the expense's own date (YYYY-MM-DD, as it stands now), which can differ from the day it was logged. Null for payments or when unknown. */
+  expenseDate: string | null
   /** What was added, edited, deleted or paid, in the group's currency. Null only when nothing recorded it. */
   amountMinor: number | null
   /** On an edit that changed the amount: what it was before. */
@@ -69,7 +71,7 @@ export type RawActivity = {
 /** What the API could look up about the thing the row is about, as it is now. */
 export type FeedContext = {
   group: FeedEntry['group']
-  expense?: { id: string; description: string; settlementMinor: number; deleted: boolean } | null
+  expense?: { id: string; description: string; settlementMinor: number; deleted: boolean; date?: string | null } | null
   settlement?: { id: string; from: FeedPerson; to: FeedPerson; minor: number; deleted: boolean } | null
   /** The edit-history `changes` for this row, when it is an edit and they were recorded. */
   changes?: FeedChange[] | null
@@ -136,6 +138,7 @@ export function buildFeedEntry(row: RawActivity, ctx: FeedContext): FeedEntry | 
       label,
       live: isExpense ? ctx.expense != null && !ctx.expense.deleted : ctx.settlement != null && !ctx.settlement.deleted,
     },
+    expenseDate: isExpense ? (str(ctx.expense?.date) ?? null) : null,
     amountMinor: amount,
     previousAmountMinor: previous,
     currency: ctx.group.currency,
@@ -164,37 +167,51 @@ export function feedTone(entry: Pick<FeedEntry, 'kind'>): FeedTone {
 
 const nameOf = (person: FeedPerson | null, youId: string | null, you: string) => (person?.id && person.id === youId ? you : person?.name?.trim() || 'Someone')
 
-/** "You added “Dinner”", "Sam edited “Dinner”", "Sam paid you", "Maya undid a payment (You paid Sam)". */
-export function feedSentence(entry: FeedEntry, youId: string | null): string {
-  const who = nameOf(entry.actor, youId, 'You')
-  const thing = entry.target.label ? `“${entry.target.label}”` : 'an expense'
-  const way = entry.direction === 'in' ? ' in' : entry.direction === 'out' ? ' out' : ''
+/** A piece of a feed sentence. `strong`: a name (heavy). `label`: the quoted expense name (heavy; struck on a deleted row). `plain`: the verb (regular). */
+export type FeedSegment = { text: string; style: 'strong' | 'label' | 'plain' }
+const strong = (text: string): FeedSegment => ({ text, style: 'strong' })
+const plain = (text: string): FeedSegment => ({ text, style: 'plain' })
+
+/** The sentence cut into weights: "**You** added **“Dinner”**", "**Leo** paid **you**". Joined, it is `feedSentence`. */
+export function feedSegments(entry: FeedEntry, youId: string | null, labelMax = 40): FeedSegment[] {
+  const who = strong(nameOf(entry.actor, youId, 'You'))
+  const raw = entry.target.label
+  const shown = raw.length > labelMax ? `${raw.slice(0, Math.ceil((labelMax - 1) / 2))}…${raw.slice(raw.length - Math.floor((labelMax - 1) / 2))}` : raw
+  const thing: FeedSegment = raw ? { text: `“${shown}”`, style: 'label' } : plain('an expense')
   if (entry.target.type === 'expense') {
     switch (entry.kind) {
-      case 'expense.created': return `${who} added ${thing}`
-      case 'expense.updated': return `${who} edited ${thing}`
-      case 'expense.deleted': return `${who} deleted ${thing}`
-      case 'expense.restored': return `${who} restored ${thing}`
-      default: return `${who} moved ${thing}${way}`
+      case 'expense.created': return [who, plain(' added '), thing]
+      case 'expense.updated': return [who, plain(' edited '), thing]
+      case 'expense.deleted': return [who, plain(' deleted '), thing]
+      case 'expense.restored': return [who, plain(' restored '), thing]
+      default: return [who, plain(' moved '), thing, plain(entry.direction === 'in' ? ' here from another group' : entry.direction === 'out' ? ' to another group' : '')]
     }
   }
   const known = !!(entry.from?.id || entry.from?.name) && !!(entry.to?.id || entry.to?.name)
-  const payment = known ? paymentPhrase(entry, youId) : null
   switch (entry.kind) {
     case 'settlement.created': {
-      if (!payment) return `${who} recorded a payment`
-      return entry.actor.id && entry.actor.id === entry.from?.id ? payment : `${payment} (recorded by ${who})`
+      if (!known) return [who, plain(' recorded a payment')]
+      const payer = strong(nameOf(entry.from, youId, 'You'))
+      const payee = strong(nameOf(entry.to, youId, 'you'))
+      const paid = [payer, plain(' paid '), payee]
+      return entry.actor.id && entry.actor.id === entry.from?.id ? paid : [...paid, plain(` (recorded by ${who.text})`)]
     }
-    case 'settlement.deleted': return payment ? `${who} undid a payment (${payment})` : `${who} undid a payment`
-    case 'settlement.restored': return payment ? `${who} restored a payment (${payment})` : `${who} restored a payment`
-    default: return `${who} moved a payment${way}`
+    case 'settlement.deleted': return [who, plain(' undid a payment')]
+    case 'settlement.restored': return [who, plain(' restored a payment')]
+    default: return [who, plain(` moved a payment${entry.direction === 'in' ? ' here from another group' : entry.direction === 'out' ? ' to another group' : ''}`)]
   }
 }
 
-function paymentPhrase(entry: FeedEntry, youId: string | null) {
-  const payer = nameOf(entry.from, youId, 'You')
-  const payee = nameOf(entry.to, youId, 'you')
-  return `${payer} paid ${payee}`
+/** "You added “Dinner”", "Sam edited “Dinner”", "Sam paid you", "Maya undid a payment". */
+export function feedSentence(entry: FeedEntry, youId: string | null): string {
+  return feedSegments(entry, youId, Infinity).map((segment) => segment.text).join('')
+}
+
+/** Undone or restored payments say who paid whom on a line of their own: "You paid Maya". Null for everything else. */
+export function feedPaymentDetail(entry: FeedEntry, youId: string | null): string | null {
+  if (entry.kind !== 'settlement.deleted' && entry.kind !== 'settlement.restored') return null
+  const known = !!(entry.from?.id || entry.from?.name) && !!(entry.to?.id || entry.to?.name)
+  return known ? `${nameOf(entry.from, youId, 'You')} paid ${nameOf(entry.to, youId, 'you')}` : null
 }
 
 /** The amount line: "$40.00", or "$40.00 (was $35.00)" for an edit that changed the amount. Null when there is none. */

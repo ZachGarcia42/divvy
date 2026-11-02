@@ -2,9 +2,9 @@ import { formatMoney, splitFromStored } from '@divvy/domain'
 import { editConflict } from './flows/errors'
 import { joinedFeedback } from './flows/composer'
 import { draftFromSpec, majorString } from './flows/split'
-import { emptyFeed, feedArrived, feedFailed, feedPath, feedRequested, feedTarget, canLoadMore, type FeedPage, type FeedState, type FeedEntry } from './flows/feed'
+import { emptyFeed, feedArrived, feedFailed, feedPath, feedRefreshed, feedRequested, feedSnack, feedTarget, canLoadMore, originStays, returnsToFeed, shouldAutoLoad, type FeedEntry, type FeedOrigin, type FeedPage, type FeedState } from './flows/feed'
 import { contentTopGap, SNACK_MS, snackOwner, snackStays, startScreen, groupIcon, type HistoryEntry } from './flows/view'
-import { AccountScreen, ActivityScreen, AddSheet, CreateGroupSheet, ExpenseDetail, Fab, GroupsHome, GroupView, InviteCard, PasteCard, SettleScreen, Snack, SwitcherSheet, TabBar, todayIso, type SheetSave, type Tab } from './V2'
+import { AccountScreen, ActivityScreen, AddSheet, CreateGroupSheet, DeletedExpense, ExpenseDetail, Fab, GroupsHome, GroupView, InviteCard, PasteCard, SettleScreen, Snack, SwitcherSheet, TabBar, todayIso, type SheetSave, type Tab } from './V2'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import * as SecureStore from 'expo-secure-store'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
@@ -16,6 +16,7 @@ import {
   Linking,
   Platform,
   Pressable,
+  RefreshControl,
   ScrollView,
   Share,
   StyleSheet,
@@ -508,7 +509,7 @@ function SignIn({ onToken, pendingInvite, onDismissInvite, linkFailure, onClearL
   )
 }
 
-type Screen = 'groups' | 'group' | 'expense' | 'settle' | 'account' | 'activity' | 'groupActivity'
+type Screen = 'groups' | 'group' | 'expense' | 'settle' | 'account' | 'activity' | 'groupActivity' | 'deleted'
 type Snackbar = { text: string; action?: string; run?: () => void; owner?: string }
 
 const deviceZone = () => {
@@ -521,28 +522,46 @@ const timeText = (iso: string) => {
   return d.toDateString() === new Date().toDateString() ? clock : `${MONTHS[d.getMonth()]} ${d.getDate()}, ${clock}`
 }
 
-/** One Activity feed (all groups when groupId is null). Starts from the newest page each time `enabled` turns on, then pages on request. */
+/**
+ * One Activity feed (all groups when groupId is null). The loaded pages are kept for as long as the feed is the same one: turning
+ * `enabled` off and on again (leaving the feed and coming back) refetches only the newest page and merges it on top, so the list
+ * and the scroll position survive. A different account or group starts over.
+ */
 function useFeed(token: string, groupId: string | null, enabled: boolean) {
   const [state, setState] = useState<FeedState>(emptyFeed)
   const latest = useRef(0)
   const stateRef = useRef(state)
   stateRef.current = state
-  const load = (more: boolean) => {
+  const load = (mode: 'first' | 'more' | 'refresh') => {
+    const more = mode === 'more'
     const cursor = more ? stateRef.current.nextCursor : null
     if (more && !cursor) return
     const id = ++latest.current
     setState((current) => feedRequested(current, more))
     call<FeedPage>(token, feedPath(groupId, cursor))
-      .then((page) => { if (latest.current === id) setState((current) => feedArrived(current, page, more)) })
-      .catch((reason: Error) => { if (latest.current === id) setState((current) => feedFailed(current, reason.message)) })
+      .then((page) => { if (latest.current === id) setState((current) => (mode === 'refresh' ? feedRefreshed(current, page) : feedArrived(current, page, more))) })
+      .catch((reason: Error) => { if (latest.current === id) setState((current) => feedFailed(current, reason.message, more)) })
   }
+  // Another account or group: forget everything.
+  useEffect(() => {
+    latest.current++
+    stateRef.current = emptyFeed
+    setState(emptyFeed)
+  }, [token, groupId])
+  // Each time the feed comes on screen: the first load, or a quiet refresh of the newest page.
   useEffect(() => {
     if (!enabled) return
-    setState(emptyFeed)
-    load(false)
+    load(stateRef.current.loaded ? 'refresh' : 'first')
     return () => { latest.current++ }
   }, [token, groupId, enabled])
-  return { state, more: () => { if (canLoadMore(stateRef.current)) load(true) }, retry: () => load(false) }
+  return {
+    state,
+    more: () => { if (canLoadMore(stateRef.current)) load('more') },
+    /** Try again after an error, or pull to refresh. */
+    retry: () => load(stateRef.current.loaded ? 'refresh' : 'first'),
+    /** The snackbar's Retry: tries the page that failed. */
+    retrySnack: () => load(stateRef.current.errorMore ? 'more' : 'refresh'),
+  }
 }
 
 function Ledger({
@@ -585,6 +604,15 @@ function Ledger({
   const [editingName, setEditingName] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
   const [snack, setSnack] = useState<Snackbar | null>(null)
+  // Where a feed row was opened from (see FeedOrigin): back returns there with the scroll position kept.
+  const [origin, setOrigin] = useState<FeedOrigin | null>(null)
+  const [deletedEntry, setDeletedEntry] = useState<FeedEntry | null>(null)
+  const [restoringDeleted, setRestoringDeleted] = useState(false)
+  const scrollRef = useRef<ScrollView | null>(null)
+  const scrollY = useRef(0)
+  const viewH = useRef(0)
+  const contentH = useRef(0)
+  const pendingY = useRef<number | null>(null)
   // A lasting "You're in <group>" confirmation after accepting a group link (cleared on dismiss).
   const [welcome, setWelcome] = useState<{ groupId: string; text: string } | null>(null)
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -604,6 +632,10 @@ function Ledger({
   useEffect(() => {
     setSnack((current) => (current && !snackStays(current.owner, screen, groupId) ? null : current))
   }, [screen, groupId])
+  // The origin only lives while the screens it opened are showing.
+  useEffect(() => {
+    setOrigin((current) => (current && !originStays(current, screen) ? null : current))
+  }, [screen])
   useEffect(() => () => {
     if (toastTimer.current) clearTimeout(toastTimer.current)
     if (snackTimer.current) clearTimeout(snackTimer.current)
@@ -726,15 +758,41 @@ function Ledger({
     onInviteHandled()
   }
 
-  // Android back: step out of a screen instead of closing the app.
+  // Back from a screen a feed row opened returns to that feed (hardware back and the on-screen arrow alike); otherwise one step out.
+  const stepBack = (): boolean => {
+    if (returnsToFeed(origin, screen)) {
+      pendingY.current = origin.y
+      setOrigin(null)
+      setScreen(origin.screen)
+      return true
+    }
+    if (screen === 'expense' || screen === 'settle' || screen === 'groupActivity') { setScreen('group'); return true }
+    if (screen === 'group' || screen === 'account' || screen === 'activity' || screen === 'deleted') { goGroups(); return true }
+    return false
+  }
   useEffect(() => {
     if (Platform.OS !== 'android') return
-    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
-      if (screen === 'expense' || screen === 'settle' || screen === 'groupActivity') { setScreen('group'); return true }
-      if (screen === 'group' || screen === 'account' || screen === 'activity') { goGroups(); return true }
-      return false
-    })
+    const sub = BackHandler.addEventListener('hardwareBackPress', stepBack)
     return () => sub.remove()
+  }, [screen, origin])
+
+  // Put the saved scroll offset back once the feed it belongs to is tall enough again (the list is kept, so this is immediate).
+  const restoreScroll = () => {
+    const y = pendingY.current
+    if (y === null) return
+    if (contentH.current >= y + viewH.current - 1 || contentH.current > 0 && y === 0) {
+      pendingY.current = null
+      scrollRef.current?.scrollTo({ y, animated: false })
+    }
+  }
+  useEffect(() => {
+    if (pendingY.current === null) return
+    const t = setTimeout(() => {
+      const y = pendingY.current
+      pendingY.current = null
+      if (y !== null) scrollRef.current?.scrollTo({ y: Math.max(0, Math.min(y, contentH.current - viewH.current)), animated: false })
+    }, 1200)
+    return () => clearTimeout(t)
   }, [screen])
 
   async function refresh(nextGroupId = groupId) {
@@ -751,12 +809,14 @@ function Ledger({
   }
 
   const goGroups = () => {
+    setOrigin(null)
     setScreen('groups')
     setExpenseId(null)
     call<Home>(token, '/api/home').then(setHome).catch(() => undefined)
   }
   const openGroup = (id: string) => {
     setSwitcher(false)
+    setOrigin(null)
     setExpenseId(null)
     setGroupId(id)
     setScreen('group')
@@ -818,6 +878,21 @@ function Ledger({
       showToast('Expense restored')
     } catch (reason) {
       showToast(reason instanceof Error ? reason.message : 'Could not restore that')
+    }
+  }
+
+  async function restoreDeleted(entry: FeedEntry) {
+    if (restoringDeleted || entry.target.type !== 'expense') return
+    setRestoringDeleted(true)
+    try {
+      await call(token, `/api/groups/${entry.group.id}/expenses/${entry.target.id}/restore`, { method: 'POST' })
+      setDetailTick((n) => n + 1)
+      showToast('Expense restored')
+      if (!stepBack()) goGroups()
+    } catch (reason) {
+      showToast(reason instanceof Error ? reason.message : 'Could not restore that')
+    } finally {
+      setRestoringDeleted(false)
     }
   }
 
@@ -981,14 +1056,30 @@ function Ledger({
   const tab: Tab = screen === 'account' ? 'account' : screen === 'activity' ? 'activity' : 'groups'
   const showTabs = !join && (screen === 'groups' || screen === 'group' || screen === 'account' || screen === 'activity')
   const youId = participantId ?? detail?.yourParticipantId ?? null
+  const feedScreen = screen === 'activity' || screen === 'groupActivity'
+  const activeFeed = screen === 'groupActivity' ? groupFeed : allFeed
+  const feedBar = feedScreen ? feedSnack(activeFeed.state) : null
   const openFeedEntry = (entry: FeedEntry) => {
     const target = feedTarget(entry)
+    const at = target.kind === 'expense' ? 'expense' : target.kind === 'settle' ? 'settle' : target.kind === 'deleted' ? 'deleted' : 'group'
+    if (screen === 'activity' || screen === 'groupActivity') setOrigin({ screen, y: scrollY.current, at })
     setExpenseId(null)
     setHistory(null)
     setGroupId(target.groupId)
     if (target.kind === 'expense') setExpenseId(target.expenseId)
-    setScreen(target.kind === 'expense' ? 'expense' : target.kind === 'settle' ? 'settle' : 'group')
+    if (target.kind === 'deleted') setDeletedEntry(entry)
+    setScreen(at)
     setDetailTick((n) => n + 1)
+    scrollRef.current?.scrollTo({ y: 0, animated: false })
+  }
+  const onFeedScroll = (y: number) => {
+    scrollY.current = y
+    if (feedScreen && shouldAutoLoad(activeFeed.state, contentH.current - y - viewH.current)) activeFeed.more()
+  }
+  const onTabPress = (next: Tab) => {
+    if (next === 'groups') { goGroups(); return }
+    if (next === 'activity' && screen === 'activity') { allFeed.retry(); scrollRef.current?.scrollTo({ y: 0, animated: true }); return }
+    setScreen(next)
   }
   let body: ReactNode
   if (join) {
@@ -1011,7 +1102,9 @@ function Ledger({
       onSignedOut()
     }} />
   } else if (screen === 'activity') {
-    body = <ActivityScreen feed={allFeed.state} youId={youId} today={today} onOpen={openFeedEntry} onMore={allFeed.more} onRetry={allFeed.retry} />
+    body = <ActivityScreen feed={allFeed.state} youId={youId} today={today} onOpen={openFeedEntry} onMore={allFeed.more} onRetry={allFeed.retry} onEmptyAction={goGroups} />
+  } else if (screen === 'deleted' && deletedEntry) {
+    body = <DeletedExpense entry={deletedEntry} youId={youId} timeText={timeText} busy={restoringDeleted} onBack={() => { if (!stepBack()) goGroups() }} onRestore={() => { void restoreDeleted(deletedEntry) }} />
   } else if (screen === 'groups' || !groupId) {
     body = (
       <>
@@ -1029,15 +1122,15 @@ function Ledger({
       </View>
     )
   } else if (screen === 'groupActivity') {
-    body = <ActivityScreen groupName={groupIcon(detail.group).title} feed={groupFeed.state} youId={youId} today={today} onBack={() => setScreen('group')} onOpen={openFeedEntry} onMore={groupFeed.more} onRetry={groupFeed.retry} />
+    body = <ActivityScreen group={groupIcon(detail.group)} feed={groupFeed.state} youId={youId} today={today} onBack={() => setScreen('group')} onOpen={openFeedEntry} onMore={groupFeed.more} onRetry={groupFeed.retry} onEmptyAction={() => setAdding({ edit: null })} />
   } else if (screen === 'settle') {
-    body = <SettleScreen detail={detail} busyKey={busyKey} onBack={() => setScreen('group')} onRecord={record} onUndo={(id) => { void undo(id) }} />
+    body = <SettleScreen detail={detail} busyKey={busyKey} onBack={() => { stepBack() }} onRecord={record} onUndo={(id) => { void undo(id) }} />
   } else if (screen === 'expense') {
     body = expense ? (
       <ExpenseDetail detail={detail} expense={expense} history={history} canEdit={editBlock(expense) === null} whyNoEdit={editBlock(expense)} busy={deleting}
-        onBack={() => setScreen('group')} onEdit={() => setAdding({ edit: expense })} onDelete={() => { void deleteExpense(expense) }} timeText={timeText} />
+        onBack={() => { stepBack() }} onEdit={() => setAdding({ edit: expense })} onDelete={() => { void deleteExpense(expense) }} timeText={timeText} />
     ) : (
-      <View style={styles.card}><Text style={styles.groupName}>That expense is gone</Text><Pressable onPress={() => setScreen('group')} accessibilityRole="button"><Text style={styles.signOut}>Back to the group</Text></Pressable></View>
+      <View style={styles.card}><Text style={styles.groupName}>That expense is gone</Text><Pressable onPress={() => { stepBack() }} accessibilityRole="button"><Text style={styles.signOut}>Back to the group</Text></Pressable></View>
     )
   } else {
     body = (
@@ -1049,7 +1142,7 @@ function Ledger({
           </View>
         ) : undefined}
         footer={<InviteCard url={inviteUrl} onShare={shareLink} />}
-        onBack={goGroups} onSwitcher={() => setSwitcher(true)} onShare={shareLink}
+        onBack={() => { stepBack() }} onSwitcher={() => setSwitcher(true)} onShare={shareLink}
         onOpenExpense={(id) => { setHistory(null); setExpenseId(id); setScreen('expense') }} onSettle={() => setScreen('settle')} onActivity={() => setScreen('groupActivity')} onAdd={() => setAdding({ edit: null })} />
     )
   }
@@ -1057,13 +1150,22 @@ function Ledger({
   return (
     <SafeAreaView style={styles.screen} edges={showTabs ? TOP_EDGES : ALL_EDGES}>
       <View style={styles.flex}>
-        <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={v2scroll} style={styles.noSideways} horizontal={false} alwaysBounceHorizontal={false} showsHorizontalScrollIndicator={false}>
+        <ScrollView ref={scrollRef} keyboardShouldPersistTaps="handled" contentContainerStyle={v2scroll} style={styles.noSideways} horizontal={false} alwaysBounceHorizontal={false} showsHorizontalScrollIndicator={false}
+          scrollEventThrottle={64} onScroll={(e) => onFeedScroll(e.nativeEvent.contentOffset.y)}
+          onLayout={(e) => { viewH.current = e.nativeEvent.layout.height; restoreScroll() }}
+          onContentSizeChange={(_w, h) => {
+            contentH.current = h
+            restoreScroll()
+            // A short list that does not fill the screen asks for the next page by itself.
+            if (feedScreen && pendingY.current === null && shouldAutoLoad(activeFeed.state, h - scrollY.current - viewH.current)) activeFeed.more()
+          }}
+          refreshControl={feedScreen && home ? <RefreshControl refreshing={activeFeed.state.loading && activeFeed.state.loaded} onRefresh={activeFeed.retry} tintColor="#0f766e" colors={['#0f766e']} /> : undefined}>
           {body}
         </ScrollView>
         {!join && screen === 'group' && detail && groupId && <Fab onPress={() => setAdding({ edit: null })} />}
-        <Snack text={snack?.text ?? null} action={snack?.action} onAction={snack?.run} />
+        <Snack text={snack?.text ?? feedBar?.text ?? null} action={snack ? snack.action : feedBar?.action} onAction={snack ? snack.run : activeFeed.retrySnack} />
       </View>
-      {showTabs && <TabBar tab={tab} onTab={(next) => (next === 'groups' ? goGroups() : setScreen(next))} />}
+      {showTabs && <TabBar tab={tab} onTab={onTabPress} />}
       {adding && detail && (
         <AddSheet members={sheetMembers} youId={detail.yourParticipantId} currency={detail.currency} groupName={groupIcon(detail.group).title}
           initial={sheetInitial} onClose={() => setAdding(null)} onSave={(value) => saveExpense(value, adding.edit)} />

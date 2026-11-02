@@ -63,6 +63,18 @@ describe('activity feed: what happened, who did it, how much', () => {
     expect(edited.changes.map((change: any) => change.field)).toEqual(['date'])
   })
 
+  it('carries the expense\'s own date, separate from when it was logged; payments have none', async () => {
+    const { call, groupId, you, maya, add, feed } = await setup()
+    const id = await add({ date: '2026-10-24' })
+    await call('POST', `/api/groups/${groupId}/settlements`, { fromId: maya, toId: you, minor: 500 })
+    const [paid, created] = (await feed()).items
+    expect(created.expenseDate).toBe('2026-10-24')
+    expect(Date.parse(created.at)).toBeGreaterThan(Date.parse('2026-10-25')) // logged now, dated earlier
+    expect(paid.expenseDate).toBeNull()
+    await call('DELETE', `/api/groups/${groupId}/expenses/${id}`, { version: 1 })
+    expect((await feed()).items[0].expenseDate).toBe('2026-10-24') // still known after a delete
+  })
+
   it('later edits do not rewrite what an earlier entry says', async () => {
     const { call, groupId, you, add, feed } = await setup()
     const id = await add({ originalMinor: 1000, description: 'Taxi' })

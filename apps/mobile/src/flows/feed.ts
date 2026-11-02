@@ -1,9 +1,9 @@
 // Activity feed (read side): paging state, day grouping, and the words and tap target for each row.
 // The server builds each entry (who, what, how much, when); everything here is presentation and paging.
-import { feedAmountText, feedSentence, feedTone, type FeedChange, type FeedEntry, type FeedPage, type FeedTone } from '@divvy/domain'
-import { dateHeading } from './view'
+import { feedPaymentDetail, feedSegments, feedSentence, feedTone, formatMoney, type FeedChange, type FeedEntry, type FeedPage, type FeedSegment, type FeedTone } from '@divvy/domain'
+import { dateHeading, weekdayMonthDay } from './view'
 
-export type { FeedEntry, FeedPage, FeedTone }
+export type { FeedEntry, FeedPage, FeedSegment, FeedTone }
 
 // ─── Paging state ───
 
@@ -17,9 +17,11 @@ export type FeedState = {
   /** The first page has come back at least once. */
   loaded: boolean
   error: string | null
+  /** The failed request was for a later page (the list on screen is still good). */
+  errorMore: boolean
 }
 
-export const emptyFeed: FeedState = { items: [], nextCursor: null, loading: false, loadingMore: false, loaded: false, error: null }
+export const emptyFeed: FeedState = { items: [], nextCursor: null, loading: false, loadingMore: false, loaded: false, error: null, errorMore: false }
 
 export const PAGE_SIZE = 30
 
@@ -30,7 +32,7 @@ export function feedPath(groupId: string | null, cursor: string | null, limit = 
 
 /** A page was requested. The first page keeps what is on screen (no flash) while it reloads. */
 export function feedRequested(state: FeedState, more: boolean): FeedState {
-  return more ? { ...state, loadingMore: true, error: null } : { ...state, loading: true, error: null }
+  return more ? { ...state, loadingMore: true, error: null, errorMore: false } : { ...state, loading: true, error: null, errorMore: false }
 }
 
 /** A page arrived. The first page replaces the list; later pages append, skipping anything already shown. */
@@ -38,15 +40,74 @@ export function feedArrived(state: FeedState, page: FeedPage, more: boolean): Fe
   const kept = more ? state.items : []
   const seen = new Set(kept.map((item) => item.id))
   const items = [...kept, ...page.items.filter((item) => !seen.has(item.id))]
-  return { items, nextCursor: page.nextCursor, loading: false, loadingMore: false, loaded: true, error: null }
+  return { items, nextCursor: page.nextCursor, loading: false, loadingMore: false, loaded: true, error: null, errorMore: false }
 }
 
-export function feedFailed(state: FeedState, message: string): FeedState {
-  return { ...state, loading: false, loadingMore: false, error: message }
+/**
+ * The newest page came back while older pages are already loaded (returning to the feed, pull to refresh): put the new rows on top
+ * and keep what was loaded below, with its cursor. When the new page does not reach back to what was shown (a lot happened in
+ * between), or it is the whole feed, it replaces the list instead so there is never a gap.
+ */
+export function feedRefreshed(state: FeedState, page: FeedPage): FeedState {
+  const shown = new Set(state.items.map((item) => item.id))
+  const overlaps = page.items.some((item) => shown.has(item.id))
+  if (state.items.length === 0 || page.nextCursor === null || !overlaps) return feedArrived(state, page, false)
+  const fresh = new Set(page.items.map((item) => item.id))
+  const items = [...page.items, ...state.items.filter((item) => !fresh.has(item.id))]
+  return { items, nextCursor: state.nextCursor, loading: false, loadingMore: false, loaded: true, error: null, errorMore: false }
+}
+
+export function feedFailed(state: FeedState, message: string, more = false): FeedState {
+  return { ...state, loading: false, loadingMore: false, error: message, errorMore: more }
 }
 
 /** There is another page to ask for, and nothing is in flight. */
 export const canLoadMore = (state: FeedState) => state.nextCursor !== null && !state.loading && !state.loadingMore
+
+/** Scrolling to within this many px of the bottom asks for the next page. */
+export const LOAD_AHEAD_PX = 400
+
+/**
+ * Whether scrolling (or a short list that does not fill the screen) should ask for the next page by itself. Never after an error:
+ * the user retries with the snackbar or "Show older", so a failing request is not hammered on every scroll event.
+ */
+export function shouldAutoLoad(state: FeedState, distanceFromBottom: number): boolean {
+  return canLoadMore(state) && state.error === null && distanceFromBottom < LOAD_AHEAD_PX
+}
+
+/** What the snackbar over the list says, when a request failed but a list is on screen to keep. Null otherwise. */
+export function feedSnack(state: FeedState): { text: string; action: string } | null {
+  if (state.error === null || state.items.length === 0) return null
+  return { text: state.errorMore ? 'Couldn’t load older activity' : 'Couldn’t refresh activity', action: 'Retry' }
+}
+
+/** What goes on screen: skeleton rows, the friendly error, the empty state, or the list. */
+export function feedView(state: FeedState): 'loading' | 'error' | 'empty' | 'list' {
+  if (state.items.length > 0) return 'list'
+  if (state.error !== null) return 'error'
+  if (state.loaded) return 'empty'
+  return 'loading'
+}
+
+// ─── Back to the feed ───
+
+/**
+ * Where a row was opened from. Opening an expense or Settle up from the feed pushes it on top of the feed (nothing is replaced):
+ * `screen` is the feed it came from, `y` its scroll offset, `at` the screen the row opened.
+ */
+export type FeedOrigin = { screen: 'activity' | 'groupActivity'; y: number; at: 'expense' | 'settle' | 'deleted' | 'group' }
+
+/** Back from `screen` goes to the feed it was opened from. */
+export const returnsToFeed = (origin: FeedOrigin | null, screen: string): origin is FeedOrigin => origin !== null && origin.at === screen
+
+/**
+ * The origin stays valid while the user is on the screen the row opened. A row that opened the group keeps it through that group's
+ * own expense, Settle up and Activity screens, so back from the group still lands on the feed. Anywhere else it is forgotten.
+ */
+export function originStays(origin: FeedOrigin, screen: string): boolean {
+  if (screen === origin.at) return true
+  return origin.at === 'group' && (screen === 'expense' || screen === 'settle' || screen === 'groupActivity')
+}
 
 // ─── Day grouping ───
 
@@ -69,6 +130,12 @@ export function clockText(at: string, offsetMinutes?: number): string {
   return `${h % 12 === 0 ? 12 : h % 12}:${pad(shifted.getUTCMinutes())} ${h < 12 ? 'AM' : 'PM'}`
 }
 
+/** "FRI · OCT 30", with the year added only when it is not this year ("FRI · DEC 12, 2025"). */
+function headingWithYear(day: string, todayIso: string) {
+  const heading = dateHeading(day, todayIso)
+  return day.slice(0, 4) === todayIso.slice(0, 4) ? heading : `${heading}, ${day.slice(0, 4)}`
+}
+
 /** Entries are already newest first; this only cuts them into days with a heading ("TODAY · NOV 2"). */
 export function groupFeedByDay(items: FeedEntry[], todayIso: string, offsetMinutes?: number) {
   const out: { day: string; heading: string; items: FeedEntry[] }[] = []
@@ -76,7 +143,7 @@ export function groupFeedByDay(items: FeedEntry[], todayIso: string, offsetMinut
     const day = localDay(item.at, offsetMinutes)
     const last = out[out.length - 1]
     if (last && last.day === day) last.items.push(item)
-    else out.push({ day, heading: day ? dateHeading(day, todayIso) : 'EARLIER', items: [item] })
+    else out.push({ day, heading: day ? headingWithYear(day, todayIso) : 'EARLIER', items: [item] })
   }
   return out
 }
@@ -95,44 +162,70 @@ export function changeSummary(changes: FeedChange[] | null): string | null {
   return `Changed the ${list}`
 }
 
-export const TONE_GLYPH: Record<FeedTone, string> = { add: '＋', edit: '✎', delete: '🗑', undo: '↩', settle: '✓', move: '⇄' }
+/** Ionicons line icons, one per tone. Never emoji. */
+export const TONE_ICON: Record<FeedTone, string> = { add: 'add', edit: 'pencil', delete: 'trash-outline', undo: 'arrow-undo', settle: 'checkmark', move: 'swap-horizontal' }
 
 export type FeedRow = {
   id: string
   tone: FeedTone
-  glyph: string
-  /** "You added “Dinner”" */
+  icon: string
+  /** "You added “Dinner”" as heavy and regular pieces. */
+  segments: FeedSegment[]
+  /** The same sentence as plain text. */
   title: string
-  /** "$40.00 (was $35.00)" or null */
+  /** "$40.00" or null */
   amount: string | null
-  /** Second line: what changed, or a note on a deleted item. */
-  detail: string | null
-  /** "3:42 PM", plus the group name on the all-groups feed. */
+  /** "was $35.00" under the amount of an edit that changed it, or null. */
+  previousAmount: string | null
+  /** Lines under the sentence: what changed, who paid whom, “Dated Sat, Oct 24”. */
+  details: string[]
+  /** "3:42 PM", plus the group on the all-groups feed. */
   meta: string
   /** Whole-row label for screen readers. */
   label: string
-  /** Struck through: the thing this row is about no longer counts. */
-  struck: boolean
+  /** The quoted name is struck through (a deleted expense). */
+  struckLabel: boolean
+  /** The amount is struck through: the thing no longer counts. */
+  struckAmount: boolean
 }
 
-export function feedRow(entry: FeedEntry, youId: string | null, opts: { showGroup: boolean; offsetMinutes?: number }): FeedRow {
+/** "Dated Sat, Oct 24" when an added or edited expense carries a different date than the day it was logged (device zone); else null. */
+export function datedLine(entry: FeedEntry, todayIso?: string, offsetMinutes?: number): string | null {
+  if (entry.kind !== 'expense.created' && entry.kind !== 'expense.updated') return null
+  const date = entry.expenseDate
+  if (!date || date === localDay(entry.at, offsetMinutes)) return null
+  const year = todayIso && date.slice(0, 4) !== todayIso.slice(0, 4) ? `, ${date.slice(0, 4)}` : ''
+  return `Dated ${weekdayMonthDay(date)}${year}`
+}
+
+export function feedRow(entry: FeedEntry, youId: string | null, opts: { showGroup: boolean; offsetMinutes?: number; today?: string }): FeedRow {
   const tone = feedTone(entry)
   const title = feedSentence(entry, youId)
-  const amount = feedAmountText(entry)
-  const detail = entry.kind === 'expense.updated' ? changeSummary(entry.changes) : null
+  const amount = entry.amountMinor === null ? null : formatMoney(entry.amountMinor, entry.currency)
+  const previousAmount = entry.kind === 'expense.updated' && entry.previousAmountMinor !== null ? `was ${formatMoney(entry.previousAmountMinor, entry.currency)}` : null
+  const details = [
+    entry.kind === 'expense.updated' ? changeSummary(entry.changes) : null,
+    feedPaymentDetail(entry, youId),
+    datedLine(entry, opts.today, opts.offsetMinutes),
+  ].filter((line): line is string => !!line)
   const time = clockText(entry.at, opts.offsetMinutes)
-  const meta = [time, opts.showGroup ? entry.group.name : ''].filter(Boolean).join(' · ')
-  const struck = entry.kind === 'expense.deleted' || (entry.target.type === 'settlement' && entry.kind === 'settlement.created' && !entry.target.live)
+  const groupText = opts.showGroup ? [entry.group.emoji, entry.group.name].filter(Boolean).join(' ') : ''
+  const meta = [time, groupText].filter(Boolean).join(' · ')
+  const struckLabel = entry.kind === 'expense.deleted'
+  const struckAmount = struckLabel || (entry.kind === 'settlement.created' && !entry.target.live)
   return {
     id: entry.id,
     tone,
-    glyph: TONE_GLYPH[tone],
+    icon: TONE_ICON[tone],
+    segments: feedSegments(entry, youId),
     title,
     amount,
-    detail,
+    previousAmount,
+    details,
     meta,
-    label: [title, amount, detail, meta].filter(Boolean).join('. '),
-    struck,
+    label: [title, amount, previousAmount, ...details, meta].filter(Boolean).join('. '),
+    struckLabel,
+    struckAmount,
   }
 }
 
@@ -141,13 +234,18 @@ export function feedRow(entry: FeedEntry, youId: string | null, opts: { showGrou
 export type FeedTarget =
   | { kind: 'expense'; groupId: string; expenseId: string }
   | { kind: 'settle'; groupId: string }
+  | { kind: 'deleted'; groupId: string; expenseId: string }
   | { kind: 'group'; groupId: string }
 
-/** Where a tap on this row goes: a live expense opens its detail, a payment opens the group's payments, anything else the group. */
+/**
+ * Where a tap on this row goes: a live expense opens its detail, a deleted one a read-only detail with Restore, a payment the
+ * group's payments, anything else the group.
+ */
 export function feedTarget(entry: FeedEntry): FeedTarget {
   const groupId = entry.group.id
   if (entry.target.type === 'settlement') return { kind: 'settle', groupId }
   const movedAway = entry.kind === 'expense.moved' && entry.direction === 'out'
   if (entry.target.id && entry.target.live && !movedAway) return { kind: 'expense', groupId, expenseId: entry.target.id }
+  if (entry.target.id && !entry.target.live && !movedAway) return { kind: 'deleted', groupId, expenseId: entry.target.id }
   return { kind: 'group', groupId }
 }

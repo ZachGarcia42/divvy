@@ -7,6 +7,8 @@ import {
   decodeFeedCursor,
   encodeFeedCursor,
   feedAmountText,
+  feedPaymentDetail,
+  feedSegments,
   feedSentence,
   feedTone,
   isFeedKind,
@@ -144,7 +146,7 @@ describe('feedSentence', () => {
     expect(sentence({ kind: 'expense.updated', payload: { expenseId: 'e1' } }, live)).toBe('You edited “Dinner”')
     expect(sentence({ kind: 'expense.deleted', payload: { expenseId: 'e1' } }, live)).toBe('You deleted “Dinner”')
     expect(sentence({ kind: 'expense.restored', payload: { expenseId: 'e1' } }, live)).toBe('You restored “Dinner”')
-    expect(sentence({ kind: 'expense.moved', payload: { expenseId: 'e1', direction: 'out' } }, live)).toBe('You moved “Dinner” out')
+    expect(sentence({ kind: 'expense.moved', payload: { expenseId: 'e1', direction: 'out' } }, live)).toBe('You moved “Dinner” to another group')
   })
 
   it('payments read as who paid whom, and say who recorded it when that was someone else', () => {
@@ -152,9 +154,45 @@ describe('feedSentence', () => {
     expect(sentence({ kind: 'settlement.created', payload: { settlementId: 's1' }, actor: { id: 'maya', name: 'Maya' } }, p)).toBe('Maya paid you')
     expect(sentence({ kind: 'settlement.created', payload: { settlementId: 's1' } }, p)).toBe('Maya paid you (recorded by You)')
     expect(sentence({ kind: 'settlement.created', payload: { settlementId: 's1' }, actor: { id: 'maya', name: 'Maya' } }, p, 'zed')).toBe('Maya paid Zach')
-    expect(sentence({ kind: 'settlement.deleted', payload: { settlementId: 's1' } }, p)).toBe('You undid a payment (Maya paid you)')
-    expect(sentence({ kind: 'settlement.restored', payload: { settlementId: 's1' } }, p)).toBe('You restored a payment (Maya paid you)')
-    expect(sentence({ kind: 'settlement.moved', payload: { settlementId: 's1', direction: 'in' } }, p)).toBe('You moved a payment in')
+    expect(sentence({ kind: 'settlement.deleted', payload: { settlementId: 's1' } }, p)).toBe('You undid a payment')
+    expect(sentence({ kind: 'settlement.restored', payload: { settlementId: 's1' } }, p)).toBe('You restored a payment')
+    expect(sentence({ kind: 'settlement.moved', payload: { settlementId: 's1', direction: 'in' } }, p)).toBe('You moved a payment here from another group')
+  })
+
+  it('moves into this group say so', () => {
+    expect(sentence({ kind: 'expense.moved', payload: { expenseId: 'e1', direction: 'in' } }, live, 'me')).toBe('You moved “Dinner” here from another group')
+  })
+
+  it('cuts the sentence into heavy names and labels and a regular verb', () => {
+    const entry = buildFeedEntry(row({ kind: 'expense.updated', payload: { expenseId: 'e1' }, actor: { id: 'maya', name: 'Maya' } }), ctx(live))!
+    expect(feedSegments(entry, 'me')).toEqual([
+      { text: 'Maya', style: 'strong' }, { text: ' edited ', style: 'plain' }, { text: '“Dinner”', style: 'label' },
+    ])
+    const paid = buildFeedEntry(row({ kind: 'settlement.created', payload: { settlementId: 's1' }, actor: { id: 'maya', name: 'Maya' } }), ctx({ settlement: pay }))!
+    expect(feedSegments(paid, 'me').map((s) => s.style)).toEqual(['strong', 'plain', 'strong'])
+  })
+
+  it('shortens a very long label in the middle', () => {
+    const long = 'A'.repeat(30) + 'B'.repeat(30)
+    const entry = buildFeedEntry(row({ payload: { expenseId: 'e1', description: long } }), ctx(live))!
+    const label = feedSegments(entry, 'me', 40).find((s) => s.style === 'label')!.text
+    expect(label.length).toBeLessThanOrEqual(42)
+    expect(label).toContain('…')
+    expect(feedSentence(entry, 'me')).toContain(long) // the plain sentence keeps the full label
+  })
+
+  it('an undone or restored payment names who paid whom on its own line', () => {
+    const undone = buildFeedEntry(row({ kind: 'settlement.deleted', payload: { settlementId: 's1' } }), ctx({ settlement: pay }))!
+    expect(feedPaymentDetail(undone, 'me')).toBe('Maya paid you')
+    expect(feedPaymentDetail(buildFeedEntry(row({ kind: 'settlement.restored', payload: { settlementId: 's1' } }), ctx({ settlement: pay }))!, 'zed')).toBe('Maya paid Zach')
+    expect(feedPaymentDetail(buildFeedEntry(row({ kind: 'settlement.created', payload: { settlementId: 's1' } }), ctx({ settlement: pay }))!, 'me')).toBeNull()
+    expect(feedPaymentDetail(buildFeedEntry(row({ kind: 'settlement.deleted', payload: { settlementId: 'gone' } }), ctx())!, 'me')).toBeNull()
+  })
+
+  it('carries the expense’s own date', () => {
+    expect(buildFeedEntry(row({ payload: { expenseId: 'e1' } }), ctx({ expense: { ...dinner, date: '2026-10-24' } }))!.expenseDate).toBe('2026-10-24')
+    expect(buildFeedEntry(row({ payload: { expenseId: 'e1' } }), ctx({ expense: dinner }))!.expenseDate).toBeNull()
+    expect(buildFeedEntry(row({ kind: 'settlement.created', payload: { settlementId: 's1' } }), ctx({ settlement: pay }))!.expenseDate).toBeNull()
   })
 
   it('a payment that no longer exists still reads sensibly', () => {

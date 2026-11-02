@@ -1246,7 +1246,7 @@ export class Repo {
     const settlementIds = unique(payloads.map((payload) => str(payload.settlementId)))
     const [groups, expenses, settlements] = await Promise.all([
       lookup<{ id: string; name: string; emoji: string | null; settlement_currency: string }>('groups', 'id, name, emoji, settlement_currency', groupIds),
-      lookup<{ id: string; description: string; settlement_minor: number; deleted_at: unknown }>('expenses', 'id, description, settlement_minor, deleted_at', expenseIds),
+      lookup<{ id: string; description: string; settlement_minor: number; expense_date: string; deleted_at: unknown }>('expenses', 'id, description, settlement_minor, expense_date, deleted_at', expenseIds),
       settlementIds.length === 0 ? Promise.resolve([]) : this.sql.query<{ id: string; from_id: string; to_id: string; from_name: string | null; to_name: string | null; minor: number; deleted_at: unknown }>(
         `select s.id, s.from_participant_id as from_id, s.to_participant_id as to_id, pf.display_name as from_name, pt.display_name as to_name, s.minor, s.deleted_at
          from settlements s left join participants pf on pf.id = s.from_participant_id left join participants pt on pt.id = s.to_participant_id
@@ -1264,7 +1264,7 @@ export class Repo {
     )
 
     const groupById = new Map(groups.map((row) => [row.id, { id: row.id, name: row.name, emoji: row.emoji ?? null, currency: row.settlement_currency }]))
-    const expenseById = new Map(expenses.map((row) => [row.id, { id: row.id, description: row.description, settlementMinor: Number(row.settlement_minor), deleted: row.deleted_at != null }]))
+    const expenseById = new Map(expenses.map((row) => [row.id, { id: row.id, description: row.description, settlementMinor: Number(row.settlement_minor), deleted: row.deleted_at != null, date: row.expense_date ? String(row.expense_date) : null }]))
     const settlementById = new Map(settlements.map((row) => [row.id, {
       id: row.id,
       from: { id: row.from_id, name: row.from_name },
