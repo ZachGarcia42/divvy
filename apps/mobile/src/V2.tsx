@@ -5,7 +5,7 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native'
 import { adjustDisplay, adjustSign, adjustTyped, sanitizeAmountText, evaluate, groupedMajor, majorString, METHOD_LABELS, METHODS, newDraft, switchMethod, toggleAdjustSign, type Draft } from './flows/split'
 import {
-  breakdown, groupByDate, historyLines, NEW_GROUP_CURRENCY, methodPhrase, monthDay, netTone, NET_WORDS, overallUsd, paidPhrase, peopleCount,
+  breakdown, groupByDate, historyLines, NEW_GROUP_CURRENCY, methodPhrase, monthDay, netTone, NET_WORDS, overallUsd, peopleCount, rowSubtitle,
   signedMoney, groupIcon, PICKER_EMOJIS, DEFAULT_EMOJI, updatedPhrase, yourPosition, type HistoryEntry,
 } from './flows/view'
 import { amountWidth } from './flows/amount'
@@ -341,12 +341,13 @@ export function GroupView({ detail, today, banner, footer, onBack, onSwitcher, o
           <View style={k.card}>
             {day.items.map((expense, i) => {
               const pos = yourPosition(expense, detail.yourParticipantId)
+              const original = originalText(expense, detail.currency)
               return (
-                <Pressable key={expense.id} style={[k.row, i > 0 && k.rowLine]} onPress={() => onOpenExpense(expense.id)} accessibilityRole="button" accessibilityLabel={`${expense.description || 'Expense'}, ${formatMoney(expense.settlementMinor, detail.currency)}`} testID={`expense-${expense.id}`}>
+                <Pressable key={expense.id} style={[k.row, i > 0 && k.rowLine]} onPress={() => onOpenExpense(expense.id)} accessibilityRole="button" accessibilityLabel={`${expense.description || 'Expense'}, ${formatMoney(expense.settlementMinor, detail.currency)}${original ? `, entered as ${original}` : ''}`} testID={`expense-${expense.id}`}>
                   <View style={k.expIcon}><Text style={{ fontSize: 18 }} accessible={false}>🧾</Text></View>
                   <View style={k.grow}>
                     <Text style={k.t} numberOfLines={1}>{expense.description.trim() || 'Expense'}</Text>
-                    <Text style={k.m} numberOfLines={1}>{[originalText(expense, detail.currency), paidPhrase(expense, detail.yourParticipantId, detail.currency), methodPhrase(expense.splitMethod)].filter(Boolean).join(' · ')}</Text>
+                    <Text style={k.m} numberOfLines={1}>{rowSubtitle(expense, detail.yourParticipantId, detail.currency)}</Text>
                   </View>
                   <View style={k.right}>
                     {pos.kind === 'none' ? <Text style={[k.amt, k.zero]}>not involved</Text> : (
@@ -355,6 +356,7 @@ export function GroupView({ detail, today, banner, footer, onBack, onSwitcher, o
                         <Text style={k.sm}>you {pos.kind}</Text>
                       </>
                     )}
+                    {original && <Text style={k.rowWas} testID={`expense-original-${expense.id}`} accessibilityLabel={`entered as ${original}`}>{original}</Text>}
                   </View>
                 </Pressable>
               )
@@ -886,6 +888,7 @@ const k = StyleSheet.create({
   right: { alignItems: 'flex-end' },
   amt: { fontSize: 16, fontWeight: '800', color: T.ink, textAlign: 'right' },
   sm: { fontSize: 12, fontWeight: '700', color: T.muted },
+  rowWas: { fontSize: 12, fontWeight: '600', color: T.hint, fontVariant: ['tabular-nums'], marginTop: 2 },
   pos: { color: T.teal },
   neg: { color: T.red },
   zero: { color: T.hint },

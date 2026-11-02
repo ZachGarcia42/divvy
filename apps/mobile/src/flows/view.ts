@@ -123,6 +123,11 @@ export function paidPhrase(expense: ExpenseLike, youId: string, currency: string
   return `${who} ${formatMoney(expense.settlementMinor, currency)}`
 }
 
+/** The grey line under an expense's name in the group list. The original amount of a converted expense is not here: it sits under the amount (see originalText). */
+export function rowSubtitle(expense: ExpenseLike, youId: string, currency: string) {
+  return [paidPhrase(expense, youId, currency), methodPhrase(expense.splitMethod)].join(' · ')
+}
+
 const createdMs = (expense: { createdAt?: string | null }) => {
   const ms = expense.createdAt ? Date.parse(expense.createdAt) : NaN
   return Number.isFinite(ms) ? ms : 0
