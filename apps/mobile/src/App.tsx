@@ -5,6 +5,7 @@ import { draftFromSpec, majorString } from './flows/split'
 import { emptyFeed, feedArrived, feedFailed, feedPath, feedRefreshed, feedRequested, feedSnack, feedTarget, canLoadMore, originStays, returnsToFeed, shouldAutoLoad, type FeedEntry, type FeedOrigin, type FeedPage, type FeedState } from './flows/feed'
 import { isForeign, type Quote } from './flows/fx'
 import { contentTopGap, SNACK_MS, snackOwner, snackStays, startScreen, groupIcon, type HistoryEntry } from './flows/view'
+import { deleteReceipt, photoErrorText, photoPlan, remoteSource, savedWithPhotoProblem, uploadReceipt, type PhotoApi, type PickedPhoto } from './flows/photo'
 import { AccountScreen, ActivityScreen, AddSheet, CreateGroupSheet, DeletedExpense, ExpenseDetail, Fab, GroupsHome, GroupView, InviteCard, PasteCard, SettleScreen, Snack, SwitcherSheet, TabBar, todayIso, type SheetSave, type Tab } from './V2'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import * as SecureStore from 'expo-secure-store'
@@ -29,7 +30,7 @@ import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context'
 import { StatusBar } from 'expo-status-bar'
 import { inviteFromNext, invitePath, isToken, parseDeepLink, parseInvitePreview, PENDING_INVITE_KEY, tokenFromInput, type InvitePreview } from './links'
 import { SocialSignIn } from './SocialSignIn'
-import type { Expense, GroupDetail, Home, HomeGroup, Payment, Settlement } from './types'
+import type { Expense, GroupDetail, Home, HomeGroup, Payment, PhotoInfo, Settlement } from './types'
 import { apiBase, SIGN_IN_WIDTH, webLinkUrl } from './flows/web'
 import { FALLBACK_PROVIDERS, parseProviders, type Providers } from './flows/providers'
 import { CheckEmail, ExpiredLink, JoinCard, NamePrompt, NameSheet, Toast } from './November'
@@ -595,6 +596,10 @@ function Ledger({
   const [deleting, setDeleting] = useState(false)
   const [detailTick, setDetailTick] = useState(0)
   const [historyTick, setHistoryTick] = useState(0)
+  // The receipt on the open expense: undefined while loading, null when there is none.
+  const [photo, setPhoto] = useState<PhotoInfo | null | undefined>(undefined)
+  const [photoBusy, setPhotoBusy] = useState(false)
+  const [photoError, setPhotoError] = useState<string | null>(null)
   const [inviteUrl, setInviteUrl] = useState<string | null>(null)
   const [paste, setPaste] = useState('')
   const [showPaste, setShowPaste] = useState(false)
@@ -700,9 +705,9 @@ function Ledger({
   useEffect(() => {
     if (screen !== 'expense' || !groupId || !expenseId) return
     let cancelled = false
-    call<{ history: HistoryEntry[] }>(token, `/api/groups/${groupId}/expenses/${expenseId}`)
-      .then((found) => { if (!cancelled) setHistory(found.history) })
-      .catch(() => { if (!cancelled) setHistory([]) })
+    call<{ history: HistoryEntry[]; photo?: PhotoInfo | null }>(token, `/api/groups/${groupId}/expenses/${expenseId}`)
+      .then((found) => { if (!cancelled) { setHistory(found.history); setPhoto(found.photo ?? null) } })
+      .catch(() => { if (!cancelled) { setHistory([]); setPhoto((current) => current ?? null) } })
     return () => { cancelled = true }
   }, [token, groupId, expenseId, screen, historyTick])
 
@@ -834,6 +839,9 @@ function Ledger({
   }
 
   // Add or edit: the sheet reports a valid split; the server re-validates and has the last word.
+  const photoApi: PhotoApi = { base: API, token, platform: Platform.OS }
+  const receiptSource = photo && groupId && expenseId ? remoteSource(photoApi, groupId, expenseId, photo) : null
+
   async function saveExpense(value: SheetSave, editing: Expense | null) {
     if (!detail) return
     const payload = {
@@ -846,6 +854,7 @@ function Ledger({
       rounding: 'payer' as const,
       ...(value.date ? { date: value.date } : {}),
     }
+    let createdId: string | null = null
     if (editing) {
       try {
         await call(token, `/api/groups/${detail.group.id}/expenses/${editing.id}`, { method: 'PATCH', body: JSON.stringify({ ...payload, version: editing.version }) })
@@ -857,11 +866,62 @@ function Ledger({
         throw reason
       }
     } else {
-      await call(token, `/api/groups/${detail.group.id}/expenses`, { method: 'POST', body: JSON.stringify(payload) })
+      createdId = (await call<{ id?: string }>(token, `/api/groups/${detail.group.id}/expenses`, { method: 'POST', body: JSON.stringify(payload) })).id ?? null
+    }
+    // The expense is saved; now its receipt. A photo problem never loses the expense.
+    let photoProblem: unknown = null
+    const plan = photoPlan(editing ? photo ?? null : null, value.photo)
+    const targetId = editing?.id ?? createdId
+    if (plan !== 'none' && targetId) {
+      try {
+        if (plan === 'upload' && value.photo.kind === 'set') {
+          const saved = await uploadReceipt(photoApi, detail.group.id, targetId, value.photo.photo)
+          if (editing) setPhoto(saved)
+        } else {
+          await deleteReceipt(photoApi, detail.group.id, targetId)
+          if (editing) setPhoto(null)
+        }
+        if (editing) setHistoryTick((n) => n + 1)
+      } catch (reason) {
+        photoProblem = reason
+      }
     }
     await refresh(detail.group.id)
     setAdding(null)
-    showToast(editing ? 'Expense updated' : 'Expense added')
+    showToast(photoProblem ? savedWithPhotoProblem(!!editing, photoProblem) : editing ? 'Expense updated' : 'Expense added')
+  }
+
+  /** Detail screen: add or replace the receipt right away (no Save step), then say so. */
+  async function pickReceiptFor(expense: Expense, picked: PickedPhoto) {
+    if (!detail || photoBusy) return
+    const replacing = !!photo
+    setPhotoBusy(true)
+    setPhotoError(null)
+    try {
+      setPhoto(await uploadReceipt(photoApi, detail.group.id, expense.id, picked))
+      setHistoryTick((n) => n + 1)
+      showToast(replacing ? 'Receipt replaced' : 'Receipt added')
+    } catch (reason) {
+      setPhotoError(photoErrorText(reason))
+    } finally {
+      setPhotoBusy(false)
+    }
+  }
+
+  async function removeReceiptFor(expense: Expense) {
+    if (!detail || photoBusy) return
+    setPhotoBusy(true)
+    setPhotoError(null)
+    try {
+      await deleteReceipt(photoApi, detail.group.id, expense.id)
+      setPhoto(null)
+      setHistoryTick((n) => n + 1)
+      showToast('Receipt removed')
+    } catch (reason) {
+      setPhotoError(photoErrorText(reason, 'Couldn’t remove the photo. Try again.'))
+    } finally {
+      setPhotoBusy(false)
+    }
   }
 
   /** Someone else changed this expense first (409 STALE): reload it and its history, and say so. */
@@ -1140,6 +1200,7 @@ function Ledger({
   } else if (screen === 'expense') {
     body = expense ? (
       <ExpenseDetail detail={detail} expense={expense} history={history} canEdit={editBlock(expense) === null} whyNoEdit={editBlock(expense)} busy={deleting}
+        receipt={{ photo, source: receiptSource, busy: photoBusy, error: photoError, onPick: (picked) => { void pickReceiptFor(expense, picked) }, onRemove: () => { void removeReceiptFor(expense) }, onError: setPhotoError }}
         onBack={() => { stepBack() }} onEdit={() => setAdding({ edit: expense })} onDelete={() => { void deleteExpense(expense) }} timeText={timeText} />
     ) : (
       <View style={styles.card}><Text style={styles.groupName}>That expense is gone</Text><Pressable onPress={() => { stepBack() }} accessibilityRole="button"><Text style={styles.signOut}>Back to the group</Text></Pressable></View>
@@ -1155,7 +1216,7 @@ function Ledger({
         ) : undefined}
         footer={<InviteCard url={inviteUrl} onShare={shareLink} />}
         onBack={() => { stepBack() }} onSwitcher={() => setSwitcher(true)} onShare={shareLink}
-        onOpenExpense={(id) => { setHistory(null); setExpenseId(id); setScreen('expense') }} onSettle={() => setScreen('settle')} onActivity={() => setScreen('groupActivity')} onAdd={() => setAdding({ edit: null })} />
+        onOpenExpense={(id) => { setHistory(null); setPhoto(undefined); setPhotoError(null); setExpenseId(id); setScreen('expense') }} onSettle={() => setScreen('settle')} onActivity={() => setScreen('groupActivity')} onAdd={() => setAdding({ edit: null })} />
     )
   }
 
@@ -1180,7 +1241,7 @@ function Ledger({
       {showTabs && <TabBar tab={tab} onTab={onTabPress} />}
       {adding && detail && (
         <AddSheet members={sheetMembers} youId={detail.yourParticipantId} currency={detail.currency} groupName={groupIcon(detail.group).title}
-          initial={sheetInitial} fetchRate={fetchRate} onClose={() => setAdding(null)} onSave={(value) => saveExpense(value, adding.edit)} />
+          initial={sheetInitial} fetchRate={fetchRate} photo={adding.edit && adding.edit.id === expenseId ? photo ?? null : null} photoSource={adding.edit && adding.edit.id === expenseId ? receiptSource : null} onClose={() => setAdding(null)} onSave={(value) => saveExpense(value, adding.edit)} />
       )}
       {switcher && home && <SwitcherSheet groups={home.groups} currentId={groupId} onPick={openGroup} onAll={() => { setSwitcher(false); goGroups() }} onClose={() => setSwitcher(false)} />}
       {creating && <CreateGroupSheet busy={createBusy} error={createError} onCreate={createGroup} onClose={() => setCreating(null)} />}

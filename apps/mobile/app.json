@@ -22,7 +22,15 @@
       "edgeToEdgeEnabled": true
     },
     "plugins": [
-      "expo-secure-store"
+      "expo-secure-store",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Divvy uses your photos so you can attach a receipt to an expense.",
+          "cameraPermission": "Divvy uses the camera so you can photograph a receipt for an expense.",
+          "microphonePermission": false
+        }
+      ]
     ],
     "owner": "divvy-zag",
     "extra": {

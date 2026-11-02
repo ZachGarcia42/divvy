@@ -103,6 +103,11 @@ describe('history lines', () => {
     expect(lines[0]!.time).toBe('@e')
     expect(lines[4]!.time).toBe('@a')
   })
+  it('describes receipt photo changes in plain words', () => {
+    const row = (id: string, to: string) => ({ id, kind: 'edited', actorId: 'maya', actorName: 'Maya', changes: [{ field: 'photo', from: null, to }], at: id })
+    const lines = historyLines([row('1', 'added'), row('2', 'replaced'), row('3', 'removed')], 'you', 'USD', name, (iso) => iso)
+    expect(lines.map((l) => l.text)).toEqual(['Maya removed the receipt photo', 'Maya replaced the receipt photo', 'Maya added a receipt photo'])
+  })
   it('lists newest first without touching the order it was given', () => {
     const rows = [
       { id: '1', kind: 'created', actorId: 'you', actorName: 'Zach', changes: null, at: '2026-10-01T10:00:00Z' },

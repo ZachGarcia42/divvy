@@ -287,3 +287,14 @@ alter table expenses add column if not exists rate_source text;
 alter table expenses add column if not exists rate_date text;
 alter table fx_rates add column if not exists source_date text;
 alter table fx_rates add column if not exists fetched_at timestamptz not null default now();
+
+-- Receipt photos: at most one per expense. The bytes live on disk (data/photos/<id>), never in the database; this row says
+-- which file belongs to which expense. Additive: no existing table or column changes.
+create table if not exists expense_photos (
+  id text primary key,
+  expense_id text not null unique references expenses(id) on delete cascade,
+  content_type text not null,
+  bytes integer not null,
+  uploaded_by text,
+  created_at timestamptz not null default now()
+);

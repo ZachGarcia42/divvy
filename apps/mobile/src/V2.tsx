@@ -18,7 +18,9 @@ import { BottomSheet } from './BottomSheet'
 import { DateChip } from './DatePicker'
 import { dateToSave } from './flows/date'
 import { amountPlaceholder, conversionLines, manualRateOrNull, originalText, RATE_DOWN_MESSAGE, rateLabel, rateSourceText, sheetMoney, type Quote } from './flows/fx'
-import type { Expense, GroupDetail, Home, HomeGroup, Payment, Settlement } from './types'
+import type { Expense, GroupDetail, Home, HomeGroup, PhotoInfo, Payment, Settlement } from './types'
+import { KEEP_PHOTO, photoDirty, removeDraft, shownPhoto, type PhotoDraft, type PickedPhoto, type ReceiptSource } from './flows/photo'
+import { ReceiptCard, ReceiptRow, ReceiptSourceSheet, ReceiptViewer } from './Receipt'
 
 export const T = {
   bg: '#f6f7f4', card: '#ffffff', line: '#e4e8e2', teal: '#0f766e', tealD: '#0b5c56', mint: '#cfe3db', soft: '#f3faf7',
@@ -550,11 +552,13 @@ export function InviteCard({ url, onShare }: { url: string | null; onShare: () =
 
 export type SheetInitial = { amountText: string; description: string; draft: Draft; payerId: string; date: string | null; currency?: string; quote?: Quote | null }
 /** `minor` is in `currency` (the currency the expense was entered in); `manualRate` is set only when the rate was typed by hand. */
-export type SheetSave = { description: string; minor: number; currency: string; manualRate: string | null; payerId: string; spec: SplitSpec; date: string | null }
+export type SheetSave = { description: string; minor: number; currency: string; manualRate: string | null; payerId: string; spec: SplitSpec; date: string | null; photo: PhotoDraft }
 export type RateState = { state: 'idle' } | { state: 'loading' } | { state: 'ok'; quote: Quote } | { state: 'error' }
 
-export function AddSheet({ members, youId, currency, groupName, initial, fetchRate, onClose, onSave }: {
+export function AddSheet({ members, youId, currency, groupName, initial, fetchRate, photo = null, photoSource = null, onClose, onSave }: {
   members: { id: string; name: string }[]; youId: string; currency: string; groupName: string
+  /** The receipt already on the expense being edited, and where to fetch it from. */
+  photo?: PhotoInfo | null; photoSource?: ReceiptSource | null
   initial: SheetInitial | null; fetchRate?: (from: string, date: string) => Promise<Quote>; onClose: () => void; onSave: (value: SheetSave) => Promise<void>
 }) {
   const ids = useMemo(() => members.map((m) => m.id), [members])
@@ -578,6 +582,13 @@ export function AddSheet({ members, youId, currency, groupName, initial, fetchRa
   const [lastEdited, setLastEdited] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [photoDraft, setPhotoDraft] = useState<PhotoDraft>(KEEP_PHOTO)
+  const [choosingPhoto, setChoosingPhoto] = useState(false)
+  const [viewingPhoto, setViewingPhoto] = useState(false)
+  const [photoError, setPhotoError] = useState<string | null>(null)
+  const shown = shownPhoto(photo, photoDraft)
+  const shownSource: ReceiptSource | null = shown.kind === 'new' ? { kind: 'local', uri: shown.photo.uri } : shown.kind === 'current' ? photoSource : null
+  const photoChanged = photoDirty(photo, photoDraft)
   const byHand = manualText !== null
   const manualRate = byHand ? manualRateOrNull(manualText) : null
   const rate = foreign ? (byHand ? manualRate : rateState.state === 'ok' ? rateState.quote.rate : null) : null
@@ -597,9 +608,10 @@ export function AddSheet({ members, youId, currency, groupName, initial, fetchRa
     return () => { live = false }
   }, [foreign, byHand, expCurrency, date, rateAttempt])
   const dirty = useMemo(() => {
+    if (photoChanged) return true
     if (initial) return JSON.stringify([amountText, description, draft, payerId, date, expCurrency, manualText]) !== JSON.stringify([initial.amountText, initial.description, initial.draft, initial.payerId, initial.date ?? today, initial.currency ?? currency, null])
     return expCurrency !== currency || !!amountText.trim() || !!description.trim() || payerId !== youId || date !== today || draft.method !== 'equal' || ids.some((id) => !draft.included[id] || draft.shares[id] !== 1 || draft.exact[id] || draft.percent[id] || draft.adjust[id])
-  }, [initial, amountText, description, draft, payerId, date, today, ids, youId, expCurrency, manualText, currency])
+  }, [initial, amountText, description, draft, payerId, date, today, ids, youId, expCurrency, manualText, currency, photoChanged])
   const tryClose = () => (dirty && !saving ? setConfirmDiscard(true) : onClose())
   const patch = (key: 'exact' | 'percent' | 'adjust', id: string, text: string) => {
     setLastEdited(id)
@@ -613,7 +625,7 @@ export function AddSheet({ members, youId, currency, groupName, initial, fetchRa
     setSaving(true)
     setError(null)
     try {
-      await onSave({ description: description.trim(), minor, currency: expCurrency, manualRate: byHand ? manualRate : null, payerId, spec: ev.spec, date: dateToSave(date, initial?.date ?? null, today) })
+      await onSave({ description: description.trim(), minor, currency: expCurrency, manualRate: byHand ? manualRate : null, payerId, spec: ev.spec, date: dateToSave(date, initial?.date ?? null, today), photo: photoDraft })
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Could not save that')
       setSaving(false)
@@ -698,6 +710,9 @@ export function AddSheet({ members, youId, currency, groupName, initial, fetchRa
                 ))}
               </View>
             )}
+            <ReceiptRow source={shownSource} bytes={shown.kind === 'new' ? shown.photo.bytes : shown.kind === 'current' ? shown.info.bytes : undefined} error={photoError}
+              onAdd={() => { setPhotoError(null); setChoosingPhoto(true) }} onView={() => setViewingPhoto(true)}
+              onRemove={() => { setPhotoError(null); setPhotoDraft(removeDraft(photo, photoDraft)) }} />
             <View style={k.seg} accessibilityRole="tablist">
               {METHODS.map((method) => (
                 <Pressable key={method} style={[k.segItem, draft.method === method && k.segOn]} onPress={() => { setLastEdited(null); setDraft((d) => switchMethod(d, method as SplitMethod, ids, splitText, currency, payerId)) }} accessibilityRole="tab" accessibilityState={{ selected: draft.method === method }} testID={`method-${method}`}>
@@ -791,6 +806,11 @@ export function AddSheet({ members, youId, currency, groupName, initial, fetchRa
             </Pressable>
           </View>,
           })[part])}
+          {choosingPhoto && <ReceiptSourceSheet onClose={() => setChoosingPhoto(false)} onError={setPhotoError} onPicked={(picked: PickedPhoto) => { setPhotoError(null); setPhotoDraft({ kind: 'set', photo: picked }) }} />}
+          {viewingPhoto && shownSource && (
+            <ReceiptViewer source={shownSource} title={description.trim() || 'Receipt'} subtitle={`Receipt · ${monthDay(date)}`} canEdit onClose={() => setViewingPhoto(false)}
+              onReplace={() => { setViewingPhoto(false); setChoosingPhoto(true) }} onRemove={() => { setViewingPhoto(false); setPhotoDraft(removeDraft(photo, photoDraft)) }} />
+          )}
           {confirmDiscard && (
             <View style={k.discardWrap} testID="discard-confirm">
               <View style={k.discard}>
@@ -813,11 +833,20 @@ function parsePct(text: string | undefined) {
 
 // ───────────────────────── Expense detail ─────────────────────────
 
-export function ExpenseDetail({ detail, expense, history, canEdit, whyNoEdit, busy, onBack, onEdit, onDelete, timeText }: {
+export type ReceiptProps = {
+  /** undefined while loading, null when the expense has no photo. */
+  photo: PhotoInfo | null | undefined; source: ReceiptSource | null; busy: boolean; error: string | null
+  onPick: (photo: PickedPhoto) => void; onRemove: () => void; onError: (text: string) => void
+}
+
+export function ExpenseDetail({ detail, expense, history, canEdit, whyNoEdit, busy, receipt, onBack, onEdit, onDelete, timeText }: {
   detail: GroupDetail; expense: Expense; history: HistoryEntry[] | null; canEdit: boolean; whyNoEdit: string | null; busy: boolean
+  receipt?: ReceiptProps
   onBack: () => void; onEdit: () => void; onDelete: () => void; timeText: (iso: string) => string
 }) {
   const [confirm, setConfirm] = useState(false)
+  const [choosingPhoto, setChoosingPhoto] = useState(false)
+  const [viewingPhoto, setViewingPhoto] = useState(false)
   const you = detail.yourParticipantId
   const nameOf = (id: string) => memberName(detail, id)
   const method = expense.splitMethod ?? 'exact'
@@ -852,6 +881,16 @@ export function ExpenseDetail({ detail, expense, history, canEdit, whyNoEdit, bu
         <View style={k.methodChip}><Text style={k.methodChipText} testID="method-chip">Split {methodPhrase(method).replace(/^split /, '')}</Text></View>
       </View>
       {!canEdit && whyNoEdit && <Text style={[k.m, { marginTop: 8, textAlign: 'center' }]}>{whyNoEdit}</Text>}
+      {receipt && (
+        <ReceiptCard youId={you} photo={receipt.photo} source={receipt.source} canEdit={canEdit} busy={receipt.busy} error={receipt.error}
+          onAdd={() => setChoosingPhoto(true)} onView={() => setViewingPhoto(true)} />
+      )}
+      {receipt && choosingPhoto && <ReceiptSourceSheet onClose={() => setChoosingPhoto(false)} onError={receipt.onError} onPicked={receipt.onPick} />}
+      {receipt && viewingPhoto && receipt.photo && receipt.source && (
+        <ReceiptViewer source={receipt.source} title={expense.description.trim() || 'Expense'} subtitle={`Receipt · ${monthDay(expense.date)}`}
+          canEdit={canEdit} busy={receipt.busy} onClose={() => setViewingPhoto(false)}
+          onReplace={() => { setViewingPhoto(false); setChoosingPhoto(true) }} onRemove={() => { setViewingPhoto(false); receipt.onRemove() }} />
+      )}
       <Eyebrow>Split breakdown</Eyebrow>
       <View style={k.card} testID="breakdown">
         {rows.map((row, i) => (
