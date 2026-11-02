@@ -258,6 +258,8 @@ create index if not exists expense_history_expense on expense_history(expense_id
 create index if not exists memberships_participant on memberships(participant_id);
 create index if not exists expenses_group on expenses(group_id);
 create index if not exists activity_group on activity(group_id, created_at);
+-- Activity feed paging: newest first within a group, ties broken by id (additive; no data changes).
+create index if not exists activity_feed on activity(group_id, created_at desc, id desc);
 
 create table if not exists user_identities (
   provider text not null,

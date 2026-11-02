@@ -42,3 +42,25 @@ export { nextOccurrence, occurrenceOn, type Frequency } from './recurrence.ts'
 export { categoryTotals, chartEntries, monthlyTotals, personalChartShares, type ChartExpense } from './charts.ts'
 export { DEFAULT_CATEGORY_ID, FIXED_CATEGORIES } from './categories.ts'
 export { shareGapMessage, splitPhrase } from './labels.ts'
+export {
+  FEED_KINDS,
+  FEED_PAGE_DEFAULT,
+  FEED_PAGE_MAX,
+  buildFeedEntry,
+  clampFeedLimit,
+  decodeFeedCursor,
+  encodeFeedCursor,
+  feedAmountText,
+  feedSentence,
+  feedTone,
+  isFeedKind,
+  type FeedChange,
+  type FeedContext,
+  type FeedCursor,
+  type FeedEntry,
+  type FeedKind,
+  type FeedPage,
+  type FeedPerson,
+  type FeedTone,
+  type RawActivity,
+} from './feed.ts'

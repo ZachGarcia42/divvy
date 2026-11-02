@@ -2,8 +2,9 @@ import { formatMoney, splitFromStored } from '@divvy/domain'
 import { editConflict } from './flows/errors'
 import { joinedFeedback } from './flows/composer'
 import { draftFromSpec, majorString } from './flows/split'
+import { emptyFeed, feedArrived, feedFailed, feedPath, feedRequested, feedTarget, canLoadMore, type FeedPage, type FeedState, type FeedEntry } from './flows/feed'
 import { contentTopGap, SNACK_MS, snackOwner, snackStays, startScreen, groupIcon, type HistoryEntry } from './flows/view'
-import { AccountScreen, AddSheet, CreateGroupSheet, ExpenseDetail, Fab, GroupsHome, GroupView, InviteCard, PasteCard, SettleScreen, Snack, SwitcherSheet, TabBar, todayIso, type SheetSave, type Tab } from './V2'
+import { AccountScreen, ActivityScreen, AddSheet, CreateGroupSheet, ExpenseDetail, Fab, GroupsHome, GroupView, InviteCard, PasteCard, SettleScreen, Snack, SwitcherSheet, TabBar, todayIso, type SheetSave, type Tab } from './V2'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import * as SecureStore from 'expo-secure-store'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
@@ -507,7 +508,7 @@ function SignIn({ onToken, pendingInvite, onDismissInvite, linkFailure, onClearL
   )
 }
 
-type Screen = 'groups' | 'group' | 'expense' | 'settle' | 'account'
+type Screen = 'groups' | 'group' | 'expense' | 'settle' | 'account' | 'activity' | 'groupActivity'
 type Snackbar = { text: string; action?: string; run?: () => void; owner?: string }
 
 const deviceZone = () => {
@@ -518,6 +519,30 @@ const timeText = (iso: string) => {
   if (Number.isNaN(d.getTime())) return ''
   const clock = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
   return d.toDateString() === new Date().toDateString() ? clock : `${MONTHS[d.getMonth()]} ${d.getDate()}, ${clock}`
+}
+
+/** One Activity feed (all groups when groupId is null). Starts from the newest page each time `enabled` turns on, then pages on request. */
+function useFeed(token: string, groupId: string | null, enabled: boolean) {
+  const [state, setState] = useState<FeedState>(emptyFeed)
+  const latest = useRef(0)
+  const stateRef = useRef(state)
+  stateRef.current = state
+  const load = (more: boolean) => {
+    const cursor = more ? stateRef.current.nextCursor : null
+    if (more && !cursor) return
+    const id = ++latest.current
+    setState((current) => feedRequested(current, more))
+    call<FeedPage>(token, feedPath(groupId, cursor))
+      .then((page) => { if (latest.current === id) setState((current) => feedArrived(current, page, more)) })
+      .catch((reason: Error) => { if (latest.current === id) setState((current) => feedFailed(current, reason.message)) })
+  }
+  useEffect(() => {
+    if (!enabled) return
+    setState(emptyFeed)
+    load(false)
+    return () => { latest.current++ }
+  }, [token, groupId, enabled])
+  return { state, more: () => { if (canLoadMore(stateRef.current)) load(true) }, retry: () => load(false) }
 }
 
 function Ledger({
@@ -592,6 +617,8 @@ function Ledger({
   // otherwise you land on Groups. If none show up yet (e.g. a just-linked Google account), look again shortly
   // and when the tab regains focus.
   const [homeAttempt, setHomeAttempt] = useState(0)
+  const allFeed = useFeed(token, null, screen === 'activity')
+  const groupFeed = useFeed(token, groupId, screen === 'groupActivity' && !!groupId)
   useEffect(() => {
     let cancelled = false
     Promise.all([call<Home>(token, '/api/home'), AsyncStorage.getItem(LAST_GROUP_KEY).catch(() => null)])
@@ -703,8 +730,8 @@ function Ledger({
   useEffect(() => {
     if (Platform.OS !== 'android') return
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
-      if (screen === 'expense' || screen === 'settle') { setScreen('group'); return true }
-      if (screen === 'group' || screen === 'account') { goGroups(); return true }
+      if (screen === 'expense' || screen === 'settle' || screen === 'groupActivity') { setScreen('group'); return true }
+      if (screen === 'group' || screen === 'account' || screen === 'activity') { goGroups(); return true }
       return false
     })
     return () => sub.remove()
@@ -951,8 +978,18 @@ function Ledger({
     }
   })()
 
-  const tab: Tab = screen === 'account' ? 'account' : 'groups'
-  const showTabs = !join && (screen === 'groups' || screen === 'group' || screen === 'account')
+  const tab: Tab = screen === 'account' ? 'account' : screen === 'activity' ? 'activity' : 'groups'
+  const showTabs = !join && (screen === 'groups' || screen === 'group' || screen === 'account' || screen === 'activity')
+  const youId = participantId ?? detail?.yourParticipantId ?? null
+  const openFeedEntry = (entry: FeedEntry) => {
+    const target = feedTarget(entry)
+    setExpenseId(null)
+    setHistory(null)
+    setGroupId(target.groupId)
+    if (target.kind === 'expense') setExpenseId(target.expenseId)
+    setScreen(target.kind === 'expense' ? 'expense' : target.kind === 'settle' ? 'settle' : 'group')
+    setDetailTick((n) => n + 1)
+  }
   let body: ReactNode
   if (join) {
     body = (
@@ -973,6 +1010,8 @@ function Ledger({
       try { await call(token, '/api/auth/logout', { method: 'POST' }) } catch { /* The local session is what switches person. */ }
       onSignedOut()
     }} />
+  } else if (screen === 'activity') {
+    body = <ActivityScreen feed={allFeed.state} youId={youId} today={today} onOpen={openFeedEntry} onMore={allFeed.more} onRetry={allFeed.retry} />
   } else if (screen === 'groups' || !groupId) {
     body = (
       <>
@@ -989,6 +1028,8 @@ function Ledger({
         {error && <Text style={styles.error}>{error}</Text>}
       </View>
     )
+  } else if (screen === 'groupActivity') {
+    body = <ActivityScreen groupName={groupIcon(detail.group).title} feed={groupFeed.state} youId={youId} today={today} onBack={() => setScreen('group')} onOpen={openFeedEntry} onMore={groupFeed.more} onRetry={groupFeed.retry} />
   } else if (screen === 'settle') {
     body = <SettleScreen detail={detail} busyKey={busyKey} onBack={() => setScreen('group')} onRecord={record} onUndo={(id) => { void undo(id) }} />
   } else if (screen === 'expense') {
@@ -1009,7 +1050,7 @@ function Ledger({
         ) : undefined}
         footer={<InviteCard url={inviteUrl} onShare={shareLink} />}
         onBack={goGroups} onSwitcher={() => setSwitcher(true)} onShare={shareLink}
-        onOpenExpense={(id) => { setHistory(null); setExpenseId(id); setScreen('expense') }} onSettle={() => setScreen('settle')} onAdd={() => setAdding({ edit: null })} />
+        onOpenExpense={(id) => { setHistory(null); setExpenseId(id); setScreen('expense') }} onSettle={() => setScreen('settle')} onActivity={() => setScreen('groupActivity')} onAdd={() => setAdding({ edit: null })} />
     )
   }
 
@@ -1022,7 +1063,7 @@ function Ledger({
         {!join && screen === 'group' && detail && groupId && <Fab onPress={() => setAdding({ edit: null })} />}
         <Snack text={snack?.text ?? null} action={snack?.action} onAction={snack?.run} />
       </View>
-      {showTabs && <TabBar tab={tab} onTab={(next) => (next === 'groups' ? goGroups() : setScreen('account'))} />}
+      {showTabs && <TabBar tab={tab} onTab={(next) => (next === 'groups' ? goGroups() : setScreen(next))} />}
       {adding && detail && (
         <AddSheet members={sheetMembers} youId={detail.yourParticipantId} currency={detail.currency} groupName={groupIcon(detail.group).title}
           initial={sheetInitial} onClose={() => setAdding(null)} onSave={(value) => saveExpense(value, adding.edit)} />

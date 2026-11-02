@@ -1,5 +1,6 @@
 import {
   DEFAULT_CATEGORY_ID,
+  FEED_KINDS,
   LedgerError,
   AMOUNT_ERROR,
   assertAmount,
@@ -7,7 +8,11 @@ import {
   assertInvolved,
   assertNotFuture,
   assertPayers,
+  buildFeedEntry,
   calendarDateInTimeZone,
+  clampFeedLimit,
+  decodeFeedCursor,
+  encodeFeedCursor,
   canMove,
   canRemove,
   categoryTotals,
@@ -26,6 +31,9 @@ import {
   paymentBetween,
   personalChartShares,
   type ChartExpense,
+  type FeedChange,
+  type FeedEntry,
+  type FeedPage,
   retargetSettlement,
   suggestedPayments,
   type Frequency,
@@ -757,6 +765,7 @@ export class Repo {
       await this.activity(sql, groupId, actor.participantId, 'expense.created', `${actor.displayName} added ${expenseLabel(prepared.description)}`, {
         expenseId: id,
         settlementMinor: prepared.settlementMinor,
+        description: prepared.description,
       })
       await this.history(sql, id, actor.participantId, 'created', null)
     })
@@ -794,11 +803,15 @@ export class Repo {
         ],
       )
       await this.insertLines(sql, expenseId, prepared)
+      const historyId = newId()
       await this.activity(sql, groupId, actor.participantId, 'expense.updated', `${actor.displayName} edited ${expenseLabel(prepared.description)}`, {
         expenseId,
         previous: { settlementMinor: current.settlement_minor, description: current.description },
+        settlementMinor: prepared.settlementMinor,
+        description: prepared.description,
+        historyId,
       })
-      await this.history(sql, expenseId, actor.participantId, 'edited', diffExpense(current, prepared))
+      await this.history(sql, expenseId, actor.participantId, 'edited', diffExpense(current, prepared), historyId)
     })
     await this.notifyGroup(groupId, actor.participantId, prepared.description || `${actor.displayName} edited an expense`, `${actor.displayName} edited an expense`)
   }
@@ -846,8 +859,13 @@ export class Repo {
   async restoreExpense(actor: Actor, groupId: string, expenseId: string) {
     await this.requireMember(actor, groupId)
     const current = await this.mustExpense(groupId, expenseId)
+    if (!current.deleted_at) return // nothing to undo, so nothing for the feed
     await this.sql.query(`update expenses set deleted_at = null, version = version + 1 where id = $1`, [expenseId])
-    await this.activity(this.sql, groupId, actor.participantId, 'expense.restored', `${actor.displayName} restored ${expenseLabel(current.description)}`, { expenseId })
+    await this.activity(this.sql, groupId, actor.participantId, 'expense.restored', `${actor.displayName} restored ${expenseLabel(current.description)}`, {
+      expenseId,
+      settlementMinor: current.settlement_minor,
+      description: current.description,
+    })
     await this.history(this.sql, expenseId, actor.participantId, 'restored', null)
   }
 
@@ -871,8 +889,9 @@ export class Repo {
     }
     await this.sql.query(`update expenses set group_id = $1, version = version + 1 where id = $2`, [destinationGroupId, expenseId])
     await this.history(this.sql, expenseId, actor.participantId, 'moved', null)
-    await this.activity(this.sql, groupId, actor.participantId, 'expense.moved', `${actor.displayName} moved ${expenseLabel(expense.description)} out`, { expenseId })
-    await this.activity(this.sql, destinationGroupId, actor.participantId, 'expense.moved', `${actor.displayName} moved ${expenseLabel(expense.description)} in`, { expenseId })
+    const moved = { expenseId, settlementMinor: expense.settlement_minor, description: expense.description }
+    await this.activity(this.sql, groupId, actor.participantId, 'expense.moved', `${actor.displayName} moved ${expenseLabel(expense.description)} out`, { ...moved, direction: 'out', otherGroupId: destinationGroupId })
+    await this.activity(this.sql, destinationGroupId, actor.participantId, 'expense.moved', `${actor.displayName} moved ${expenseLabel(expense.description)} in`, { ...moved, direction: 'in', otherGroupId: groupId })
   }
 
   async createSettlement(actor: Actor, groupId: string, input: { fromId: string; toId: string; minor: number; date?: string; note?: string }) {
@@ -890,21 +909,26 @@ export class Repo {
       [id, groupId, date, input.fromId, input.toId, input.minor, (input.note ?? '').slice(0, 500)],
     )
     const summary = `${await this.participantName(input.fromId)} paid ${await this.participantName(input.toId)} ${formatMoney(input.minor, group.settlement_currency)}`
-    await this.activity(this.sql, groupId, actor.participantId, 'settlement.created', summary, { settlementId: id, minor: input.minor })
+    await this.activity(this.sql, groupId, actor.participantId, 'settlement.created', summary, { settlementId: id, minor: input.minor, fromId: input.fromId, toId: input.toId })
     await this.notifyGroup(groupId, actor.participantId, 'Settlement', summary)
     return { id }
   }
 
   async deleteSettlement(actor: Actor, groupId: string, settlementId: string) {
     await this.requireMember(actor, groupId)
+    const row = await this.settlementRow(groupId, settlementId)
     await this.sql.query(`update settlements set deleted_at = now(), version = version + 1 where id = $1 and group_id = $2`, [settlementId, groupId])
-    await this.activity(this.sql, groupId, actor.participantId, 'settlement.deleted', `${actor.displayName} deleted a settlement`, { settlementId })
+    // Only a real change reaches the feed: a missing or already-undone payment leaves no ghost entry.
+    if (!row || row.deleted_at) return
+    await this.activity(this.sql, groupId, actor.participantId, 'settlement.deleted', `${actor.displayName} deleted a settlement`, settlementPayload(settlementId, row))
   }
 
   async restoreSettlement(actor: Actor, groupId: string, settlementId: string) {
     await this.requireMember(actor, groupId)
+    const row = await this.settlementRow(groupId, settlementId)
     await this.sql.query(`update settlements set deleted_at = null, version = version + 1 where id = $1 and group_id = $2`, [settlementId, groupId])
-    await this.activity(this.sql, groupId, actor.participantId, 'settlement.restored', `${actor.displayName} restored a settlement`, { settlementId })
+    if (!row || !row.deleted_at) return
+    await this.activity(this.sql, groupId, actor.participantId, 'settlement.restored', `${actor.displayName} restored a settlement`, settlementPayload(settlementId, row))
   }
 
   async moveSettlement(actor: Actor, groupId: string, settlementId: string, destinationGroupId: string) {
@@ -928,8 +952,9 @@ export class Repo {
       throw new LedgerError('MIXED_CURRENCY', 'Move this into a group that uses the same currency')
     }
     await this.sql.query(`update settlements set group_id = $1, version = version + 1 where id = $2`, [destinationGroupId, settlementId])
-    await this.activity(this.sql, groupId, actor.participantId, 'settlement.moved', `${actor.displayName} moved a settlement out`, { settlementId })
-    await this.activity(this.sql, destinationGroupId, actor.participantId, 'settlement.moved', `${actor.displayName} moved a settlement in`, { settlementId })
+    const moved = settlementPayload(settlementId, row)
+    await this.activity(this.sql, groupId, actor.participantId, 'settlement.moved', `${actor.displayName} moved a settlement out`, { ...moved, direction: 'out', otherGroupId: destinationGroupId })
+    await this.activity(this.sql, destinationGroupId, actor.participantId, 'settlement.moved', `${actor.displayName} moved a settlement in`, { ...moved, direction: 'in', otherGroupId: groupId })
   }
 
   async settleAll(actor: Actor, otherParticipantId: string, lines: { groupId: string; fromId: string; toId: string; minor: number }[]) {
@@ -958,7 +983,7 @@ export class Repo {
            values ($1,$2,$3,$4,$5,$6,$7)`,
           [id, line.groupId, today, line.fromId, line.toId, line.minor, 'Settled across groups'],
         )
-        await this.activity(sql, line.groupId, actor.participantId, 'settlement.created', `${actor.displayName} settled across groups`, { settlementId: id, minor: line.minor })
+        await this.activity(sql, line.groupId, actor.participantId, 'settlement.created', `${actor.displayName} settled across groups`, { settlementId: id, minor: line.minor, fromId: line.fromId, toId: line.toId })
       }
     })
   }
@@ -1151,11 +1176,12 @@ export class Repo {
     await this.sql.query(`update comments set deleted_at = now() where id = $1`, [commentId])
   }
 
-  async history(sql: Sql, expenseId: string, actorParticipantId: string | null, kind: 'created' | 'edited' | 'deleted' | 'restored' | 'moved', changes: unknown[] | null) {
+  async history(sql: Sql, expenseId: string, actorParticipantId: string | null, kind: 'created' | 'edited' | 'deleted' | 'restored' | 'moved', changes: unknown[] | null, id: string = newId()) {
     await sql.query(
       `insert into expense_history (id, expense_id, actor_participant_id, kind, changes) values ($1,$2,$3,$4,$5)`,
-      [newId(), expenseId, actorParticipantId, kind, changes ? JSON.stringify(changes) : null],
+      [id, expenseId, actorParticipantId, kind, changes ? JSON.stringify(changes) : null],
     )
+    return id
   }
 
   async activity(sql: Sql, groupId: string, actorParticipantId: string | null, kind: string, summary: string, payload: unknown) {
@@ -1178,6 +1204,106 @@ export class Repo {
       payload: JSON.parse(String(row.payload)),
       createdAt: String(row.created_at),
     }))
+  }
+
+  /**
+   * The Activity feed, newest first: expense adds, edits, deletes, restores and moves, plus payments and undone payments.
+   * One group (`groupId`, members only) or every group the caller is in. Keyset pagination on (created_at, id), so pages
+   * stay stable while new rows arrive; `cursor` is the `nextCursor` of the previous page.
+   */
+  async feed(actor: Actor, opts: { groupId?: string; limit?: unknown; cursor?: string | null }): Promise<FeedPage> {
+    const limit = clampFeedLimit(opts.limit)
+    const cursor = decodeFeedCursor(opts.cursor)
+    if (opts.groupId) await this.requireMember(actor, opts.groupId)
+    const params: unknown[] = []
+    const ph = (value: unknown) => { params.push(value); return `$${params.length}` }
+    const scope = opts.groupId
+      ? `a.group_id = ${ph(opts.groupId)}`
+      : `a.group_id in (select group_id from memberships where participant_id = ${ph(actor.participantId)} and removed_at is null)`
+    const kinds = `a.kind in (${FEED_KINDS.map((kind) => ph(kind)).join(',')})`
+    const after = cursor ? `and (a.created_at, a.id) < (${ph(cursor.at)}::timestamptz, ${ph(cursor.id)})` : ''
+    const rows = await this.sql.query<{ id: string; group_id: string; actor_participant_id: string | null; actor_name: string | null; kind: string; summary: string; payload: string; at: string }>(
+      `select a.id, a.group_id, a.actor_participant_id, p.display_name as actor_name, a.kind, a.summary, a.payload,
+              to_char(a.created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as at
+       from activity a left join participants p on p.id = a.actor_participant_id
+       where ${scope} and ${kinds} ${after}
+       order by a.created_at desc, a.id desc
+       limit ${ph(limit + 1)}`,
+      params,
+    )
+    const page = rows.slice(0, limit)
+    const last = page[page.length - 1]
+    const nextCursor = rows.length > limit && last ? encodeFeedCursor({ at: last.at, id: last.id }) : null
+
+    const payloads = page.map((row) => obj(parseJson(row.payload)))
+    const unique = (values: (string | null | undefined)[]) => [...new Set(values.filter((value): value is string => typeof value === 'string' && value !== ''))]
+    const numbered = (ids: string[], offset = 0) => ids.map((_, i) => `$${offset + i + 1}`).join(',')
+    const lookup = async <T>(table: string, columns: string, ids: string[], where = 'id'): Promise<T[]> =>
+      ids.length === 0 ? [] : this.sql.query<T>(`select ${columns} from ${table} where ${where} in (${numbered(ids)})`, ids)
+
+    const groupIds = unique(page.map((row) => row.group_id))
+    const expenseIds = unique(payloads.map((payload) => str(payload.expenseId)))
+    const settlementIds = unique(payloads.map((payload) => str(payload.settlementId)))
+    const [groups, expenses, settlements] = await Promise.all([
+      lookup<{ id: string; name: string; emoji: string | null; settlement_currency: string }>('groups', 'id, name, emoji, settlement_currency', groupIds),
+      lookup<{ id: string; description: string; settlement_minor: number; deleted_at: unknown }>('expenses', 'id, description, settlement_minor, deleted_at', expenseIds),
+      settlementIds.length === 0 ? Promise.resolve([]) : this.sql.query<{ id: string; from_id: string; to_id: string; from_name: string | null; to_name: string | null; minor: number; deleted_at: unknown }>(
+        `select s.id, s.from_participant_id as from_id, s.to_participant_id as to_id, pf.display_name as from_name, pt.display_name as to_name, s.minor, s.deleted_at
+         from settlements s left join participants pf on pf.id = s.from_participant_id left join participants pt on pt.id = s.to_participant_id
+         where s.id in (${numbered(settlementIds)})`,
+        settlementIds,
+      ),
+    ])
+    // Edit details: the history row an edit wrote (by id when the payload names it, else the one written at the same instant).
+    const edits = page.filter((row) => row.kind === 'expense.updated')
+    const editExpenseIds = unique(edits.map((row) => str(obj(parseJson(row.payload)).expenseId)))
+    const history = editExpenseIds.length === 0 ? [] : await this.sql.query<{ id: string; expense_id: string; changes: string | null; at: string }>(
+      `select id, expense_id, changes, to_char(created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as at
+       from expense_history where kind = 'edited' and expense_id in (${numbered(editExpenseIds)})`,
+      editExpenseIds,
+    )
+
+    const groupById = new Map(groups.map((row) => [row.id, { id: row.id, name: row.name, emoji: row.emoji ?? null, currency: row.settlement_currency }]))
+    const expenseById = new Map(expenses.map((row) => [row.id, { id: row.id, description: row.description, settlementMinor: Number(row.settlement_minor), deleted: row.deleted_at != null }]))
+    const settlementById = new Map(settlements.map((row) => [row.id, {
+      id: row.id,
+      from: { id: row.from_id, name: row.from_name },
+      to: { id: row.to_id, name: row.to_name },
+      minor: Number(row.minor),
+      deleted: row.deleted_at != null,
+    }]))
+
+    const items: FeedEntry[] = []
+    page.forEach((row, index) => {
+      const payload = payloads[index]!
+      const group = groupById.get(row.group_id)
+      if (!group) return
+      let changes: FeedChange[] | null = null
+      if (row.kind === 'expense.updated') {
+        const historyId = str(payload.historyId)
+        const found = history.find((h) => (historyId ? h.id === historyId : h.expense_id === str(payload.expenseId) && h.at === row.at))
+        const parsed = found ? parseJson(found.changes) : null
+        changes = Array.isArray(parsed) ? (parsed as FeedChange[]) : null
+      }
+      const entry = buildFeedEntry(
+        { id: row.id, kind: row.kind, summary: String(row.summary), payload, at: `${row.at.slice(0, 23)}Z`, actor: { id: row.actor_participant_id, name: row.actor_name } },
+        {
+          group,
+          expense: expenseById.get(str(payload.expenseId) ?? '') ?? null,
+          settlement: settlementById.get(str(payload.settlementId) ?? '') ?? null,
+          changes,
+        },
+      )
+      if (entry) items.push(entry)
+    })
+    return { items, nextCursor }
+  }
+
+  private async settlementRow(groupId: string, settlementId: string) {
+    return this.one<{ from_participant_id: string; to_participant_id: string; minor: number; deleted_at: unknown }>(
+      `select from_participant_id, to_participant_id, minor, deleted_at from settlements where id = $1 and group_id = $2`,
+      [settlementId, groupId],
+    )
   }
 
   async nudge(actor: Actor, groupId: string, toParticipantId: string) {
@@ -2396,6 +2522,18 @@ export function diffExpense(current: ExpenseRecord, next: PreparedForDiff) {
   push('method', current.split_method, next.splitMethod)
   push('split', map(lines('share')), map(next.shares))
   return changes
+}
+
+function obj(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {}
+}
+
+function str(value: unknown): string | null {
+  return typeof value === 'string' ? value : null
+}
+
+function settlementPayload(settlementId: string, row: { from_participant_id: string; to_participant_id: string; minor: number } | null) {
+  return row ? { settlementId, minor: Number(row.minor), fromId: row.from_participant_id, toId: row.to_participant_id } : { settlementId }
 }
 
 function parseJson(text: string | null): unknown {

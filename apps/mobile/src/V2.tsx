@@ -9,6 +9,7 @@ import {
   signedMoney, groupIcon, PICKER_EMOJIS, DEFAULT_EMOJI, updatedPhrase, yourPosition, type HistoryEntry,
 } from './flows/view'
 import { amountWidth } from './flows/amount'
+import { canLoadMore, feedRow, groupFeedByDay, type FeedEntry, type FeedState, type FeedTone } from './flows/feed'
 import { middleEllipsis } from './flows/composer'
 import { Ionicons } from '@expo/vector-icons'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
@@ -81,7 +82,7 @@ function IconButton({ label, glyph, onPress, testID }: { label: string; glyph: s
   )
 }
 
-export type Tab = 'groups' | 'account'
+export type Tab = 'groups' | 'activity' | 'account'
 export function TabBar({ tab, onTab }: { tab: Tab; onTab: (tab: Tab) => void }) {
   const item = (id: Tab, glyph: string, label: string) => (
     <Pressable key={id} style={k.tabItem} onPress={() => onTab(id)} accessibilityRole="tab" accessibilityLabel={label} accessibilityState={{ selected: tab === id }} testID={`tab-${id}`}>
@@ -90,7 +91,7 @@ export function TabBar({ tab, onTab }: { tab: Tab; onTab: (tab: Tab) => void }) 
     </Pressable>
   )
   const insets = useSafeAreaInsets()
-  return <View style={[k.tabBar, { paddingBottom: Math.max(14, insets.bottom + 4) }]}>{item('groups', '◫', 'Groups')}{item('account', '☺', 'Account')}</View>
+  return <View style={[k.tabBar, { paddingBottom: Math.max(14, insets.bottom + 4) }]}>{item('groups', '◫', 'Groups')}{item('activity', '◷', 'Activity')}{item('account', '☺', 'Account')}</View>
 }
 
 function Eyebrow({ children }: { children: ReactNode }) { return <Text style={k.eye}>{children}</Text> }
@@ -229,6 +230,74 @@ export function SwitcherSheet({ groups, currentId, onPick, onAll, onClose }: {
   )
 }
 
+// ───────────────────────── Activity ─────────────────────────
+
+const TONE_COLORS: Record<FeedTone, [string, string]> = {
+  add: [T.soft, T.teal], edit: [T.amberS, T.amber], delete: [T.redS, T.red], undo: ['#e4e1fb', '#4b3fa8'], settle: ['#d9efe9', T.tealD], move: ['#e1eefb', '#245a9c'],
+}
+
+/** The Activity feed: who did what, how much, and when, newest first, a page at a time. `groupName` set = one group, unset = all your groups. */
+export function ActivityScreen({ groupName, feed, youId, today, onBack, onOpen, onMore, onRetry }: {
+  groupName?: string; feed: FeedState; youId: string | null; today: string
+  onBack?: () => void; onOpen: (entry: FeedEntry) => void; onMore: () => void; onRetry: () => void
+}) {
+  const days = groupFeedByDay(feed.items, today)
+  const busy = feed.loading && feed.items.length === 0
+  return (
+    <>
+      <View style={k.top}>
+        {onBack ? <IconButton label="Back to the group" glyph="‹" onPress={onBack} testID="back-from-activity" /> : null}
+        <Text style={[k.h1, onBack && { fontSize: 24 }, k.grow]} accessibilityRole="header" numberOfLines={1}>{groupName ? `${groupName} activity` : 'Activity'}</Text>
+      </View>
+      {!groupName && <Text style={[k.m, { marginHorizontal: 4, marginBottom: 2 }]}>Everything that happened in your groups, newest first.</Text>}
+      {busy && <View style={[k.card, { marginTop: 14 }]}><Text style={k.m} testID="activity-loading">Loading…</Text></View>}
+      {feed.error && (
+        <View style={[k.card, { marginTop: 14 }]} accessibilityLiveRegion="polite">
+          <Text style={[k.m, { color: T.red }]} testID="activity-error">Couldn’t load activity. {feed.error}</Text>
+          <Pressable style={[k.btn, k.ghost, { marginTop: 10, paddingVertical: 12 }]} onPress={feed.items.length > 0 ? onMore : onRetry} accessibilityRole="button" testID="activity-retry">
+            <Text style={[k.btnText, { color: T.teal, fontSize: 15 }]}>Try again</Text>
+          </Pressable>
+        </View>
+      )}
+      {feed.loaded && !feed.error && feed.items.length === 0 && (
+        <View style={[k.card, { marginTop: 14 }]} testID="activity-empty">
+          <Text style={k.t}>No activity yet</Text>
+          <Text style={k.m}>{groupName ? 'Adds, edits, deletes and payments show up here.' : 'Add an expense in any group and it shows up here.'}</Text>
+        </View>
+      )}
+      {days.map((day) => (
+        <View key={day.day || 'unknown'}>
+          <Text style={k.date}>{day.heading}</Text>
+          <View style={k.card}>
+            {day.items.map((entry, i) => {
+              const row = feedRow(entry, youId, { showGroup: !groupName })
+              const [bg, fg] = TONE_COLORS[row.tone]
+              return (
+                <Pressable key={entry.id} style={[k.row, i > 0 && k.rowLine, { alignItems: 'flex-start' }]} onPress={() => onOpen(entry)} accessibilityRole="button" accessibilityLabel={row.label} testID={`feed-${entry.id}`}>
+                  <View style={[k.feedGlyph, { backgroundColor: bg }]}><Text style={{ fontSize: 15, fontWeight: '900', color: fg }} accessible={false}>{row.glyph}</Text></View>
+                  <View style={k.grow}>
+                    <Text style={[k.feedTitle, row.struck && k.struck]}>{row.title}</Text>
+                    {row.amount && <Text style={k.feedAmt}>{row.amount}</Text>}
+                    {row.detail && <Text style={k.m}>{row.detail}</Text>}
+                    <Text style={[k.m, { color: T.hint }]}>{row.meta}</Text>
+                  </View>
+                </Pressable>
+              )
+            })}
+          </View>
+        </View>
+      ))}
+      {canLoadMore(feed) && (
+        <Pressable style={[k.btn, k.ghost, { marginTop: 16, paddingVertical: 12 }]} onPress={onMore} accessibilityRole="button" testID="activity-more">
+          <Text style={[k.btnText, { color: T.teal, fontSize: 15 }]}>Show older</Text>
+        </Pressable>
+      )}
+      {feed.loadingMore && <Text style={[k.m, { textAlign: 'center', marginTop: 16 }]}>Loading…</Text>}
+      {feed.loaded && feed.items.length > 0 && feed.nextCursor === null && !feed.error && <Text style={[k.m, { textAlign: 'center', marginTop: 16, color: T.hint }]} testID="activity-end">That’s everything.</Text>}
+    </>
+  )
+}
+
 export function AccountScreen({ name, email, onEditName, onSignOut }: { name: string; email?: string | null; onEditName: () => void; onSignOut: () => void }) {
   return (
     <>
@@ -252,8 +321,8 @@ export function memberName(detail: GroupDetail, id: string, you = 'You') {
   return detail.members.find((m) => m.id === id)?.name ?? 'Someone'
 }
 
-export function GroupView({ detail, today, banner, footer, onBack, onSwitcher, onShare, onOpenExpense, onSettle }: {
-  detail: GroupDetail; today: string; banner?: ReactNode; footer?: ReactNode
+export function GroupView({ detail, today, banner, footer, onBack, onSwitcher, onShare, onOpenExpense, onSettle, onActivity }: {
+  detail: GroupDetail; today: string; banner?: ReactNode; footer?: ReactNode; onActivity?: () => void
   onBack: () => void; onSwitcher: () => void; onShare: () => void; onOpenExpense: (id: string) => void; onSettle: () => void; onAdd: () => void
 }) {
   const { emoji, title } = groupIcon(detail.group)
@@ -298,6 +367,13 @@ export function GroupView({ detail, today, banner, footer, onBack, onSwitcher, o
           <Pressable style={[k.btn, k.ghost, { marginTop: 10, paddingVertical: 12 }]} onPress={onSettle} accessibilityRole="button" testID="settle-up"><Text style={[k.btnText, { color: T.teal, fontSize: 15 }]}>See recorded payments</Text></Pressable>
         )}
       </View>
+      {onActivity && (
+        <Pressable style={[k.card, k.row, { marginTop: 14, paddingVertical: 14 }]} onPress={onActivity} accessibilityRole="button" accessibilityLabel="Activity. Everything that happened in this group" testID="group-activity">
+          <View style={k.feedGlyph}><Text style={{ fontSize: 16, color: T.teal }} accessible={false}>◷</Text></View>
+          <View style={k.grow}><Text style={k.t}>Activity</Text><Text style={k.m}>Adds, edits, deletes and payments</Text></View>
+          <Text style={k.edit} accessible={false}>›</Text>
+        </Pressable>
+      )}
       {detail.expenses.length === 0 && (
         <View style={[k.card, { marginTop: 14 }]}>
           <Text style={k.t}>No expenses yet</Text>
@@ -827,6 +903,10 @@ const k = StyleSheet.create({
   fab: { position: 'absolute', right: 18, bottom: 18, backgroundColor: T.teal, borderRadius: 22, paddingVertical: 17, paddingHorizontal: 22, shadowColor: T.teal, shadowOpacity: 0.35, shadowRadius: 12, shadowOffset: { width: 0, height: 8 }, elevation: 6 },
   fabText: { color: 'white', fontWeight: '900', fontSize: 17 },
   tabBar: { flexDirection: 'row', justifyContent: 'space-around', backgroundColor: T.card, borderTopWidth: 1, borderTopColor: T.line, paddingTop: 8, paddingBottom: 14 },
+  feedGlyph: { width: 34, height: 34, borderRadius: 12, backgroundColor: T.soft, alignItems: 'center', justifyContent: 'center', marginTop: 1 },
+  feedTitle: { fontSize: 15, fontWeight: '700', color: T.ink },
+  feedAmt: { fontSize: 15, fontWeight: '800', color: T.body, marginTop: 1 },
+  struck: { textDecorationLine: 'line-through', color: T.muted },
   tabItem: { alignItems: 'center', paddingHorizontal: 24, paddingVertical: 2 },
   tabGlyph: { fontSize: 20, color: T.hint },
   tabLabel: { fontSize: 11, fontWeight: '800', color: T.hint, marginTop: 2 },
