@@ -277,6 +277,7 @@ const TONE_STYLE: Record<FeedTone, { bg: string; fg: string; border?: string }> 
   settle: { bg: T.teal, fg: '#ffffff' },
   undo: { bg: '#ffffff', fg: T.muted, border: '#cfd6d1' },
   move: { bg: '#ebeeea', fg: T.ink },
+  photo: { bg: '#ebeeea', fg: T.ink },
 }
 type IconName = ComponentProps<typeof Ionicons>['name']
 const ROW_MIN = 64
@@ -392,6 +393,7 @@ function FeedRowView({ entry, first, youId, today, showGroup, onOpen }: { entry:
       {row.amount && (
         <View style={k.feedAmtCol}>
           <Text style={[k.feedAmt, row.struckAmount && k.struckAmt]} testID={`feed-amount-${entry.id}`}>{row.amount}</Text>
+          {row.originalAmount && <Text style={k.feedWas} testID={`feed-original-${entry.id}`}>{row.originalAmount}</Text>}
           {row.previousAmount && <Text style={k.feedWas} testID={`feed-was-${entry.id}`}>{row.previousAmount}</Text>}
         </View>
       )}

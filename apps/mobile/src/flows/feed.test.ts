@@ -16,6 +16,8 @@ const entry = (id: string, over: Partial<FeedEntry> = {}): FeedEntry => ({
   amountMinor: 4000,
   previousAmountMinor: null,
   currency: 'USD',
+  originalMinor: null,
+  originalCurrency: null,
   from: null,
   to: null,
   changes: null,
@@ -164,7 +166,7 @@ describe('the expense’s own date', () => {
 
 describe('tones and icons', () => {
   it('every tone has a line icon, none an emoji', () => {
-    expect(Object.keys(TONE_ICON).sort()).toEqual(['add', 'delete', 'edit', 'move', 'settle', 'undo'])
+    expect(Object.keys(TONE_ICON).sort()).toEqual(['add', 'delete', 'edit', 'move', 'photo', 'settle', 'undo'])
     for (const icon of Object.values(TONE_ICON)) expect(icon).toMatch(/^[a-z-]+$/)
   })
 })
@@ -257,5 +259,21 @@ describe('tapping a row', () => {
   })
   it('an expense row with no id falls back to the group', () => {
     expect(feedTarget(entry('a', { target: { type: 'expense', id: null, label: '', live: false } }))).toEqual({ kind: 'group', groupId: 'g1' })
+  })
+})
+
+describe('feed rows: converted amounts and receipt photos', () => {
+  it('shows the original amount under a converted expense and says so for screen readers', () => {
+    const row = feedRow(entry('c1', { originalMinor: 1000, originalCurrency: 'EUR', amountMinor: 1100 }), 'me', { showGroup: false })
+    expect(row.amount).toBe('$11.00')
+    expect(row.originalAmount).toBe('€10.00')
+    expect(row.label).toContain('entered as €10.00')
+    expect(feedRow(entry('c2'), 'me', { showGroup: false }).originalAmount).toBeNull()
+  })
+
+  it('a receipt photo row has a camera icon and reads as a sentence', () => {
+    const row = feedRow(entry('p1', { kind: 'expense.photo_added' }), 'me', { showGroup: false })
+    expect(row.icon).toBe('camera-outline')
+    expect(row.title).toBe('You added a receipt to “Dinner”')
   })
 })

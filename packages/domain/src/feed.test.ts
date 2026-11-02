@@ -228,3 +228,24 @@ describe('paging helpers', () => {
     }
   })
 })
+
+describe('feed: converted amounts and receipt photos', () => {
+  it('carries the original amount and currency only for a foreign-currency expense', () => {
+    const foreign = buildFeedEntry(row({ payload: { expenseId: 'e1', settlementMinor: 1100, originalMinor: 1000, originalCurrency: 'eur' } }), ctx({ expense: dinner }))!
+    expect([foreign.originalMinor, foreign.originalCurrency]).toEqual([1000, 'EUR'])
+    expect(feedAmountText(foreign)).toBe('$11.00 (€10.00)')
+    const older = buildFeedEntry(row({ payload: { expenseId: 'e1' } }), ctx({ expense: { ...dinner, originalMinor: 500, originalCurrency: 'GBP' } }))!
+    expect([older.originalMinor, older.originalCurrency]).toEqual([500, 'GBP'])
+    const own = buildFeedEntry(row({ payload: { expenseId: 'e1', originalMinor: 4000, originalCurrency: 'USD' } }), ctx({ expense: dinner }))!
+    expect([own.originalMinor, own.originalCurrency]).toEqual([null, null])
+  })
+
+  it('photo changes are expense entries with their own sentences and a photo tone', () => {
+    const sentence = (kind: string) => feedSentence(buildFeedEntry(row({ kind, payload: { expenseId: 'e1' } }), ctx({ expense: dinner }))!, 'me')
+    expect(isFeedKind('expense.photo_added')).toBe(true)
+    expect(sentence('expense.photo_added')).toBe('You added a receipt to “Dinner”')
+    expect(sentence('expense.photo_replaced')).toBe('You replaced the receipt on “Dinner”')
+    expect(sentence('expense.photo_removed')).toBe('You removed the receipt from “Dinner”')
+    expect(feedTone({ kind: 'expense.photo_added' })).toBe('photo')
+  })
+})

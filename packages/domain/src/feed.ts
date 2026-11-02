@@ -9,6 +9,9 @@ export const FEED_KINDS = [
   'expense.deleted',
   'expense.restored',
   'expense.moved',
+  'expense.photo_added',
+  'expense.photo_replaced',
+  'expense.photo_removed',
   'settlement.created',
   'settlement.deleted',
   'settlement.restored',
@@ -45,6 +48,9 @@ export type FeedEntry = {
   /** On an edit that changed the amount: what it was before. */
   previousAmountMinor: number | null
   currency: string
+  /** Expenses entered in another currency: the amount as entered and its currency (amountMinor is that converted at the day's rate). Both null for the group's own currency. */
+  originalMinor: number | null
+  originalCurrency: string | null
   /** Payments: who paid whom. */
   from: FeedPerson | null
   to: FeedPerson | null
@@ -71,7 +77,7 @@ export type RawActivity = {
 /** What the API could look up about the thing the row is about, as it is now. */
 export type FeedContext = {
   group: FeedEntry['group']
-  expense?: { id: string; description: string; settlementMinor: number; deleted: boolean; date?: string | null } | null
+  expense?: { id: string; description: string; settlementMinor: number; deleted: boolean; date?: string | null; originalMinor?: number | null; originalCurrency?: string | null } | null
   settlement?: { id: string; from: FeedPerson; to: FeedPerson; minor: number; deleted: boolean } | null
   /** The edit-history `changes` for this row, when it is an edit and they were recorded. */
   changes?: FeedChange[] | null
@@ -113,6 +119,15 @@ export function buildFeedEntry(row: RawActivity, ctx: FeedContext): FeedEntry | 
     amount = int(payload.minor) ?? ctx.settlement?.minor ?? null
   }
 
+  // The original amount, only for an expense entered in a currency other than the group's. Newer rows carry it in the payload.
+  let originalMinor: number | null = null
+  let originalCurrency: string | null = null
+  if (isExpense) {
+    originalCurrency = (str(payload.originalCurrency) ?? ctx.expense?.originalCurrency ?? null)?.toUpperCase() ?? null
+    originalMinor = int(payload.originalMinor) ?? ctx.expense?.originalMinor ?? null
+    if (originalCurrency === null || originalMinor === null || originalCurrency === ctx.group.currency.toUpperCase()) { originalCurrency = null; originalMinor = null }
+  }
+
   const settlement = ctx.settlement ?? null
   const fromId = str(payload.fromId)
   const toId = str(payload.toId)
@@ -142,6 +157,8 @@ export function buildFeedEntry(row: RawActivity, ctx: FeedContext): FeedEntry | 
     amountMinor: amount,
     previousAmountMinor: previous,
     currency: ctx.group.currency,
+    originalMinor,
+    originalCurrency,
     from,
     to,
     changes,
@@ -150,13 +167,16 @@ export function buildFeedEntry(row: RawActivity, ctx: FeedContext): FeedEntry | 
   }
 }
 
-export type FeedTone = 'add' | 'edit' | 'delete' | 'undo' | 'settle' | 'move'
+export type FeedTone = 'add' | 'edit' | 'delete' | 'undo' | 'settle' | 'move' | 'photo'
 
 export function feedTone(entry: Pick<FeedEntry, 'kind'>): FeedTone {
   switch (entry.kind) {
     case 'expense.created': return 'add'
     case 'expense.updated': return 'edit'
     case 'expense.deleted': return 'delete'
+    case 'expense.photo_added':
+    case 'expense.photo_replaced':
+    case 'expense.photo_removed': return 'photo'
     case 'expense.restored':
     case 'settlement.deleted':
     case 'settlement.restored': return 'undo'
@@ -184,6 +204,9 @@ export function feedSegments(entry: FeedEntry, youId: string | null, labelMax = 
       case 'expense.updated': return [who, plain(' edited '), thing]
       case 'expense.deleted': return [who, plain(' deleted '), thing]
       case 'expense.restored': return [who, plain(' restored '), thing]
+      case 'expense.photo_added': return [who, plain(' added a receipt to '), thing]
+      case 'expense.photo_replaced': return [who, plain(' replaced the receipt on '), thing]
+      case 'expense.photo_removed': return [who, plain(' removed the receipt from '), thing]
       default: return [who, plain(' moved '), thing, plain(entry.direction === 'in' ? ' here from another group' : entry.direction === 'out' ? ' to another group' : '')]
     }
   }
@@ -219,7 +242,7 @@ export function feedAmountText(entry: FeedEntry): string | null {
   if (entry.amountMinor === null) return null
   const now = formatMoney(entry.amountMinor, entry.currency)
   if (entry.kind === 'expense.updated' && entry.previousAmountMinor !== null) return `${now} (was ${formatMoney(entry.previousAmountMinor, entry.currency)})`
-  return now
+  return entry.originalMinor !== null && entry.originalCurrency !== null ? `${now} (${formatMoney(entry.originalMinor, entry.originalCurrency)})` : now
 }
 
 // ─── Pagination ───

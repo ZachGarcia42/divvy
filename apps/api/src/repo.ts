@@ -796,6 +796,8 @@ export class Repo {
       await this.activity(sql, groupId, actor.participantId, 'expense.created', `${actor.displayName} added ${expenseLabel(prepared.description)}`, {
         expenseId: id,
         settlementMinor: prepared.settlementMinor,
+        originalMinor: prepared.originalMinor,
+        originalCurrency: prepared.originalCurrency,
         description: prepared.description,
       })
       await this.history(sql, id, actor.participantId, 'created', null)
@@ -839,8 +841,10 @@ export class Repo {
       const historyId = newId()
       await this.activity(sql, groupId, actor.participantId, 'expense.updated', `${actor.displayName} edited ${expenseLabel(prepared.description)}`, {
         expenseId,
-        previous: { settlementMinor: current.settlement_minor, description: current.description },
+        previous: { settlementMinor: current.settlement_minor, originalMinor: current.original_minor, originalCurrency: current.original_currency, description: current.description },
         settlementMinor: prepared.settlementMinor,
+        originalMinor: prepared.originalMinor,
+        originalCurrency: prepared.originalCurrency,
         description: prepared.description,
         historyId,
       })
@@ -1280,7 +1284,7 @@ export class Repo {
     const settlementIds = unique(payloads.map((payload) => str(payload.settlementId)))
     const [groups, expenses, settlements] = await Promise.all([
       lookup<{ id: string; name: string; emoji: string | null; settlement_currency: string }>('groups', 'id, name, emoji, settlement_currency', groupIds),
-      lookup<{ id: string; description: string; settlement_minor: number; expense_date: string; deleted_at: unknown }>('expenses', 'id, description, settlement_minor, expense_date, deleted_at', expenseIds),
+      lookup<{ id: string; description: string; settlement_minor: number; expense_date: string; deleted_at: unknown; original_minor: number | null; original_currency: string | null }>('expenses', 'id, description, settlement_minor, expense_date, deleted_at, original_minor, original_currency', expenseIds),
       settlementIds.length === 0 ? Promise.resolve([]) : this.sql.query<{ id: string; from_id: string; to_id: string; from_name: string | null; to_name: string | null; minor: number; deleted_at: unknown }>(
         `select s.id, s.from_participant_id as from_id, s.to_participant_id as to_id, pf.display_name as from_name, pt.display_name as to_name, s.minor, s.deleted_at
          from settlements s left join participants pf on pf.id = s.from_participant_id left join participants pt on pt.id = s.to_participant_id
@@ -1298,7 +1302,7 @@ export class Repo {
     )
 
     const groupById = new Map(groups.map((row) => [row.id, { id: row.id, name: row.name, emoji: row.emoji ?? null, currency: row.settlement_currency }]))
-    const expenseById = new Map(expenses.map((row) => [row.id, { id: row.id, description: row.description, settlementMinor: Number(row.settlement_minor), deleted: row.deleted_at != null, date: row.expense_date ? String(row.expense_date) : null }]))
+    const expenseById = new Map(expenses.map((row) => [row.id, { id: row.id, description: row.description, settlementMinor: Number(row.settlement_minor), deleted: row.deleted_at != null, date: row.expense_date ? String(row.expense_date) : null, originalMinor: row.original_minor == null ? null : Number(row.original_minor), originalCurrency: row.original_currency ?? null }]))
     const settlementById = new Map(settlements.map((row) => [row.id, {
       id: row.id,
       from: { id: row.from_id, name: row.from_name },
@@ -1500,6 +1504,8 @@ export class Repo {
         await this.history(sql, expenseId, actor.participantId, 'edited', [
           previous ? { field: 'photo', from: 'added', to: 'replaced' } : { field: 'photo', from: null, to: 'added' },
         ])
+        await this.activity(sql, groupId, actor.participantId, previous ? 'expense.photo_replaced' : 'expense.photo_added',
+          `${actor.displayName} ${previous ? 'replaced the receipt on' : 'added a receipt to'} ${expenseLabel(current.description)}`, { expenseId, description: current.description })
       })
     } catch (error) {
       await store.remove(id).catch(() => undefined)
@@ -1521,6 +1527,7 @@ export class Repo {
       if (!removed) return
       await sql.query(`delete from expense_photos where expense_id = $1`, [expenseId])
       await this.history(sql, expenseId, actor.participantId, 'edited', [{ field: 'photo', from: 'added', to: 'removed' }])
+      await this.activity(sql, groupId, actor.participantId, 'expense.photo_removed', `${actor.displayName} removed the receipt from ${expenseLabel(current.description)}`, { expenseId, description: current.description })
     })
     if (removed) await store.remove(removed).catch(() => undefined)
   }

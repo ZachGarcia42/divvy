@@ -17,7 +17,7 @@ const check = (name, ok, extra = '') => { console.log(ok ? 'PASS' : 'FAIL', name
   await id('create-group-card').click(); await id('create-group-sheet').waitFor(); await p.waitForTimeout(400)
   check('create sheet uses the New group header', (await p.getByText('New group', { exact: true }).count()) === 1 && (await id('create-group-cancel').count()) === 1)
   check('single full-width Create group button', (await id('create-group-save').innerText()).trim() === 'Create group')
-  check('no free-text Currency field in the create sheet', (await id('group-currency').count()) === 0 && (await id('create-group-sheet').getByText('Currency', { exact: true }).count()) === 0)
+  check('the create sheet picks the currency from a list, not a free-text field', (await id('group-currency').count()) === 1 && (await id('create-group-sheet').locator('input[data-testid="group-currency"], textarea[data-testid="group-currency"]').count()) === 0)
   check('no template chips in sheet', (await p.locator('[data-testid^="template-"]').count()) === 0)
   check('no Trip/Home/Couple/Dinners chips', (await p.getByText(/^(🏔️|🏠|💑|🍜)\s+(Trip|Home|Couple|Dinners)$/).count()) === 0)
   const height = async () => (await id('create-group-sheet').boundingBox()).height

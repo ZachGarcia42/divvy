@@ -163,7 +163,7 @@ export function changeSummary(changes: FeedChange[] | null): string | null {
 }
 
 /** Ionicons line icons, one per tone. Never emoji. */
-export const TONE_ICON: Record<FeedTone, string> = { add: 'add', edit: 'pencil', delete: 'trash-outline', undo: 'arrow-undo', settle: 'checkmark', move: 'swap-horizontal' }
+export const TONE_ICON: Record<FeedTone, string> = { add: 'add', edit: 'pencil', delete: 'trash-outline', undo: 'arrow-undo', settle: 'checkmark', move: 'swap-horizontal', photo: 'camera-outline' }
 
 export type FeedRow = {
   id: string
@@ -177,6 +177,8 @@ export type FeedRow = {
   amount: string | null
   /** "was $35.00" under the amount of an edit that changed it, or null. */
   previousAmount: string | null
+  /** "€40.00" under the amount of an expense entered in another currency (the amount above is the converted one), or null. */
+  originalAmount: string | null
   /** Lines under the sentence: what changed, who paid whom, “Dated Sat, Oct 24”. */
   details: string[]
   /** "3:42 PM", plus the group on the all-groups feed. */
@@ -203,6 +205,7 @@ export function feedRow(entry: FeedEntry, youId: string | null, opts: { showGrou
   const title = feedSentence(entry, youId)
   const amount = entry.amountMinor === null ? null : formatMoney(entry.amountMinor, entry.currency)
   const previousAmount = entry.kind === 'expense.updated' && entry.previousAmountMinor !== null ? `was ${formatMoney(entry.previousAmountMinor, entry.currency)}` : null
+  const originalAmount = entry.originalMinor !== null && entry.originalCurrency !== null ? formatMoney(entry.originalMinor, entry.originalCurrency) : null
   const details = [
     entry.kind === 'expense.updated' ? changeSummary(entry.changes) : null,
     feedPaymentDetail(entry, youId),
@@ -221,9 +224,10 @@ export function feedRow(entry: FeedEntry, youId: string | null, opts: { showGrou
     title,
     amount,
     previousAmount,
+    originalAmount,
     details,
     meta,
-    label: [title, amount, previousAmount, ...details, meta].filter(Boolean).join('. '),
+    label: [title, amount, originalAmount ? `entered as ${originalAmount}` : null, previousAmount, ...details, meta].filter(Boolean).join('. '),
     struckLabel,
     struckAmount,
   }
