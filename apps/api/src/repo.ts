@@ -35,6 +35,10 @@ import {
   splitFromStored,
   splitToStored,
   shareGapMessage,
+  PAY_PROVIDERS,
+  assertHandle,
+  type PayHandles,
+  type PayProvider,
 } from '@divvy/domain'
 import { createHash, randomBytes, randomInt, randomUUID, timingSafeEqual } from 'node:crypto'
 import type { Sql } from './db.ts'
@@ -310,7 +314,9 @@ export class Repo {
     }
   }
 
-  async updateMe(actor: Actor, patch: { displayName?: string; homeCurrency?: string }) {
+  async updateMe(actor: Actor, patch: { displayName?: string; homeCurrency?: string; pay?: unknown }) {
+    // Check every handle first so a bad one changes nothing.
+    const pay = patch.pay === undefined ? null : parsePayPatch(patch.pay)
     if (patch.displayName !== undefined) {
       const name = cleanName(patch.displayName)
       await this.sql.query(`update users set display_name = $1 where id = $2`, [name, actor.userId])
@@ -320,8 +326,22 @@ export class Repo {
       exponentOf(patch.homeCurrency)
       await this.sql.query(`update users set home_currency = $1 where id = $2`, [patch.homeCurrency.toUpperCase(), actor.userId])
     }
+    if (pay) {
+      for (const [provider, value] of Object.entries(pay)) {
+        await this.sql.query(`update users set ${PAY_COLUMNS[provider as PayProvider]} = $1 where id = $2`, [value, actor.userId])
+      }
+    }
     const user = await this.mustUser(actor.userId)
-    return publicUser(user)
+    return { ...publicUser(user), pay: await this.payHandlesOf(actor.userId) }
+  }
+
+  /** Your own saved payment names. */
+  private async payHandlesOf(userId: string): Promise<PayHandles> {
+    const row = await this.one<{ venmo_handle: string | null; paypal_handle: string | null; cashapp_handle: string | null }>(
+      `select venmo_handle, paypal_handle, cashapp_handle from users where id = $1`,
+      [userId],
+    )
+    return payHandlesFromRow(row)
   }
 
   async claims(actor: Actor) {
@@ -393,7 +413,7 @@ export class Repo {
       [actor.userId],
     )
     return {
-      you: { id: actor.participantId, name: actor.displayName, email: actor.email, homeCurrency: actor.homeCurrency },
+      you: { id: actor.participantId, name: actor.displayName, email: actor.email, homeCurrency: actor.homeCurrency, pay: await this.payHandlesOf(actor.userId) },
       groups,
       estimate: counted === 0 ? null : { homeCurrency: actor.homeCurrency, minor: estimate, approximate },
       unread: Number(unread?.count ?? 0),
@@ -2171,9 +2191,10 @@ export class Repo {
   }
 
   private async memberRows(groupId: string) {
-    return this.sql.query<{ id: string; display_name: string; email: string | null; user_id: string | null; removed_at: string | null; default_weight: number | null; muted: boolean }>(
-      `select p.id, p.display_name, p.email, p.user_id, m.removed_at, m.default_weight, m.muted
+    return this.sql.query<MemberRow>(
+      `select p.id, p.display_name, p.email, p.user_id, m.removed_at, m.default_weight, m.muted, u.venmo_handle, u.paypal_handle, u.cashapp_handle
        from memberships m join participants p on p.id = m.participant_id
+       left join users u on u.id = p.user_id
        where m.group_id = $1 order by p.display_name`,
       [groupId],
     )
@@ -2423,7 +2444,34 @@ function publicGroup(group: GroupRow) {
   }
 }
 
-function publicMember(member: { id: string; display_name: string; email: string | null; user_id: string | null; removed_at: string | null; default_weight: number | null; muted: boolean }) {
+type MemberRow = {
+  id: string; display_name: string; email: string | null; user_id: string | null; removed_at: string | null; default_weight: number | null; muted: boolean
+  venmo_handle?: string | null; paypal_handle?: string | null; cashapp_handle?: string | null
+}
+
+const PAY_COLUMNS: Record<PayProvider, string> = { venmo: 'venmo_handle', paypal: 'paypal_handle', cashapp: 'cashapp_handle' }
+
+function payHandlesFromRow(row: { venmo_handle?: string | null; paypal_handle?: string | null; cashapp_handle?: string | null } | null | undefined): PayHandles {
+  const out: PayHandles = {}
+  if (row?.venmo_handle) out.venmo = row.venmo_handle
+  if (row?.paypal_handle) out.paypal = row.paypal_handle
+  if (row?.cashapp_handle) out.cashapp = row.cashapp_handle
+  return out
+}
+
+/** { venmo: 'name' | '' | null } → the normalized value per provider (null clears). Unknown apps and bad shapes are errors. */
+function parsePayPatch(input: unknown): Record<string, string | null> {
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) throw new LedgerError('BAD_HANDLE', 'Send payment names as an object')
+  const out: Record<string, string | null> = {}
+  for (const [provider, value] of Object.entries(input)) {
+    if (!(PAY_PROVIDERS as readonly string[]).includes(provider)) throw new LedgerError('BAD_HANDLE', `Divvy doesn’t link to ${provider}`)
+    out[provider] = assertHandle(provider as PayProvider, value)
+  }
+  return out
+}
+
+function publicMember(member: MemberRow) {
+  const pay = member.removed_at || !member.user_id ? {} : payHandlesFromRow(member)
   return {
     id: member.id,
     name: member.display_name,
@@ -2432,6 +2480,8 @@ function publicMember(member: { id: string; display_name: string; email: string 
     removed: Boolean(member.removed_at),
     defaultWeight: member.default_weight,
     muted: member.muted === true,
+    // Only group members ever get a group's member list, so these are shared with the people you split with and no one else.
+    ...(Object.keys(pay).length > 0 ? { pay } : {}),
   }
 }
 

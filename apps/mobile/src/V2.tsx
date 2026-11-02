@@ -17,6 +17,9 @@ import { BottomSheet } from './BottomSheet'
 import { DateChip } from './DatePicker'
 import { dateToSave } from './flows/date'
 import type { Expense, GroupDetail, Home, HomeGroup, Payment, Settlement } from './types'
+import { PayNudge, PayRowsSection, paySummary } from './Pay'
+import { payRowsFor, type PayRow } from './flows/pay'
+import type { PayHandles } from '@divvy/domain'
 
 export const T = {
   bg: '#f6f7f4', card: '#ffffff', line: '#e4e8e2', teal: '#0f766e', tealD: '#0b5c56', mint: '#cfe3db', soft: '#f3faf7',
@@ -229,7 +232,7 @@ export function SwitcherSheet({ groups, currentId, onPick, onAll, onClose }: {
   )
 }
 
-export function AccountScreen({ name, email, onEditName, onSignOut }: { name: string; email?: string | null; onEditName: () => void; onSignOut: () => void }) {
+export function AccountScreen({ name, email, pay, onEditName, onPayNames, onSignOut }: { name: string; email?: string | null; pay?: PayHandles; onEditName: () => void; onPayNames?: () => void; onSignOut: () => void }) {
   return (
     <>
       <View style={k.top}><Text style={k.h1} accessibilityRole="header">Account</Text></View>
@@ -239,6 +242,12 @@ export function AccountScreen({ name, email, onEditName, onSignOut }: { name: st
           <View style={k.grow}><Text style={k.t}>{name}</Text><Text style={k.m}>{email ?? 'Friends see this name in every group'}</Text></View>
           <Text style={k.edit} accessible={false}>✎</Text>
         </Pressable>
+        {onPayNames && (
+          <Pressable style={[k.row, k.rowLine]} onPress={onPayNames} accessibilityRole="button" accessibilityLabel={`Payment names. ${paySummary(pay)}`} testID="pay-names-row">
+            <View style={k.grow}><Text style={k.t}>Payment names</Text><Text style={k.m} testID="pay-names-summary">{paySummary(pay)}</Text></View>
+            <Text style={k.edit} accessible={false}>›</Text>
+          </Pressable>
+        )}
       </View>
       <Pressable style={[k.btn, k.ghost, { marginTop: 16 }]} onPress={onSignOut} accessibilityRole="button" testID="sign-out"><Text style={[k.btnText, { color: T.red }]}>Sign out</Text></Pressable>
     </>
@@ -632,8 +641,11 @@ export function ExpenseDetail({ detail, expense, history, canEdit, whyNoEdit, bu
 
 // ───────────────────────── Settle up ─────────────────────────
 
-export function SettleScreen({ detail, busyKey, onBack, onRecord, onUndo }: {
-  detail: GroupDetail; busyKey: string | null; onBack: () => void; onRecord: (payment: Payment) => void; onUndo: (settlementId: string) => void
+export function SettleScreen({ detail, busyKey, youPay, onBack, onRecord, onUndo, onPayLink, onAddPayNames }: {
+  detail: GroupDetail; busyKey: string | null; /** Your own saved payment names; undefined from older callers. */ youPay?: PayHandles
+  onBack: () => void; onRecord: (payment: Payment) => void; onUndo: (settlementId: string) => void
+  /** Open a payment link for this payment (the amount is what the hero shows). Does not record anything. */
+  onPayLink?: (row: PayRow, payment: Payment) => void; onAddPayNames?: () => void
 }) {
   const payments = [...detail.payments].sort((a, b) => b.minor - a.minor)
   const [selKey, setSel] = useState<string | null>(null)
@@ -657,6 +669,12 @@ export function SettleScreen({ detail, busyKey, onBack, onRecord, onUndo }: {
   // Sized to what it shows: an <input> is ~20 characters wide by default (pushed the $ out of the card) and a stretched Android field strands the caret.
   const heroWidth = amountWidth(heroText, '0.00', 44)
   const busy = busyKey !== null
+  const youArePayer = !!current && current.fromId === detail.yourParticipantId
+  const youGetPaid = !!current && current.toId === detail.yourParticipantId
+  const payee = current ? detail.members.find((m) => m.id === current.toId) : undefined
+  const canPay = !!onPayLink && youArePayer && !amountError && minor > 0
+  const payRows = canPay && current ? payRowsFor(payee?.pay, minor, detail.currency, detail.group.name) : null
+  const nudge = !!onAddPayNames && youGetPaid && !(youPay && Object.keys(youPay).length > 0)
   const label = (s: Settlement) => `${s.fromId === detail.yourParticipantId ? 'You' : s.fromName} paid ${s.toId === detail.yourParticipantId ? 'You' : s.toName}`
   return (
     <>
@@ -682,7 +700,18 @@ export function SettleScreen({ detail, busyKey, onBack, onRecord, onUndo }: {
       ) : (
         <View style={k.card}><Text style={k.t}>Everyone is settled up.</Text></View>
       )}
-      <View style={k.notice} testID="no-money-notice"><Text style={k.noticeText}>Divvy doesn’t move money. Pay each other however you like, then record it here so balances update.</Text></View>
+      {payRows && current && (
+        <>
+          <Eyebrow>{`Pay ${name(current.toId).split(' ')[0]} with`}</Eyebrow>
+          <PayRowsSection payeeName={name(current.toId)} pay={payRows} onOpen={(row) => onPayLink?.(row, { ...current, minor })} />
+        </>
+      )}
+      {nudge && <PayNudge onAdd={() => onAddPayNames?.()} />}
+      <View style={k.notice} testID="no-money-notice"><Text style={k.noticeText}>{
+        payRows && !payRows.nothing ? 'Divvy doesn’t move money. These buttons open the other app; you pay there, then come back and record it.'
+          : youGetPaid && current ? `Divvy doesn’t move money. Once ${name(current.fromId)} pays you, record it here.`
+          : 'Divvy doesn’t move money. Pay each other however you like, then record it here so balances update.'
+      }</Text></View>
       {others.length > 0 && (
         <>
           <Eyebrow>Or record another</Eyebrow>
@@ -698,9 +727,9 @@ export function SettleScreen({ detail, busyKey, onBack, onRecord, onUndo }: {
         </>
       )}
       {current && (
-        <Pressable style={[k.btn, { marginTop: 18 }, (busy || !!amountError || minor <= 0) && k.btnOff]} disabled={busy || !!amountError || minor <= 0}
+        <Pressable style={[k.btn, { marginTop: 18 }, payRows && k.ghost, (busy || !!amountError || minor <= 0) && k.btnOff]} disabled={busy || !!amountError || minor <= 0}
           onPress={() => { onRecord({ ...current, minor }); setAmountText(null); setSel(null) }} accessibilityRole="button" accessibilityState={{ busy, disabled: busy || !!amountError || minor <= 0 }} testID={`record-${current.fromId}-${current.toId}`}>
-          <Text style={k.btnText}>{busyKey === keyOf(current) ? 'Recording…' : `Record ${formatMoney(minor, detail.currency)}`}</Text>
+          <Text style={[k.btnText, payRows && !(busy || !!amountError || minor <= 0) && { color: T.teal }]}>{busyKey === keyOf(current) ? 'Recording…' : `${payRows ? 'I paid another way · ' : ''}Record ${formatMoney(minor, detail.currency)}`}</Text>
         </Pressable>
       )}
       {detail.settlements.length > 0 && (

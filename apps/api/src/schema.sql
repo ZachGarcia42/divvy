@@ -278,3 +278,8 @@ create table if not exists used_id_tokens (
 
 -- Design v2: an optional single emoji icon per group (set from a template or the picker).
 alter table groups add column if not exists emoji text;
+
+-- Payment links: each person's own Venmo / PayPal.me / Cash App names (nullable, validated by the API).
+alter table users add column if not exists venmo_handle text;
+alter table users add column if not exists paypal_handle text;
+alter table users add column if not exists cashapp_handle text;

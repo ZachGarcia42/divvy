@@ -458,7 +458,7 @@ export function createApp(sql: Sql, options?: {
     const body = await readBody(c)
     if (!body) throw new LedgerError('BAD_REQUEST', 'Send a JSON object')
     if (body.homeCurrency !== undefined && typeof body.homeCurrency !== 'string') throw new LedgerError('BAD_CURRENCY', 'Currency must be text')
-    return c.json(await repo.updateMe(current, body as { displayName?: string; homeCurrency?: string }))
+    return c.json(await repo.updateMe(current, body as { displayName?: string; homeCurrency?: string; pay?: unknown }))
   })
   app.post('/api/me/email', async (c) => {
     const current = await actor(c)

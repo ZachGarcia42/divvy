@@ -3,6 +3,9 @@ import { editConflict } from './flows/errors'
 import { joinedFeedback } from './flows/composer'
 import { draftFromSpec, majorString } from './flows/split'
 import { contentTopGap, SNACK_MS, snackOwner, snackStays, startScreen, groupIcon, type HistoryEntry } from './flows/view'
+import { PayReturnSheet, PaymentNamesScreen } from './Pay'
+import { onReturn, stillOwed, type PayRow, type PendingPay } from './flows/pay'
+import type { PayHandles, PayProvider } from '@divvy/domain'
 import { AccountScreen, AddSheet, CreateGroupSheet, ExpenseDetail, Fab, GroupsHome, GroupView, InviteCard, PasteCard, SettleScreen, Snack, SwitcherSheet, TabBar, todayIso, type SheetSave, type Tab } from './V2'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import * as SecureStore from 'expo-secure-store'
@@ -10,6 +13,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   ActivityIndicator,
   Alert,
+  AppState,
   BackHandler,
   KeyboardAvoidingView,
   Linking,
@@ -558,6 +562,10 @@ function Ledger({
   const [joinError, setJoinError] = useState<string | null>(null)
   const [joinAttempt, setJoinAttempt] = useState(0)
   const [editingName, setEditingName] = useState(false)
+  const [editingPay, setEditingPay] = useState(false)
+  // A payment link that was opened and not yet answered (memory only), and the question shown when the app comes back.
+  const pendingPay = useRef<PendingPay | null>(null)
+  const [returnPay, setReturnPay] = useState<PendingPay | null>(null)
   const [toast, setToast] = useState<string | null>(null)
   const [snack, setSnack] = useState<Snackbar | null>(null)
   // A lasting "You're in <group>" confirmation after accepting a group link (cleared on dismiss).
@@ -699,16 +707,47 @@ function Ledger({
     onInviteHandled()
   }
 
+  // After a payment link was opened, ask once the app is back in the foreground. The question never records anything.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      const pending = pendingPay.current
+      if (!pending) return
+      if (state !== 'active') { pendingPay.current = { ...pending, left: true }; return }
+      const next = onReturn(pending, Date.now())
+      if (next === 'forget') pendingPay.current = null
+      if (next === 'ask') { pendingPay.current = null; setReturnPay(pending) }
+    })
+    return () => sub.remove()
+  }, [])
+
+  function openPayLink(row: PayRow, payment: Payment) {
+    if (!detail) return
+    const payee = detail.members.find((m) => m.id === payment.toId)
+    pendingPay.current = { provider: row.provider as PayProvider, groupId: detail.group.id, fromId: payment.fromId, toId: payment.toId, payeeName: payee?.name ?? 'them', minor: payment.minor, currency: detail.currency, openedAt: Date.now(), left: false }
+    Linking.openURL(row.url).catch(() => {
+      pendingPay.current = null
+      showToast(`Couldn’t open ${row.label}. Pay another way, then record it here.`)
+    })
+  }
+
+  async function savePayNames(pay: Record<PayProvider, string | null>) {
+    const saved = await call<{ pay?: PayHandles }>(token, '/api/me', { method: 'PATCH', body: JSON.stringify({ pay }) })
+    setHome((current) => current ? { ...current, you: { ...current.you, pay: saved.pay ?? {} } } : current)
+    if (groupId) refresh(groupId).catch(() => undefined)
+    showToast('Saved. People in your groups can now pay you in one tap.')
+  }
+
   // Android back: step out of a screen instead of closing the app.
   useEffect(() => {
     if (Platform.OS !== 'android') return
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (editingPay) { setEditingPay(false); return true }
       if (screen === 'expense' || screen === 'settle') { setScreen('group'); return true }
       if (screen === 'group' || screen === 'account') { goGroups(); return true }
       return false
     })
     return () => sub.remove()
-  }, [screen])
+  }, [screen, editingPay])
 
   async function refresh(nextGroupId = groupId) {
     const nextHome = await call<Home>(token, '/api/home')
@@ -968,8 +1007,10 @@ function Ledger({
         {error && <Text style={styles.error}>{error}</Text>}
       </View>
     )
+  } else if (screen === 'account' && editingPay) {
+    body = <PaymentNamesScreen initial={home.you.pay ?? {}} onSave={savePayNames} onDone={() => setEditingPay(false)} />
   } else if (screen === 'account') {
-    body = <AccountScreen name={home.you.name} onEditName={() => setEditingName(true)} onSignOut={async () => {
+    body = <AccountScreen name={home.you.name} pay={home.you.pay} onEditName={() => setEditingName(true)} onPayNames={() => setEditingPay(true)} onSignOut={async () => {
       try { await call(token, '/api/auth/logout', { method: 'POST' }) } catch { /* The local session is what switches person. */ }
       onSignedOut()
     }} />
@@ -990,7 +1031,7 @@ function Ledger({
       </View>
     )
   } else if (screen === 'settle') {
-    body = <SettleScreen detail={detail} busyKey={busyKey} onBack={() => setScreen('group')} onRecord={record} onUndo={(id) => { void undo(id) }} />
+    body = <SettleScreen detail={detail} busyKey={busyKey} youPay={home.you.pay} onBack={() => setScreen('group')} onRecord={record} onUndo={(id) => { void undo(id) }} onPayLink={openPayLink} onAddPayNames={() => { setEditingPay(true); setScreen('account') }} />
   } else if (screen === 'expense') {
     body = expense ? (
       <ExpenseDetail detail={detail} expense={expense} history={history} canEdit={editBlock(expense) === null} whyNoEdit={editBlock(expense)} busy={deleting}
@@ -1022,7 +1063,7 @@ function Ledger({
         {!join && screen === 'group' && detail && groupId && <Fab onPress={() => setAdding({ edit: null })} />}
         <Snack text={snack?.text ?? null} action={snack?.action} onAction={snack?.run} />
       </View>
-      {showTabs && <TabBar tab={tab} onTab={(next) => (next === 'groups' ? goGroups() : setScreen('account'))} />}
+      {showTabs && <TabBar tab={tab} onTab={(next) => { setEditingPay(false); if (next === 'groups') goGroups(); else setScreen('account') }} />}
       {adding && detail && (
         <AddSheet members={sheetMembers} youId={detail.yourParticipantId} currency={detail.currency} groupName={groupIcon(detail.group).title}
           initial={sheetInitial} onClose={() => setAdding(null)} onSave={(value) => saveExpense(value, adding.edit)} />
@@ -1041,6 +1082,12 @@ function Ledger({
           }}
           onClose={() => setEditingName(false)}
         />
+      )}
+      {returnPay && detail && returnPay.groupId === detail.group.id && stillOwed(detail.payments, returnPay) && (
+        <PayReturnSheet pending={returnPay} busy={busyKey !== null}
+          onYes={() => { const p = returnPay; setReturnPay(null); void record({ fromId: p.fromId, toId: p.toId, minor: p.minor }) }}
+          onDifferent={() => { setReturnPay(null); setScreen('settle') }}
+          onNotYet={() => setReturnPay(null)} />
       )}
       <Toast text={toast} />
     </SafeAreaView>
