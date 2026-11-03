@@ -605,7 +605,8 @@ export function createApp(sql: Sql, options?: {
   app.post('/api/groups/:id/recurrences', async (c) => c.json(await repo.createRecurrence(await actor(c), c.req.param('id'), await c.req.json())))
   app.get('/api/groups/:id/activity', async (c) => c.json(await repo.listActivity(await actor(c), c.req.param('id'))))
   app.get('/api/groups/:id/feed', async (c) => c.json(await repo.feed(await actor(c), { groupId: c.req.param('id'), limit: c.req.query('limit'), cursor: c.req.query('cursor') })))
-  app.get('/api/feed', async (c) => c.json(await repo.feed(await actor(c), { limit: c.req.query('limit'), cursor: c.req.query('cursor') })))
+  // `?groupId=` narrows it to one group (members only), the same page as /api/groups/:id/feed.
+  app.get('/api/feed', async (c) => c.json(await repo.feed(await actor(c), { groupId: c.req.query('groupId') || undefined, limit: c.req.query('limit'), cursor: c.req.query('cursor') })))
   app.get('/api/groups/:id/charts', async (c) => c.json(await repo.charts(await actor(c), c.req.param('id'), c.req.query('from'), c.req.query('to'))))
   app.get('/api/groups/:id/comments', async (c) => c.json(await repo.comments(await actor(c), c.req.param('id'), c.req.query('targetId') ?? '')))
   app.post('/api/groups/:id/comments', async (c) => {

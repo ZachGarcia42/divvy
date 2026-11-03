@@ -1,7 +1,7 @@
 // Activity feed (read side): paging state, day grouping, and the words and tap target for each row.
 // The server builds each entry (who, what, how much, when); everything here is presentation and paging.
 import { feedPaymentDetail, feedSegments, feedSentence, feedTone, formatMoney, type FeedChange, type FeedEntry, type FeedPage, type FeedSegment, type FeedTone } from '@divvy/domain'
-import { dateHeading, weekdayMonthDay } from './view'
+import { dateHeading, groupIcon, weekdayMonthDay } from './view'
 
 export type { FeedEntry, FeedPage, FeedSegment, FeedTone }
 
@@ -148,6 +148,92 @@ export function groupFeedByDay(items: FeedEntry[], todayIso: string, offsetMinut
   return out
 }
 
+// ─── Split by group ───
+
+/** Entries each group section shows before "Show N more". */
+export const SECTION_ROWS = 4
+/** The all-groups feed stops loading pages by itself at this many entries; "Show older activity" asks for more, and a group chip loads that group alone. */
+export const SECTIONS_AUTOLOAD_MAX = 120
+
+export type FeedSection = {
+  group: FeedEntry['group']
+  /** Every loaded entry of this group, newest first. */
+  items: FeedEntry[]
+  /** The ones on screen: all of them when expanded, else the first SECTION_ROWS. */
+  shown: FeedEntry[]
+  /** How many are folded behind "Show more" (0 when everything fits or the section is expanded). */
+  hidden: number
+  expanded: boolean
+}
+
+/**
+ * Cut the all-groups feed (already newest first) into one section per group. The sections are in order of each group's most recent
+ * entry, because that is the order the groups first appear in the list; entries stay newest first inside each.
+ */
+export function groupFeedByGroup(items: FeedEntry[], expanded: Record<string, boolean> = {}, cap = SECTION_ROWS): FeedSection[] {
+  const sections: FeedSection[] = []
+  const byId = new Map<string, FeedSection>()
+  for (const item of items) {
+    let section = byId.get(item.group.id)
+    if (!section) {
+      section = { group: item.group, items: [], shown: [], hidden: 0, expanded: !!expanded[item.group.id] }
+      byId.set(item.group.id, section)
+      sections.push(section)
+    }
+    section.items.push(item)
+  }
+  for (const section of sections) {
+    const open = section.expanded || section.items.length <= cap
+    section.shown = open ? section.items : section.items.slice(0, cap)
+    section.hidden = open ? 0 : section.items.length - cap
+  }
+  return sections
+}
+
+export type FeedChip = { id: string | null; emoji: string; title: string; label: string }
+
+/**
+ * The filter chips: "All", then each group, the ones with the latest activity first (the same order as the sections), then the rest
+ * as the groups list has them. An archived group only has a chip while it still has activity on screen.
+ */
+export function feedChips(groups: { id: string; name: string; emoji?: string | null; archived?: boolean }[], items: FeedEntry[]): FeedChip[] {
+  const recent = groupFeedByGroup(items).map((section) => section.group.id)
+  const known = new Map(groups.map((group) => [group.id, group]))
+  const rank = (id: string) => { const at = recent.indexOf(id); return at === -1 ? recent.length : at }
+  const chosen = groups.filter((group) => !group.archived || recent.includes(group.id))
+  const ordered = chosen.map((group, index) => ({ group, index })).sort((a, b) => rank(a.group.id) - rank(b.group.id) || a.index - b.index).map((entry) => entry.group)
+  const chips: FeedChip[] = ordered.map((group) => {
+    const icon = groupIcon(group)
+    return { id: group.id, emoji: icon.emoji, title: icon.title, label: [icon.emoji, icon.title].filter(Boolean).join(' ') }
+  })
+  // A group in the feed that the list has not caught up with yet still gets its section's chip.
+  for (const id of recent) {
+    if (known.has(id)) continue
+    const group = items.find((item) => item.group.id === id)!.group
+    const icon = groupIcon(group)
+    chips.splice(Math.min(recent.indexOf(id), chips.length), 0, { id, emoji: icon.emoji, title: icon.title, label: [icon.emoji, icon.title].filter(Boolean).join(' ') })
+  }
+  return [{ id: null, emoji: '', title: 'All', label: 'All' }, ...chips]
+}
+
+/** The chip to show as picked: the filter when that group is still one of the chips, else All. */
+export const activeChip = (chips: FeedChip[], filter: string | null): string | null => (filter !== null && chips.some((chip) => chip.id === filter) ? filter : null)
+
+/** Auto-loading for the sectioned feed: like shouldAutoLoad, but it stops at SECTIONS_AUTOLOAD_MAX entries (the folded sections barely grow the list). */
+export function shouldAutoLoadSections(state: FeedState, distanceFromBottom: number): boolean {
+  return state.items.length < SECTIONS_AUTOLOAD_MAX && shouldAutoLoad(state, distanceFromBottom)
+}
+
+/** "Today", "Yesterday", else "Fri, Oct 30" (with the year when it is not this year): the day on a row that no day heading sits above. */
+export function dayLabel(at: string, todayIso: string, offsetMinutes?: number): string {
+  const day = localDay(at, offsetMinutes)
+  if (!day) return ''
+  const gap = Math.round((Date.parse(`${todayIso}T00:00:00Z`) - Date.parse(`${day}T00:00:00Z`)) / 86_400_000)
+  if (gap === 0) return 'Today'
+  if (gap === 1) return 'Yesterday'
+  return `${weekdayMonthDay(day)}${day.slice(0, 4) === todayIso.slice(0, 4) ? '' : `, ${day.slice(0, 4)}`}`
+}
+
 // ─── One row ───
 
 const FIELD_WORDS: Record<string, string> = {
@@ -181,7 +267,7 @@ export type FeedRow = {
   originalAmount: string | null
   /** Lines under the sentence: what changed, who paid whom, “Dated Sat, Oct 24”. */
   details: string[]
-  /** "3:42 PM", plus the group on the all-groups feed. */
+  /** "3:42 PM", plus the day ("Yesterday · 3:42 PM") when no day heading sits above the row, plus the group when it is not in a group's section. */
   meta: string
   /** Whole-row label for screen readers. */
   label: string
@@ -200,7 +286,7 @@ export function datedLine(entry: FeedEntry, todayIso?: string, offsetMinutes?: n
   return `Dated ${weekdayMonthDay(date)}${year}`
 }
 
-export function feedRow(entry: FeedEntry, youId: string | null, opts: { showGroup: boolean; offsetMinutes?: number; today?: string }): FeedRow {
+export function feedRow(entry: FeedEntry, youId: string | null, opts: { showGroup: boolean; showDay?: boolean; offsetMinutes?: number; today?: string }): FeedRow {
   const tone = feedTone(entry)
   const title = feedSentence(entry, youId)
   const amount = entry.amountMinor === null ? null : formatMoney(entry.amountMinor, entry.currency)
@@ -213,7 +299,8 @@ export function feedRow(entry: FeedEntry, youId: string | null, opts: { showGrou
   ].filter((line): line is string => !!line)
   const time = clockText(entry.at, opts.offsetMinutes)
   const groupText = opts.showGroup ? [entry.group.emoji, entry.group.name].filter(Boolean).join(' ') : ''
-  const meta = [time, groupText].filter(Boolean).join(' · ')
+  const dayText = opts.showDay && opts.today ? dayLabel(entry.at, opts.today, opts.offsetMinutes) : ''
+  const meta = [dayText, time, groupText].filter(Boolean).join(' · ')
   const struckLabel = entry.kind === 'expense.deleted'
   const struckAmount = struckLabel || (entry.kind === 'settlement.created' && !entry.target.live)
   return {

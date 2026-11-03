@@ -280,6 +280,31 @@ describe('activity feed: who can see what', () => {
     expect((await feed('', null)).items.some((item) => item.target.label === 'Secret')).toBe(false)
   })
 
+  it('/api/feed?groupId= is one group\'s feed: the same page as the group route, members only', async () => {
+    const { app, groupId, add, feed, second, call } = await setup()
+    const other = await second('Roommates')
+    await add({ description: 'Tahoe gas' })
+    await add({ description: 'Rent' }, other)
+    await add({ description: 'More gas' })
+    const narrowed = await feed(`?groupId=${other}`, null)
+    expect(narrowed.status).toBe(200)
+    expect(narrowed.items.map((item) => [item.target.label, item.group.id])).toEqual([['Rent', other]])
+    expect((await feed('', other)).items).toEqual(narrowed.items)
+    expect((await feed(`?groupId=${groupId}`, null)).items.map((item) => item.target.label)).toEqual(['More gas', 'Tahoe gas'])
+    // It pages like the others, and an empty groupId is the all-groups feed.
+    const first = await feed(`?groupId=${groupId}&limit=1`, null)
+    expect(first.items.map((item) => item.target.label)).toEqual(['More gas'])
+    const next = await feed(`?groupId=${groupId}&limit=1&cursor=${encodeURIComponent(first.nextCursor!)}`, null)
+    expect(next.items.map((item) => item.target.label)).toEqual(['Tahoe gas'])
+    expect((await feed('?groupId=', null)).items).toHaveLength(3)
+    // Someone outside the group cannot read it that way either; an unknown group is 404.
+    const token = await sessionFor(app, 'stranger@example.com')
+    const res = await app.request(`/api/feed?groupId=${groupId}`, { headers: { authorization: `Bearer ${token}` } })
+    expect(res.status).toBe(403)
+    expect(await res.text()).not.toContain('Tahoe gas')
+    expect((await call('GET', '/api/feed?groupId=nope')).status).toBe(404)
+  })
+
   it('a member who has left stops seeing that group in their global feed', async () => {
     const ctx = await setup()
     const invite = await ctx.call('POST', `/api/groups/${ctx.groupId}/invite-link`)

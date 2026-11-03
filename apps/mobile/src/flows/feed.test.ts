@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   PAGE_SIZE, LOAD_AHEAD_PX, TONE_ICON, originStays, returnsToFeed, type FeedOrigin, canLoadMore, changeSummary, clockText, datedLine, emptyFeed, feedArrived, feedFailed, feedPath, feedRefreshed, feedRequested, feedRow, feedSnack, feedTarget, feedView,
   groupFeedByDay, localDay, shouldAutoLoad,
+  SECTION_ROWS, SECTIONS_AUTOLOAD_MAX, activeChip, dayLabel, feedChips, groupFeedByGroup, shouldAutoLoadSections,
   type FeedEntry,
 } from './feed'
 
@@ -275,5 +276,104 @@ describe('feed rows: converted amounts and receipt photos', () => {
     const row = feedRow(entry('p1', { kind: 'expense.photo_added' }), 'me', { showGroup: false })
     expect(row.icon).toBe('camera-outline')
     expect(row.title).toBe('You added a receipt to “Dinner”')
+  })
+})
+
+// ─── Split by group ───
+
+const inGroup = (id: string, gid: string, name: string, at: string, emoji: string | null = null) =>
+  entry(id, { at, group: { id: gid, name, emoji, currency: 'USD' } })
+
+describe('split by group: sections', () => {
+  const items = [
+    inGroup('a1', 'tahoe', 'Tahoe', '2026-11-02T20:00:00.000Z'),
+    inGroup('b1', 'mission', 'Mission St', '2026-11-02T19:00:00.000Z'),
+    inGroup('a2', 'tahoe', 'Tahoe', '2026-11-02T18:00:00.000Z'),
+    inGroup('c1', 'nopa', 'Nopa', '2026-11-01T18:00:00.000Z'),
+    inGroup('b2', 'mission', 'Mission St', '2026-10-30T18:00:00.000Z'),
+  ]
+  it('one section per group, ordered by each group’s most recent entry, newest first inside', () => {
+    const sections = groupFeedByGroup(items)
+    expect(sections.map((s) => s.group.id)).toEqual(['tahoe', 'mission', 'nopa'])
+    expect(sections.map((s) => s.items.map((i) => i.id))).toEqual([['a1', 'a2'], ['b1', 'b2'], ['c1']])
+    expect(sections.every((s) => s.hidden === 0 && !s.expanded)).toBe(true)
+  })
+  it('an empty feed has no sections', () => expect(groupFeedByGroup([])).toEqual([]))
+  it(`shows the newest ${SECTION_ROWS} and folds the rest behind Show more until the section is opened`, () => {
+    const many = Array.from({ length: 7 }, (_, i) => inGroup(`t${i}`, 'tahoe', 'Tahoe', `2026-11-02T1${9 - i}:00:00.000Z`))
+    const [folded] = groupFeedByGroup([...many, inGroup('m1', 'mission', 'Mission St', '2026-11-01T10:00:00.000Z')])
+    expect(folded!.shown.map((i) => i.id)).toEqual(['t0', 't1', 't2', 't3'])
+    expect(folded!.hidden).toBe(3)
+    const [open] = groupFeedByGroup(many, { tahoe: true })
+    expect(open!.shown).toHaveLength(7)
+    expect(open!.hidden).toBe(0)
+    expect(open!.expanded).toBe(true)
+    // Exactly the cap is not folded.
+    expect(groupFeedByGroup(many.slice(0, SECTION_ROWS))[0]!.hidden).toBe(0)
+    expect(groupFeedByGroup(many.slice(0, SECTION_ROWS + 1))[0]!.hidden).toBe(1)
+  })
+  it('a group whose first entry arrives on a later page takes its place after the groups already shown', () => {
+    const first = groupFeedByGroup(items.slice(0, 2)).map((s) => s.group.id)
+    const later = groupFeedByGroup(items).map((s) => s.group.id)
+    expect(later.slice(0, first.length)).toEqual(first)
+  })
+})
+
+describe('split by group: chips', () => {
+  const groups = [
+    { id: 'nopa', name: '🍜 Nopa', archived: false },
+    { id: 'mission', name: 'Mission St', emoji: '🏠', archived: false },
+    { id: 'tahoe', name: 'Tahoe', archived: false },
+    { id: 'old', name: 'Old trip', archived: true },
+    { id: 'quiet', name: 'Quiet', archived: false },
+  ]
+  const items = [inGroup('a', 'tahoe', 'Tahoe', '2026-11-02T20:00:00.000Z'), inGroup('b', 'mission', 'Mission St', '2026-11-02T19:00:00.000Z', '🏠')]
+  it('All first, then groups with the latest activity, then the rest in list order; archived groups with nothing on screen are left out', () => {
+    const chips = feedChips(groups, items)
+    expect(chips.map((c) => c.id)).toEqual([null, 'tahoe', 'mission', 'nopa', 'quiet'])
+    expect(chips[0]).toMatchObject({ title: 'All', emoji: '' })
+    expect(chips.find((c) => c.id === 'mission')).toMatchObject({ emoji: '🏠', title: 'Mission St' })
+    expect(chips.find((c) => c.id === 'nopa')).toMatchObject({ emoji: '🍜', title: 'Nopa' })
+  })
+  it('an archived group that still has activity on screen keeps its chip', () => {
+    const chips = feedChips(groups, [inGroup('o', 'old', 'Old trip', '2026-11-02T20:00:00.000Z')])
+    expect(chips.map((c) => c.id)).toContain('old')
+  })
+  it('a group in the feed that the list does not have yet still gets a chip', () => {
+    expect(feedChips([], items).map((c) => c.id)).toEqual([null, 'tahoe', 'mission'])
+  })
+  it('no groups: just All', () => expect(feedChips([], []).map((c) => c.id)).toEqual([null]))
+  it('the picked chip falls back to All when that group is gone', () => {
+    const chips = feedChips(groups, items)
+    expect(activeChip(chips, 'tahoe')).toBe('tahoe')
+    expect(activeChip(chips, 'gone')).toBeNull()
+    expect(activeChip(chips, null)).toBeNull()
+  })
+})
+
+describe('split by group: rows, paths and paging', () => {
+  const e = entry('x', { at: '2026-11-01T18:05:00.000Z' })
+  it('a row with no day heading above it says the day', () => {
+    expect(feedRow(e, 'me', { showGroup: false, showDay: true, today: '2026-11-02', offsetMinutes: 0 }).meta).toBe('Yesterday · 6:05 PM')
+    expect(feedRow(entry('y', { at: '2026-11-02T09:12:00.000Z' }), 'me', { showGroup: false, showDay: true, today: '2026-11-02', offsetMinutes: 0 }).meta).toBe('Today · 9:12 AM')
+    expect(feedRow(e, 'me', { showGroup: false, today: '2026-11-02', offsetMinutes: 0 }).meta).toBe('6:05 PM')
+    expect(feedRow(e, 'me', { showGroup: true, showDay: true, today: '2026-11-02', offsetMinutes: 0 }).meta).toBe('Yesterday · 6:05 PM · Tahoe')
+  })
+  it('names the day: Today, Yesterday, then weekday and date (with the year when it is not this year)', () => {
+    expect(dayLabel('2026-11-02T10:00:00.000Z', '2026-11-02', 0)).toBe('Today')
+    expect(dayLabel('2026-10-30T10:00:00.000Z', '2026-11-02', 0)).toBe('Fri, Oct 30')
+    expect(dayLabel('2025-12-12T10:00:00.000Z', '2026-11-02', 0)).toBe('Fri, Dec 12, 2025')
+    expect(dayLabel('nonsense', '2026-11-02', 0)).toBe('')
+  })
+  it('a group chip asks for that group’s own feed, All for the whole one', () => {
+    expect(feedPath('tahoe', null)).toBe('/api/groups/tahoe/feed?limit=30')
+    expect(feedPath(null, 'c')).toBe('/api/feed?limit=30&cursor=c')
+  })
+  it('the sectioned feed stops loading pages by itself at a cap, the single-group feed does not', () => {
+    const page = (n: number) => ({ ...emptyFeed, loaded: true, items: Array.from({ length: n }, (_, i) => entry(`i${i}`)), nextCursor: 'c' })
+    expect(shouldAutoLoadSections(page(SECTIONS_AUTOLOAD_MAX - 1), 0)).toBe(true)
+    expect(shouldAutoLoadSections(page(SECTIONS_AUTOLOAD_MAX), 0)).toBe(false)
+    expect(shouldAutoLoad(page(SECTIONS_AUTOLOAD_MAX), 0)).toBe(true)
+    expect(shouldAutoLoadSections({ ...page(3), nextCursor: null }, 0)).toBe(false)
   })
 })

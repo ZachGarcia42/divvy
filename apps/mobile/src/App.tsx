@@ -2,7 +2,7 @@ import { formatMoney, splitFromStored } from '@divvy/domain'
 import { editConflict } from './flows/errors'
 import { joinedFeedback } from './flows/composer'
 import { draftFromSpec, majorString } from './flows/split'
-import { emptyFeed, feedArrived, feedFailed, feedPath, feedRefreshed, feedRequested, feedSnack, feedTarget, canLoadMore, originStays, returnsToFeed, shouldAutoLoad, type FeedEntry, type FeedOrigin, type FeedPage, type FeedState } from './flows/feed'
+import { emptyFeed, feedArrived, feedFailed, feedPath, feedRefreshed, feedRequested, feedSnack, feedTarget, canLoadMore, activeChip, feedChips, originStays, returnsToFeed, shouldAutoLoad, shouldAutoLoadSections, type FeedEntry, type FeedOrigin, type FeedPage, type FeedState } from './flows/feed'
 import { isForeign, type Quote } from './flows/fx'
 import { contentTopGap, SNACK_MS, snackOwner, snackStays, startScreen, groupIcon, type HistoryEntry } from './flows/view'
 import { PayReturnSheet, PaymentNamesScreen } from './Pay'
@@ -12,7 +12,7 @@ import { deleteReceipt, photoErrorText, photoPlan, remoteSource, savedWithPhotoP
 import { AccountScreen, ActivityScreen, AddSheet, CreateGroupSheet, DeletedExpense, ExpenseDetail, Fab, GroupsHome, GroupView, InviteCard, PasteCard, SettleScreen, Snack, SwitcherSheet, TabBar, todayIso, type SheetSave, type Tab } from './V2'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import * as SecureStore from 'expo-secure-store'
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   ActivityIndicator,
   Alert,
@@ -664,6 +664,12 @@ function Ledger({
   // and when the tab regains focus.
   const [homeAttempt, setHomeAttempt] = useState(0)
   const allFeed = useFeed(token, null, screen === 'activity')
+  // The Activity tab's group chips: which group the feed is narrowed to (null = All, split into a section per group), and the sections opened with "Show more".
+  const [feedFilter, setFeedFilter] = useState<string | null>(null)
+  const [openSections, setOpenSections] = useState<Record<string, boolean>>({})
+  const chips = useMemo(() => feedChips(home?.groups ?? [], allFeed.state.items), [home?.groups, allFeed.state.items])
+  const chipFilter = activeChip(chips, feedFilter)
+  const chipFeed = useFeed(token, chipFilter, screen === 'activity' && chipFilter !== null)
   const groupFeed = useFeed(token, groupId, screen === 'groupActivity' && !!groupId)
   useEffect(() => {
     let cancelled = false
@@ -1169,7 +1175,8 @@ function Ledger({
   const showTabs = !join && (screen === 'groups' || screen === 'group' || screen === 'account' || screen === 'activity')
   const youId = participantId ?? detail?.yourParticipantId ?? null
   const feedScreen = screen === 'activity' || screen === 'groupActivity'
-  const activeFeed = screen === 'groupActivity' ? groupFeed : allFeed
+  const activeFeed = screen === 'groupActivity' ? groupFeed : chipFilter ? chipFeed : allFeed
+  const sectionedFeed = screen === 'activity' && !chipFilter
   const feedBar = feedScreen ? feedSnack(activeFeed.state) : null
   const openFeedEntry = (entry: FeedEntry) => {
     const target = feedTarget(entry)
@@ -1186,12 +1193,12 @@ function Ledger({
   }
   const onFeedScroll = (y: number) => {
     scrollY.current = y
-    if (feedScreen && shouldAutoLoad(activeFeed.state, contentH.current - y - viewH.current)) activeFeed.more()
+    if (feedScreen && (sectionedFeed ? shouldAutoLoadSections : shouldAutoLoad)(activeFeed.state, contentH.current - y - viewH.current)) activeFeed.more()
   }
   const onTabPress = (next: Tab) => {
     setEditingPay(false)
     if (next === 'groups') { goGroups(); return }
-    if (next === 'activity' && screen === 'activity') { allFeed.retry(); scrollRef.current?.scrollTo({ y: 0, animated: true }); return }
+    if (next === 'activity' && screen === 'activity') { activeFeed.retry(); scrollRef.current?.scrollTo({ y: 0, animated: true }); return }
     setScreen(next)
   }
   let body: ReactNode
@@ -1217,7 +1224,10 @@ function Ledger({
       onSignedOut()
     }} />
   } else if (screen === 'activity') {
-    body = <ActivityScreen feed={allFeed.state} youId={youId} today={today} onOpen={openFeedEntry} onMore={allFeed.more} onRetry={allFeed.retry} onEmptyAction={goGroups} />
+    body = <ActivityScreen feed={activeFeed.state} youId={youId} today={today} chips={chips} filter={chipFilter} expanded={openSections}
+      onFilter={(id) => { setFeedFilter(id); scrollRef.current?.scrollTo({ y: 0, animated: false }) }}
+      onToggle={(id) => setOpenSections((current) => ({ ...current, [id]: !current[id] }))}
+      onOpen={openFeedEntry} onMore={activeFeed.more} onRetry={activeFeed.retry} onEmptyAction={() => { if (chipFilter) openGroup(chipFilter); else goGroups() }} />
   } else if (screen === 'deleted' && deletedEntry) {
     body = <DeletedExpense entry={deletedEntry} youId={youId} timeText={timeText} busy={restoringDeleted} onBack={() => { if (!stepBack()) goGroups() }} onRestore={() => { void restoreDeleted(deletedEntry) }} />
   } else if (screen === 'groups' || !groupId) {
@@ -1273,7 +1283,7 @@ function Ledger({
             contentH.current = h
             restoreScroll()
             // A short list that does not fill the screen asks for the next page by itself.
-            if (feedScreen && pendingY.current === null && shouldAutoLoad(activeFeed.state, h - scrollY.current - viewH.current)) activeFeed.more()
+            if (feedScreen && pendingY.current === null && (sectionedFeed ? shouldAutoLoadSections : shouldAutoLoad)(activeFeed.state, h - scrollY.current - viewH.current)) activeFeed.more()
           }}
           refreshControl={feedScreen && home ? <RefreshControl refreshing={activeFeed.state.loading && activeFeed.state.loaded} onRefresh={activeFeed.retry} tintColor="#0f766e" colors={['#0f766e']} /> : undefined}>
           {body}

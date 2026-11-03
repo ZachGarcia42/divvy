@@ -9,7 +9,7 @@ import {
   signedMoney, groupIcon, PICKER_EMOJIS, DEFAULT_EMOJI, updatedPhrase, yourPosition, type HistoryEntry,
 } from './flows/view'
 import { amountWidth } from './flows/amount'
-import { canLoadMore, feedRow, feedView, groupFeedByDay, TONE_ICON, type FeedEntry, type FeedState, type FeedTone } from './flows/feed'
+import { canLoadMore, feedRow, feedView, groupFeedByDay, groupFeedByGroup, SECTIONS_AUTOLOAD_MAX, TONE_ICON, type FeedChip, type FeedEntry, type FeedSection, type FeedState, type FeedTone } from './flows/feed'
 import { middleEllipsis } from './flows/composer'
 import { Ionicons } from '@expo/vector-icons'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
@@ -322,15 +322,24 @@ function FeedMessage({ icon, tone, title, body, action, onAction, testID, action
 }
 
 /**
- * The Activity feed: who did what, how much, and when, newest first, a page at a time. `group` set = one group, unset = all your groups.
+ * The Activity feed: who did what, how much, and when, newest first, a page at a time. Three shapes:
+ *  - `group` set: one group's own feed (opened from the group), a back arrow and the group as a chip;
+ *  - `chips` set, `filter` null: all your groups, split into one section per group (the group with the latest activity first);
+ *  - `chips` set, `filter` a group id: only that group, by day. The chips row on top switches between them.
  * Paging is by scrolling (App watches the scroll position); the states are skeleton rows, a friendly error, and an empty state with a button.
  */
-export function ActivityScreen({ group, feed, youId, today, onBack, onOpen, onMore, onRetry, onEmptyAction }: {
+export function ActivityScreen({ group, feed, youId, today, chips, filter = null, expanded, onFilter, onToggle, onBack, onOpen, onMore, onRetry, onEmptyAction }: {
   group?: { emoji: string; title: string }; feed: FeedState; youId: string | null; today: string
+  chips?: FeedChip[]; filter?: string | null; expanded?: Record<string, boolean>; onFilter?: (id: string | null) => void; onToggle?: (id: string) => void
   onBack?: () => void; onOpen: (entry: FeedEntry) => void; onMore: () => void; onRetry: () => void; onEmptyAction: () => void
 }) {
-  const days = groupFeedByDay(feed.items, today)
   const view = feedView(feed)
+  const showChips = !group && !!chips && chips.length > 1 && !!onFilter
+  const sectioned = !group && filter === null && !!chips
+  const filtered = !group && filter !== null
+  const sections = sectioned ? groupFeedByGroup(feed.items, expanded) : []
+  const days = sectioned ? [] : groupFeedByDay(feed.items, today)
+  const chosen = filtered ? chips?.find((chip) => chip.id === filter) : undefined
   return (
     <>
       <View style={k.top}>
@@ -340,7 +349,24 @@ export function ActivityScreen({ group, feed, youId, today, onBack, onOpen, onMo
       {group ? (
         <View style={k.feedChip} testID="activity-group-chip"><Text style={k.groupEmojiSm} accessible={false}>{group.emoji}</Text><Text style={k.feedChipText} numberOfLines={1}>{group.title}</Text></View>
       ) : (
-        <Text style={[k.m, { marginHorizontal: 4, marginBottom: 2 }]}>Everything that happened in your groups, newest first.</Text>
+        <Text style={[k.m, { marginHorizontal: 4, marginBottom: 2 }]}>
+          {chosen ? `Everything that happened in ${chosen.title}, newest first.` : sectioned ? 'Everything that happened, split by group.' : 'Everything that happened in your groups, newest first.'}
+        </Text>
+      )}
+      {showChips && (
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={k.chipScroll} contentContainerStyle={k.chipRow} accessibilityRole="tablist" testID="activity-filter">
+          {chips!.map((chip) => {
+            const on = chip.id === filter
+            return (
+              <Pressable key={chip.id ?? 'all'} onPress={() => onFilter!(chip.id)} accessibilityRole="tab" accessibilityState={{ selected: on }} aria-selected={on}
+                accessibilityLabel={chip.id === null ? 'All groups' : `${chip.title} only`} testID={`activity-chip-${chip.id ?? 'all'}`}
+                style={[k.filterChip, on && k.filterChipOn]}>
+                {chip.emoji ? <Text style={k.groupEmojiSm} accessible={false}>{chip.emoji}</Text> : null}
+                <Text style={[k.filterChipText, on && k.filterChipTextOn]} numberOfLines={1}>{chip.title}</Text>
+              </Pressable>
+            )
+          })}
+        </ScrollView>
       )}
       {view === 'loading' && <FeedSkeleton />}
       {view === 'error' && (
@@ -350,19 +376,25 @@ export function ActivityScreen({ group, feed, youId, today, onBack, onOpen, onMo
       )}
       {view === 'empty' && (
         <FeedMessage
-          icon="time-outline" tone="teal" title="Nothing’s happened yet" testID="activity-empty" actionTestID="activity-empty-action"
-          body={group ? 'Add an expense and it shows up here.' : 'Adds, edits, deletes and payments from all your groups show up here as they happen.'}
-          action={group ? 'Add expense' : 'Go to Groups'} onAction={onEmptyAction} />
+          icon="time-outline" tone="teal" title={filtered ? 'Nothing’s happened here yet' : 'Nothing’s happened yet'} testID="activity-empty" actionTestID="activity-empty-action"
+          body={group || filtered ? 'Add an expense and it shows up here.' : 'Adds, edits, deletes and payments from all your groups show up here as they happen.'}
+          action={group ? 'Add expense' : filtered ? 'Open group' : 'Go to Groups'} onAction={onEmptyAction} />
       )}
+      {sections.map((section) => <FeedSectionView key={section.group.id} section={section} youId={youId} today={today} onOpen={onOpen} onToggle={onToggle} onSeeAll={onFilter} />)}
       {days.map((day) => (
         <View key={day.day || 'unknown'}>
           <Text style={k.date} accessibilityRole="header">{day.heading}</Text>
           <View style={k.feedCard}>
-            {day.items.map((entry, i) => <FeedRowView key={entry.id} entry={entry} first={i === 0} youId={youId} today={today} showGroup={!group} onOpen={onOpen} />)}
+            {day.items.map((entry, i) => <FeedRowView key={entry.id} entry={entry} first={i === 0} youId={youId} today={today} showGroup={!group && !filtered} onOpen={onOpen} />)}
           </View>
         </View>
       ))}
       {feed.loadingMore && <ActivityIndicator style={{ marginTop: 16 }} color={T.teal} accessibilityLabel="Loading older activity" testID="activity-loading-more" />}
+      {sectioned && view === 'list' && feed.nextCursor !== null && feed.error === null && !feed.loadingMore && feed.items.length >= SECTIONS_AUTOLOAD_MAX && (
+        <Pressable style={[k.btn, k.ghost, { marginTop: 16, minHeight: 46, paddingVertical: 12 }]} onPress={onMore} accessibilityRole="button" testID="activity-older">
+          <Text style={[k.btnText, { color: T.teal, fontSize: 15 }]}>Show older activity</Text>
+        </Pressable>
+      )}
       {view === 'list' && feed.error !== null && canLoadMore(feed) && (
         <Pressable style={[k.btn, k.ghost, { marginTop: 16, minHeight: 46, paddingVertical: 12 }]} onPress={onMore} accessibilityRole="button" testID="activity-more">
           <Text style={[k.btnText, { color: T.teal, fontSize: 15 }]}>Show older</Text>
@@ -373,8 +405,43 @@ export function ActivityScreen({ group, feed, youId, today, onBack, onOpen, onMo
   )
 }
 
-function FeedRowView({ entry, first, youId, today, showGroup, onOpen }: { entry: FeedEntry; first: boolean; youId: string | null; today: string; showGroup: boolean; onOpen: (entry: FeedEntry) => void }) {
-  const row = feedRow(entry, youId, { showGroup, today })
+/** One group's section on the all-groups feed: the group's name with "See all", its newest few entries, and "Show N more". */
+function FeedSectionView({ section, youId, today, onOpen, onToggle, onSeeAll }: {
+  section: FeedSection; youId: string | null; today: string; onOpen: (entry: FeedEntry) => void; onToggle?: (id: string) => void; onSeeAll?: (id: string | null) => void
+}) {
+  const icon = groupIcon(section.group)
+  const id = section.group.id
+  const folded = section.hidden > 0
+  return (
+    <View testID={`activity-section-${id}`}>
+      <View style={k.sectionHead}>
+        <View style={k.sectionName}>
+          {icon.emoji ? <Text style={k.groupEmojiSm} accessible={false}>{icon.emoji}</Text> : null}
+          <Text style={k.sectionTitle} numberOfLines={1} accessibilityRole="header">{icon.title}</Text>
+        </View>
+        {onSeeAll && (
+          <Pressable onPress={() => onSeeAll(id)} accessibilityRole="button" accessibilityLabel={`See all activity in ${icon.title}`} testID={`activity-seeall-${id}`} style={k.seeAll} hitSlop={6}>
+            <Text style={k.seeAllText}>See all</Text>
+            <Ionicons name="chevron-forward" size={14} color={T.teal} accessible={false} />
+          </Pressable>
+        )}
+      </View>
+      <View style={k.feedCard}>
+        {section.shown.map((entry, i) => <FeedRowView key={entry.id} entry={entry} first={i === 0} youId={youId} today={today} showGroup={false} showDay onOpen={onOpen} />)}
+        {onToggle && (folded || section.expanded) && (
+          <Pressable onPress={() => onToggle(id)} accessibilityRole="button" accessibilityState={{ expanded: section.expanded }}
+            accessibilityLabel={folded ? `Show ${section.hidden} more in ${icon.title}` : `Show fewer in ${icon.title}`} testID={`activity-section-more-${id}`} style={[k.sectionMore, k.rowLine]}>
+            <Text style={k.sectionMoreText}>{folded ? `Show ${section.hidden} more` : 'Show less'}</Text>
+            <Ionicons name={folded ? 'chevron-down' : 'chevron-up'} size={16} color={T.teal} accessible={false} />
+          </Pressable>
+        )}
+      </View>
+    </View>
+  )
+}
+
+function FeedRowView({ entry, first, youId, today, showGroup, showDay, onOpen }: { entry: FeedEntry; first: boolean; youId: string | null; today: string; showGroup: boolean; showDay?: boolean; onOpen: (entry: FeedEntry) => void }) {
+  const row = feedRow(entry, youId, { showGroup, showDay, today })
   const tone = TONE_STYLE[row.tone]
   return (
     <Pressable style={[k.feedRow, !first && k.rowLine]} onPress={() => onOpen(entry)} accessibilityRole="button" accessibilityLabel={row.label} testID={`feed-${entry.id}`}>
@@ -1186,6 +1253,19 @@ const k = StyleSheet.create({
   struckAmt: { textDecorationLine: 'line-through', color: T.muted },
   skel: { backgroundColor: '#e9eeea', borderRadius: 8 },
   feedChip: { flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start', backgroundColor: T.card, borderWidth: 1, borderColor: T.line, borderRadius: 16, paddingVertical: 6, paddingHorizontal: 12, marginTop: 2, marginBottom: 2, maxWidth: '100%' },
+  chipScroll: { marginHorizontal: -18, flexGrow: 0, marginTop: 8, marginBottom: 2 },
+  chipRow: { paddingHorizontal: 18, gap: 8, alignItems: 'center' },
+  filterChip: { flexDirection: 'row', alignItems: 'center', gap: 6, minHeight: 40, paddingHorizontal: 14, borderRadius: 20, backgroundColor: T.card, borderWidth: 1, borderColor: T.line, maxWidth: 220 },
+  filterChipOn: { backgroundColor: T.teal, borderColor: T.teal },
+  filterChipText: { fontSize: 14, fontWeight: '800', color: T.ink, flexShrink: 1 },
+  filterChipTextOn: { color: 'white' },
+  sectionHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginTop: 20, marginBottom: 8, marginHorizontal: 4 },
+  sectionName: { flexDirection: 'row', alignItems: 'center', gap: 8, flexShrink: 1, minWidth: 0 },
+  sectionTitle: { fontSize: 18, fontWeight: '900', color: T.ink, letterSpacing: -0.3, flexShrink: 1 },
+  seeAll: { flexDirection: 'row', alignItems: 'center', gap: 2, minHeight: 36, paddingLeft: 10, justifyContent: 'center' },
+  seeAllText: { fontSize: 14, fontWeight: '800', color: T.teal },
+  sectionMore: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, minHeight: 48, paddingVertical: 12 },
+  sectionMoreText: { fontSize: 14.5, fontWeight: '800', color: T.teal },
   feedChipText: { fontSize: 13.5, fontWeight: '800', color: T.ink, flexShrink: 1 },
   feedMsg: { alignItems: 'center', paddingHorizontal: 22, paddingTop: 56, paddingBottom: 24 },
   feedMsgCard: { backgroundColor: T.card, borderWidth: 1, borderColor: T.line, borderRadius: 20, paddingTop: 28 },
