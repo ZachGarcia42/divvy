@@ -831,6 +831,8 @@ export class Repo {
   async deleteExpense(actor: Actor, groupId: string, expenseId: string, version?: number) {
     await this.requireMember(actor, groupId)
     const current = await this.mustExpense(groupId, expenseId)
+    // Already deleted: a repeat must not bump the version or write a second feed row, history row, or notification (FD-08).
+    if (current.deleted_at) throw new LedgerError('STALE', 'This expense was already deleted')
     if (version === undefined || !Number.isInteger(version)) throw new LedgerError('STALE', 'Reload this expense and try again')
     checkVersion(current.version, version)
     await this.sql.query(`update expenses set deleted_at = now(), version = version + 1 where id = $1`, [expenseId])
