@@ -4,7 +4,7 @@
 const { start } = require('./common.cjs')
 let fails = 0
 const check = (name, ok, extra = '') => { console.log(ok ? 'PASS' : 'FAIL', name, extra); if (!ok) fails++ }
-const today = () => new Date().toISOString().slice(0, 10)
+const today = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}` } // local date, not UTC (UTC is tomorrow after 4 PM PT)
 
 ;(async () => {
   const [base, ZACH, MAYA] = process.argv.slice(2)

@@ -93,7 +93,9 @@ export function formatMoney(minor: number, currency: string): string {
     })
       .formatToParts(0)
       .find((part) => part.type === 'currency')?.value ?? `${currency} `
-  return `${negative ? '-' : ''}${symbol}${whole.toLocaleString('en-US')}${fraction}`
+  // A currency with no symbol of its own comes back as its code ("KWD", "CHF"): keep it apart from the digits.
+  const lead = /^[A-Za-z]{2,}$/.test(symbol) ? `${symbol} ` : symbol
+  return `${negative ? '-' : ''}${lead}${whole.toLocaleString('en-US')}${fraction}`
 }
 
 export function calendarDateInTimeZone(timeZone: string, now: Date): string {

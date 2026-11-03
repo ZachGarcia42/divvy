@@ -289,6 +289,8 @@ export function createApp(sql: Sql, options?: {
         : 400
       return c.json({ error: { code: error.code, message: error.message } }, status)
     }
+    // A body that is not valid JSON (any route that reads one) is the caller's mistake, not ours.
+    if (error instanceof SyntaxError) return c.json({ error: { code: 'BAD_JSON', message: 'The request body is not valid JSON' } }, 400)
     console.error(error)
     return c.json({ error: { code: 'INTERNAL', message: 'Something went wrong' } }, 500)
   })
@@ -509,7 +511,7 @@ export function createApp(sql: Sql, options?: {
   app.post('/api/groups/:id/invite-link', async (c) => c.json(await repo.groupInviteLink(await actor(c), c.req.param('id'))))
   app.post('/api/groups/:id/defaults', async (c) => {
     const body = await c.req.json<{ weights: { participantId: string; weight: number | null }[] }>()
-    await repo.setDefaults(await actor(c), c.req.param('id'), body.weights)
+    await repo.setDefaults(await actor(c), c.req.param('id'), body?.weights as never)
     return c.json({ ok: true })
   })
   app.post('/api/groups/:id/members/:participantId/remove', async (c) => {
@@ -637,7 +639,10 @@ export function createApp(sql: Sql, options?: {
     return c.json({ ok: true })
   })
   app.post('/api/blocks', async (c) => {
-    await repo.block(await actor(c), (await c.req.json<{ userId: string }>()).userId)
+    const who = await actor(c)
+    const blockBody = await c.req.json<{ userId?: unknown }>().catch(() => null)
+    if (typeof blockBody?.userId !== 'string' || !blockBody.userId) throw new LedgerError('BAD_BLOCK', 'Choose who to block')
+    await repo.block(who, blockBody.userId)
     return c.json({ ok: true })
   })
   app.post('/api/reports', async (c) => {

@@ -218,11 +218,12 @@ describe('receipt photo API', () => {
     const del = await t.call('DELETE', `/api/groups/${t.groupId}/expenses/${t.expenseId}`, { version: 1 })
     expect(del.status).toBe(200)
     expect(filesOnDisk()).toContain(id)
-    expect((await t.get()).status).toBe(200)
-    // a deleted expense takes no new photo
+    // a deleted expense shows no photo (to anyone) and takes no new one; the file waits for Undo
+    expect((await t.get()).status).toBe(404)
     expect((await t.put(PNG)).status).toBe(404)
     expect((await t.del()).status).toBe(404)
     expect((await t.call('POST', `/api/groups/${t.groupId}/expenses/${t.expenseId}/restore`)).status).toBe(200)
+    expect((await t.get()).status).toBe(200)
     expect((await t.detail()).photo.id).toBe(id)
   })
 

@@ -2,6 +2,7 @@
 // message, Exact input sanitizing, and the sheet's server error clearing on edit.
 // Usage: NODE_PATH=<dir with playwright> node e2e/qa-chunk2.cjs http://127.0.0.1:18799 <TOKEN>
 const { start } = require('./common.cjs')
+const today = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}` } // local date, not UTC (UTC is tomorrow after 4 PM PT)
 let fails = 0
 const check = (name, ok, extra = '') => { console.log(ok ? 'PASS' : 'FAIL', name, extra); if (!ok) fails++ }
 ;(async () => {
@@ -20,7 +21,7 @@ const check = (name, ok, extra = '') => { console.log(ok ? 'PASS' : 'FAIL', name
     ['QA exact', { type: 'exact', amounts: [{ participantId: ids[0], minor: 6000 }, { participantId: ids[1], minor: 4000 }] }],
     ['QA shares', { type: 'shares', parts: [{ participantId: ids[0], weight: 1 }, { participantId: ids[1], weight: 1 }] }],
   ]) {
-    const r = await api(`/api/groups/${gid}/expenses`, 'POST', { description: name, originalMinor: 10000, originalCurrency: 'USD', payers: [{ participantId: ids[0], minor: 10000 }], date: new Date().toISOString().slice(0, 10), split })
+    const r = await api(`/api/groups/${gid}/expenses`, 'POST', { description: name, originalMinor: 10000, originalCurrency: 'USD', payers: [{ participantId: ids[0], minor: 10000 }], date: today(), split })
     made[name] = r.expense?.id ?? r.id
     if (!made[name]) console.log('create failed', JSON.stringify(r))
   }

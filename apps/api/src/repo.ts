@@ -1,5 +1,6 @@
 import {
   DEFAULT_CATEGORY_ID,
+  FX_CURRENCIES,
   FEED_KINDS,
   LedgerError,
   AMOUNT_ERROR,
@@ -75,6 +76,15 @@ type ExpenseInput = {
   tipMinor?: number
   discountMinor?: number
   version?: number
+}
+
+/**
+ * A group currency has to be a real ISO 4217 code: one the rate source lists, or one the runtime knows (KWD and the other
+ * three-decimal currencies work with manual rates). A well-formed made-up code like ZZZ is refused.
+ */
+const KNOWN_CURRENCIES = new Set<string>([...FX_CURRENCIES.map((row) => row.code), ...Intl.supportedValuesOf('currency')])
+function assertSupportedCurrency(code: string) {
+  if (!KNOWN_CURRENCIES.has(code)) throw new LedgerError('BAD_CURRENCY', `${code} is not a currency Divvy supports`)
 }
 
 const newId = () => randomUUID()
@@ -443,6 +453,7 @@ export class Repo {
     if (typeof input.currency !== 'string') throw new LedgerError('BAD_CURRENCY', 'Choose a currency')
     const currency = input.currency.toUpperCase()
     exponentOf(currency)
+    assertSupportedCurrency(currency)
     calendarDateInTimeZone(input.timezone, this.deps.now())
     const id = newId()
     await this.sql.query(
@@ -553,9 +564,11 @@ export class Repo {
       await this.notifyGroup(groupId, actor.participantId, 'Simplify debts', `${actor.displayName} turned simplify ${patch.simplify ? 'on' : 'off'}`)
     }
     if (patch.currency !== undefined && typeof patch.currency !== 'string') throw new LedgerError('BAD_CURRENCY', 'Choose a currency')
+    if (patch.currency !== undefined && !patch.currency.trim()) throw new LedgerError('BAD_CURRENCY', 'Choose a currency')
     if (patch.currency && patch.currency.toUpperCase() !== group.settlement_currency) {
       const nextCurrency = patch.currency.toUpperCase()
       exponentOf(nextCurrency)
+      assertSupportedCurrency(nextCurrency)
       await this.changeCurrency(actor, group, nextCurrency)
     }
     return this.groupDetail(actor, groupId)
@@ -749,6 +762,9 @@ export class Repo {
 
   async setDefaults(actor: Actor, groupId: string, weights: { participantId: string; weight: number | null }[]) {
     await this.requireMember(actor, groupId)
+    if (!Array.isArray(weights) || weights.some((entry) => !entry || typeof entry !== 'object' || typeof entry.participantId !== 'string')) {
+      throw new LedgerError('BAD_SPLIT', 'Send a list of weights, one per person')
+    }
     for (const entry of weights) {
       if (entry.weight !== null && (!Number.isInteger(entry.weight) || entry.weight < 0)) {
         throw new LedgerError('BAD_SPLIT', 'Weights must be zero or a positive integer')
@@ -882,6 +898,8 @@ export class Repo {
   async deleteExpense(actor: Actor, groupId: string, expenseId: string, version?: number) {
     await this.requireMember(actor, groupId)
     const current = await this.mustExpense(groupId, expenseId)
+    // Already deleted: nothing to do, and nothing for the feed, history or notifications (the restore path guards the same way).
+    if (current.deleted_at) throw new LedgerError('STALE', 'This expense was already deleted')
     if (version === undefined || !Number.isInteger(version)) throw new LedgerError('STALE', 'Reload this expense and try again')
     checkVersion(current.version, version)
     await this.sql.query(`update expenses set deleted_at = now(), version = version + 1 where id = $1`, [expenseId])
@@ -1535,7 +1553,8 @@ export class Repo {
   /** Members only. A deleted expense keeps its photo (Undo restores it), so it is still readable until the expense is purged. */
   async readExpensePhoto(actor: Actor, groupId: string, expenseId: string) {
     await this.requireMember(actor, groupId)
-    await this.mustExpense(groupId, expenseId)
+    const expense = await this.mustExpense(groupId, expenseId)
+    if (expense.deleted_at) throw new LedgerError('NOT_FOUND', 'No photo on this expense')
     const row = await this.photoRow(expenseId)
     if (!row) throw new LedgerError('NOT_FOUND', 'No photo on this expense')
     const bytes = await this.photoStore().get(row.id)
@@ -2089,6 +2108,7 @@ export class Repo {
     assertNotFuture(date, today)
     const kind = input.kind ?? current?.kind ?? 'expense'
     if (kind !== 'expense' && kind !== 'reimbursement') throw new LedgerError('BAD_EXPENSE', 'Unknown expense type')
+    if (input.originalCurrency !== undefined && input.originalCurrency !== null && typeof input.originalCurrency !== 'string') throw new LedgerError('BAD_CURRENCY', 'Currency must be text')
     const originalCurrency = (input.originalCurrency ?? current?.original_currency ?? group.settlement_currency).toUpperCase()
     const originalMinor = input.originalMinor ?? current?.original_minor
     if (originalMinor === undefined) throw new LedgerError('BAD_AMOUNT', 'Enter an amount')
