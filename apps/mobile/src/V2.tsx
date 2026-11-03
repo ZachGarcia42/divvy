@@ -2,7 +2,7 @@
 // Data logic stays in App.tsx (Ledger) and flows/*; these components only render and report taps.
 import { exponentOf, formatMoney, parseMajor, searchCurrencies, type SplitMethod, type SplitSpec } from '@divvy/domain'
 import { useEffect, useMemo, useRef, useState, type ComponentProps, type ReactNode } from 'react'
-import { ActivityIndicator, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native'
+import { ActivityIndicator, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native'
 import { adjustDisplay, adjustSign, adjustTyped, sanitizeAmountText, evaluate, groupedMajor, majorString, METHOD_LABELS, METHODS, newDraft, switchMethod, toggleAdjustSign, type Draft } from './flows/split'
 import {
   breakdown, defaultPayment, groupByDate, historyLines, NEW_GROUP_CURRENCY, methodPhrase, monthDay, netTone, NET_WORDS, overallUsd, peopleCount, rowSubtitle,
@@ -174,18 +174,25 @@ export function EmptyGroups({ onCreate, onPaste }: { onCreate: () => void; onPas
 }
 
 /** Search-and-pick list of currencies (ECB-published ones), for the Add sheet (dark) and New group (light). */
-export function CurrencyPicker({ value, onPick, dark, prefix }: { value: string; onPick: (code: string) => void; dark?: boolean; prefix: string }) {
+export function CurrencyPicker({ value, onPick, dark, prefix, pinned, tiles }: { value: string; onPick: (code: string) => void; dark?: boolean; prefix: string
+  /** The group's currency, shown first with the group's name (the Add sheet's picker). */
+  pinned?: { code: string; label: string }
+  /** A symbol tile in front of each code (the Add sheet's picker). */
+  tiles?: boolean }) {
   const [query, setQuery] = useState('')
-  const rows = useMemo(() => searchCurrencies(query), [query])
+  const found = useMemo(() => searchCurrencies(query), [query])
+  const top = pinned ? found.find((row) => row.code === pinned.code) : undefined
+  const rows = top ? [top, ...found.filter((row) => row !== top)] : found
   return (
     <View style={[k.cpBox, dark && k.cpBoxDark]} testID={`${prefix}-picker`}>
       <TextInput testID={`${prefix}-search`} value={query} onChangeText={setQuery} autoCapitalize="characters" autoCorrect={false} placeholder="Search currency" placeholderTextColor={dark ? '#ffffff59' : T.hint} style={[k.cpSearch, dark && k.cpSearchDark, noOutline]} accessibilityLabel="Search currency" />
-      <ScrollView style={{ maxHeight: 220 }} nestedScrollEnabled keyboardShouldPersistTaps="handled">
+      <ScrollView style={{ maxHeight: tiles ? 360 : 220 }} nestedScrollEnabled keyboardShouldPersistTaps="handled">
         {rows.length === 0 && <Text style={dark ? k.inkHint : k.m}>No currency matches “{query}”.</Text>}
         {rows.map((row) => (
-          <Pressable key={row.code} style={k.cpRow} onPress={() => onPick(row.code)} accessibilityRole="button" accessibilityState={{ selected: row.code === value }} accessibilityLabel={`${row.code}, ${row.name}`} testID={`${prefix}-${row.code}`}>
+          <Pressable key={row.code} style={k.cpRow} onPress={() => onPick(row.code)} accessibilityRole="button" accessibilityState={{ selected: row.code === value }} accessibilityLabel={`${row.code}, ${row.name}${pinned && row.code === pinned.code ? `, ${pinned.label}` : ''}`} testID={`${prefix}-${row.code}`}>
+            {tiles && <View style={k.cpTile} accessible={false}><Text style={k.cpTileText} numberOfLines={1}>{symbolOf(row.code)}</Text></View>}
             <Text style={[k.cpCode, dark && { color: '#e6efe9' }]}>{row.code}</Text>
-            <Text style={[k.cpName, dark && { color: '#b9c9c1' }]} numberOfLines={1}>{row.name}</Text>
+            <Text style={[k.cpName, dark && { color: '#b9c9c1' }]} numberOfLines={1}>{row.name}{pinned && row.code === pinned.code ? ` · ${pinned.label}` : ''}</Text>
             <Text style={[k.cpCode, dark && { color: T.ok }]} accessible={false}>{row.code === value ? '✓' : ''}</Text>
           </Pressable>
         ))}
@@ -621,7 +628,7 @@ export function GroupView({ detail, today, banner, footer, onBack, onSwitcher, o
                   <View style={k.expIcon}><Text style={{ fontSize: 18 }} accessible={false}>🧾</Text></View>
                   <View style={k.grow}>
                     <Text style={k.t} numberOfLines={1}>{expense.description.trim() || 'Expense'}</Text>
-                    <Text style={k.m} numberOfLines={1}>{rowSubtitle(expense, detail.yourParticipantId, detail.currency)}</Text>
+                    <Text style={k.m} numberOfLines={2}>{rowSubtitle(expense, detail.yourParticipantId, detail.currency)}</Text>
                   </View>
                   <View style={k.right}>
                     {pos.kind === 'none' ? <Text style={[k.amt, k.zero]}>not involved</Text> : (
@@ -707,6 +714,10 @@ export function AddSheet({ members, youId, currency, groupName, initial, fetchRa
   const splitText = foreign ? (money.converted === null ? '' : majorString(money.converted, currency)) : amountText
   const ev = useMemo(() => evaluate(draft, ids, splitText, currency, payerId, nameOf), [draft, ids, splitText, currency, payerId])
   const alone = ids.length < 2
+  // With an amount typed but no rate yet, the button says what is missing instead of asking for an amount again.
+  const rateCta = foreign && money.original !== null && money.converted === null && !money.error
+    ? (manualText !== null ? 'Enter the rate to save' : rateState.state === 'error' ? 'Get the rate to save' : 'Getting the rate…')
+    : null
   const canSave = ev.ok && !saving && !alone && money.original !== null && (!foreign || money.converted !== null)
   useEffect(() => {
     if (!foreign || byHand) { setRateState({ state: 'idle' }); return }
@@ -745,6 +756,13 @@ export function AddSheet({ members, youId, currency, groupName, initial, fetchRa
   useEffect(() => { setError(null) }, [amountText, description, draft, payerId, date, expCurrency, manualText])
   const barBad = ev.bar.tone === 'bad'
   const overField = barBad && !ev.amountBad ? lastEdited : null
+  // Fixing a person's amount can leave the explanation below the fold, against the Save button: bring it into view.
+  const bodyScroll = useRef<ScrollView | null>(null)
+  useEffect(() => {
+    if (!overField) return
+    const timer = setTimeout(() => bodyScroll.current?.scrollToEnd({ animated: true }), 60)
+    return () => clearTimeout(timer)
+  }, [overField, ev.bar.left, ev.bar.right])
   const title = initial ? 'Edit expense' : `New expense · ${groupName}`
   return (
     <BottomSheet onClose={tryClose} panelStyle={[k.ink, web && k.sheetWeb]} pillColor="#ffffff40" fixedHeight testID="add-sheet">
@@ -758,7 +776,7 @@ export function AddSheet({ members, youId, currency, groupName, initial, fetchRa
             <Pressable onPress={save} disabled={!canSave} accessibilityRole="button" accessibilityState={{ disabled: !canSave }} tabIndex={-1} testID="sheet-save">
               <Text style={[k.inkSave, !canSave && k.inkSaveOff]}>{saving ? 'Saving…' : 'Save'}</Text>
             </Pressable>
-          </View>, body: <ScrollView key="body" style={ord(0)} keyboardShouldPersistTaps="handled" contentContainerStyle={{ paddingBottom: 12 }}>
+          </View>, body: <ScrollView key="body" ref={bodyScroll} style={ord(0)} keyboardShouldPersistTaps="handled" contentContainerStyle={{ paddingBottom: 24 }}>
             <View style={k.bigRow}>
               <Text style={k.bigC}>{symbolOf(expCurrency)}</Text>
               <TextInput testID="expense-amount" autoFocus value={amountText} onChangeText={(text) => { setError(null); setAmount(text) }} placeholder={amountPlaceholder(expCurrency)} placeholderTextColor="#ffffff40" keyboardType="decimal-pad" inputMode="decimal" style={[k.big, noOutline, { width: amountWidth(amountText, amountPlaceholder(expCurrency), 54) }]} accessibilityLabel={`Amount in ${expCurrency}`} />
@@ -770,14 +788,24 @@ export function AddSheet({ members, youId, currency, groupName, initial, fetchRa
               <Pressable style={[k.dp, foreign && k.dpRing]} onPress={() => setPickCurrency((v) => !v)} accessibilityRole="button" accessibilityState={{ expanded: pickCurrency }} accessibilityLabel={`Currency, ${expCurrency}`} testID="currency-chip"><Text style={k.dpText}>Currency <Text style={k.dpB}>{expCurrency} ▾</Text></Text></Pressable>
             </View>
             {pickCurrency && (
-              <View style={{ paddingHorizontal: 14, paddingTop: 6 }}>
-                <CurrencyPicker dark value={expCurrency} prefix="currency" onPick={(code) => { setExpCurrency(code); setPickCurrency(false); setManualText(null) }} />
-              </View>
+              // The v3 picker: a light bottom list over the sheet, the group's currency pinned first.
+              <Modal transparent animationType="fade" visible onRequestClose={() => setPickCurrency(false)} statusBarTranslucent>
+                <View style={k.cpScrim} testID="currency-sheet">
+                  <Pressable style={StyleSheet.absoluteFillObject} onPress={() => setPickCurrency(false)} accessibilityRole="button" accessibilityLabel="Close" />
+                  <View style={k.cpPanel}>
+                    <View style={k.cpHeadRow}>
+                      <Text style={k.cpHead} accessibilityRole="header">Currency</Text>
+                      <Pressable onPress={() => setPickCurrency(false)} accessibilityRole="button" testID="currency-close"><Text style={k.cpDone}>Cancel</Text></Pressable>
+                    </View>
+                    <CurrencyPicker tiles value={expCurrency} prefix="currency" pinned={{ code: currency, label: groupName }} onPick={(code) => { setExpCurrency(code); setPickCurrency(false); setManualText(null) }} />
+                  </View>
+                </View>
+              </Modal>
             )}
             {foreign && (
               <View style={k.fx} testID="fx-box">
                 <Text style={k.fxMain} accessibilityLiveRegion="polite" testID="fx-converted">
-                  {money.converted !== null ? `≈ ${formatMoney(money.converted, currency)}` : money.error ?? `Converted to ${currency} at the rate for ${monthDay(date)}`}
+                  {money.converted !== null ? `≈ ${formatMoney(money.converted, currency)}` : money.error ?? (!byHand && rateState.state === 'error' ? `No exchange rate for ${monthDay(date)}` : `Converted to ${currency} at the rate for ${monthDay(date)}`)}
                 </Text>
                 {!byHand && rateState.state === 'loading' && <Text style={k.fxSub} testID="fx-loading">Getting the {monthDay(date)} rate…</Text>}
                 {!byHand && rateState.state === 'ok' && (
@@ -912,7 +940,7 @@ export function AddSheet({ members, youId, currency, groupName, initial, fetchRa
             {error && <Text style={k.inkError} testID="sheet-error">{error}</Text>}
           </ScrollView>, foot: <View key="foot" style={[k.foot, ord(1)]}>
             <Pressable style={[k.inkBtn, !canSave && k.inkBtnOff]} disabled={!canSave} onPress={save} accessibilityRole="button" accessibilityState={{ disabled: !canSave, busy: saving }} testID="sheet-cta">
-              <Text style={[k.inkBtnText, !canSave && k.inkBtnTextOff]}>{saving ? 'Saving…' : alone ? 'Needs two people' : initial && ev.cta === 'Add expense' ? 'Save changes' : ev.cta}</Text>
+              <Text style={[k.inkBtnText, !canSave && k.inkBtnTextOff]}>{saving ? 'Saving…' : alone ? 'Needs two people' : rateCta ?? (initial && ev.cta === 'Add expense' ? 'Save changes' : ev.cta)}</Text>
             </Pressable>
           </View>,
           })[part])}
@@ -1323,6 +1351,13 @@ const k = StyleSheet.create({
   cpSearch: { borderWidth: 1, borderColor: T.line, borderRadius: 10, paddingVertical: 8, paddingHorizontal: 12, color: T.ink, fontSize: 15 },
   cpSearchDark: { borderColor: '#ffffff22', color: '#ffffff' },
   cpRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 9, paddingHorizontal: 6, minHeight: 40 },
+  cpTile: { width: 32, height: 32, borderRadius: 10, backgroundColor: '#e7f2ef', alignItems: 'center', justifyContent: 'center' },
+  cpTileText: { color: T.teal, fontWeight: '800', fontSize: 13 },
+  cpScrim: { flex: 1, backgroundColor: '#00000066', justifyContent: 'flex-end' },
+  cpPanel: { backgroundColor: T.card, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 14, paddingBottom: 26, width: '100%', maxWidth: 480, alignSelf: 'center', gap: 8 },
+  cpHeadRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  cpHead: { fontSize: 17, fontWeight: '800', color: T.ink },
+  cpDone: { fontSize: 15, fontWeight: '800', color: T.teal },
   cpCode: { fontWeight: '800', fontSize: 14, color: T.ink, width: 44 },
   cpName: { flex: 1, fontSize: 14, color: T.muted },
   curRow: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: T.card, borderWidth: 1.5, borderColor: T.line, borderRadius: 12, padding: 14 },
