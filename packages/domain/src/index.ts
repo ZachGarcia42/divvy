@@ -7,6 +7,7 @@ export {
   calendarDateInTimeZone,
   exponentOf,
   formatMoney,
+  currencySymbol,
   parseMajor,
   AMOUNT_ERROR,
   assertExpenseCap,

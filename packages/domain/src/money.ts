@@ -77,6 +77,25 @@ export function parseMajor(input: string, currency: string, options?: { cap?: bo
   return minor
 }
 
+const symbolOf = (code: string, display: 'narrowSymbol' | 'symbol') =>
+  new Intl.NumberFormat('en-US', { style: 'currency', currency: code, currencyDisplay: display })
+    .formatToParts(0)
+    .find((part) => part.type === 'currency')?.value ?? code
+
+// The narrow symbol is only unambiguous for the currency that owns the bare sign: "$" is USD, "¥" is JPY.
+// Every other dollar, yuan or krona currency would print the same sign, so it gets its own form (CA$, A$, CN¥, "SEK 12.00").
+const BARE_SIGN_OWNER: Record<string, string> = { '$': 'USD', '¥': 'JPY' }
+const SHARED_SIGNS = new Set(['$', '¥', 'kr'])
+// Intl has no short form for these in en-US (it returns the code), so give the one people actually write.
+const OWN_SYMBOL: Record<string, string> = { SGD: 'S$' }
+
+export function currencySymbol(currency: string): string {
+  const code = currency.toUpperCase()
+  const narrow = symbolOf(code, 'narrowSymbol')
+  if (!SHARED_SIGNS.has(narrow) || BARE_SIGN_OWNER[narrow] === code) return narrow
+  return OWN_SYMBOL[code] ?? symbolOf(code, 'symbol')
+}
+
 export function formatMoney(minor: number, currency: string): string {
   assertMinor(minor, 'Amount')
   const exp = exponentOf(currency)
@@ -85,14 +104,7 @@ export function formatMoney(minor: number, currency: string): string {
   const scale = 10 ** exp
   const whole = Math.floor(abs / scale)
   const fraction = exp === 0 ? '' : `.${String(abs % scale).padStart(exp, '0')}`
-  const symbol =
-    new Intl.NumberFormat('en-US', {
-      style: 'currency',
-      currency: currency.toUpperCase(),
-      currencyDisplay: 'narrowSymbol',
-    })
-      .formatToParts(0)
-      .find((part) => part.type === 'currency')?.value ?? `${currency} `
+  const symbol = currencySymbol(currency)
   // A currency with no symbol of its own comes back as its code ("KWD", "CHF"): keep it apart from the digits.
   const lead = /^[A-Za-z]{2,}$/.test(symbol) ? `${symbol} ` : symbol
   return `${negative ? '-' : ''}${lead}${whole.toLocaleString('en-US')}${fraction}`
