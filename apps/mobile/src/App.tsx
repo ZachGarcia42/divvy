@@ -2,7 +2,7 @@ import { formatMoney, splitFromStored } from '@divvy/domain'
 import { editConflict } from './flows/errors'
 import { joinedFeedback } from './flows/composer'
 import { draftFromSpec, majorString } from './flows/split'
-import { emptyFeed, feedArrived, feedFailed, feedPath, feedRefreshed, feedRequested, feedSnack, feedTarget, canLoadMore, activeChip, feedChips, originStays, returnsToFeed, shouldAutoLoad, shouldAutoLoadSections, type FeedEntry, type FeedOrigin, type FeedPage, type FeedState } from './flows/feed'
+import { emptyFeed, emptySections, buildSections, feedArrived, feedFailed, feedPath, feedRefreshed, feedRequested, feedSnack, feedTarget, canLoadMore, activeChip, feedChips, originStays, returnsToFeed, sectionsArrived, sectionsAsFeed, sectionsFailed, sectionsPath, sectionsRequested, shouldAutoLoad, type FeedEntry, type FeedOrigin, type FeedPage, type FeedState, type SectionData, type SectionsState } from './flows/feed'
 import { isForeign, type Quote } from './flows/fx'
 import { contentTopGap, SNACK_MS, snackOwner, snackStays, startScreen, groupIcon, type HistoryEntry } from './flows/view'
 import { PayReturnSheet, PaymentNamesScreen } from './Pay'
@@ -570,6 +570,65 @@ function useFeed(token: string, groupId: string | null, enabled: boolean) {
   }
 }
 
+/**
+ * The All view of Activity: one section per group with activity (its newest few entries and its total), from the server, so a very
+ * busy group cannot crowd the others out. Like useFeed it keeps what it has and refreshes quietly each time the screen comes back.
+ */
+function useSections(token: string, enabled: boolean) {
+  const [state, setState] = useState<SectionsState>(emptySections)
+  const latest = useRef(0)
+  const load = () => {
+    const id = ++latest.current
+    setState(sectionsRequested)
+    call<{ sections: SectionData[] }>(token, sectionsPath())
+      .then((page) => { if (latest.current === id) setState(sectionsArrived(page)) })
+      .catch((reason: Error) => { if (latest.current === id) setState((current) => sectionsFailed(current, reason.message)) })
+  }
+  useEffect(() => { latest.current++; setState(emptySections) }, [token])
+  useEffect(() => {
+    if (!enabled) return
+    load()
+    return () => { latest.current++ }
+  }, [token, enabled])
+  return { state, retry: load }
+}
+
+/**
+ * The entries behind "Show N more" on the sections that are open: each open group's own feed, a page at a time. Opening a section
+ * loads its first page; coming back to the screen refreshes the pages already loaded; `more` loads the next page.
+ */
+function useSectionPages(token: string, open: Record<string, boolean>, enabled: boolean) {
+  const [pages, setPages] = useState<Record<string, FeedState>>({})
+  const pagesRef = useRef(pages)
+  pagesRef.current = pages
+  const latest = useRef<Record<string, number>>({})
+  const patch = (groupId: string, change: (current: FeedState) => FeedState) => setPages((all) => ({ ...all, [groupId]: change(all[groupId] ?? emptyFeed) }))
+  const load = (groupId: string, mode: 'first' | 'more' | 'refresh') => {
+    const more = mode === 'more'
+    const cursor = more ? pagesRef.current[groupId]?.nextCursor ?? null : null
+    if (more && !cursor) return
+    const id = (latest.current[groupId] = (latest.current[groupId] ?? 0) + 1)
+    patch(groupId, (current) => feedRequested(current, more))
+    call<FeedPage>(token, feedPath(groupId, cursor))
+      .then((page) => { if (latest.current[groupId] === id) patch(groupId, (current) => (mode === 'refresh' ? feedRefreshed(current, page) : feedArrived(current, page, more))) })
+      .catch((reason: Error) => { if (latest.current[groupId] === id) patch(groupId, (current) => feedFailed(current, reason.message, more)) })
+  }
+  useEffect(() => { latest.current = {}; setPages({}) }, [token])
+  const openIds = Object.keys(open).filter((id) => open[id]).sort().join(',')
+  useEffect(() => {
+    if (!enabled) return
+    for (const id of openIds ? openIds.split(',') : []) {
+      const current = pagesRef.current[id]
+      if (!current || (!current.loaded && !current.loading)) load(id, 'first')
+      else if (current.loaded && !current.loading) load(id, 'refresh')
+    }
+  }, [token, enabled, openIds])
+  return {
+    pages,
+    more: (groupId: string) => { const current = pagesRef.current[groupId]; if (current?.error && !current.errorMore) load(groupId, 'first'); else if (current && canLoadMore(current)) load(groupId, 'more') },
+  }
+}
+
 function Ledger({
   token,
   inviteToken,
@@ -663,11 +722,14 @@ function Ledger({
   // otherwise you land on Groups. If none show up yet (e.g. a just-linked Google account), look again shortly
   // and when the tab regains focus.
   const [homeAttempt, setHomeAttempt] = useState(0)
-  const allFeed = useFeed(token, null, screen === 'activity')
+  const sectionsFeed = useSections(token, screen === 'activity')
   // The Activity tab's group chips: which group the feed is narrowed to (null = All, split into a section per group), and the sections opened with "Show more".
   const [feedFilter, setFeedFilter] = useState<string | null>(null)
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({})
-  const chips = useMemo(() => feedChips(home?.groups ?? [], allFeed.state.items), [home?.groups, allFeed.state.items])
+  const sectionPages = useSectionPages(token, openSections, screen === 'activity' && feedFilter === null)
+  const allFeed = useMemo(() => ({ state: sectionsAsFeed(sectionsFeed.state), more: () => {}, retry: sectionsFeed.retry, retrySnack: sectionsFeed.retry }), [sectionsFeed.state])
+  const sections = useMemo(() => buildSections(sectionsFeed.state.sections, sectionPages.pages, openSections), [sectionsFeed.state.sections, sectionPages.pages, openSections])
+  const chips = useMemo(() => feedChips(home?.groups ?? [], sectionsFeed.state.sections.map((section) => section.group)), [home?.groups, sectionsFeed.state.sections])
   const chipFilter = activeChip(chips, feedFilter)
   const chipFeed = useFeed(token, chipFilter, screen === 'activity' && chipFilter !== null)
   const groupFeed = useFeed(token, groupId, screen === 'groupActivity' && !!groupId)
@@ -1176,7 +1238,6 @@ function Ledger({
   const youId = participantId ?? detail?.yourParticipantId ?? null
   const feedScreen = screen === 'activity' || screen === 'groupActivity'
   const activeFeed = screen === 'groupActivity' ? groupFeed : chipFilter ? chipFeed : allFeed
-  const sectionedFeed = screen === 'activity' && !chipFilter
   const feedBar = feedScreen ? feedSnack(activeFeed.state) : null
   const openFeedEntry = (entry: FeedEntry) => {
     const target = feedTarget(entry)
@@ -1193,7 +1254,7 @@ function Ledger({
   }
   const onFeedScroll = (y: number) => {
     scrollY.current = y
-    if (feedScreen && (sectionedFeed ? shouldAutoLoadSections : shouldAutoLoad)(activeFeed.state, contentH.current - y - viewH.current)) activeFeed.more()
+    if (feedScreen && shouldAutoLoad(activeFeed.state, contentH.current - y - viewH.current)) activeFeed.more()
   }
   const onTabPress = (next: Tab) => {
     setEditingPay(false)
@@ -1224,9 +1285,10 @@ function Ledger({
       onSignedOut()
     }} />
   } else if (screen === 'activity') {
-    body = <ActivityScreen feed={activeFeed.state} youId={youId} today={today} chips={chips} filter={chipFilter} expanded={openSections}
+    body = <ActivityScreen feed={activeFeed.state} youId={youId} today={today} chips={chips} filter={chipFilter} sections={sections}
       onFilter={(id) => { setFeedFilter(id); scrollRef.current?.scrollTo({ y: 0, animated: false }) }}
-      onToggle={(id) => setOpenSections((current) => ({ ...current, [id]: !current[id] }))}
+      onSectionMore={(id) => { if (openSections[id]) sectionPages.more(id); else setOpenSections((current) => ({ ...current, [id]: true })) }}
+      onSectionLess={(id) => setOpenSections((current) => ({ ...current, [id]: false }))}
       onOpen={openFeedEntry} onMore={activeFeed.more} onRetry={activeFeed.retry} onEmptyAction={() => { if (chipFilter) openGroup(chipFilter); else goGroups() }} />
   } else if (screen === 'deleted' && deletedEntry) {
     body = <DeletedExpense entry={deletedEntry} youId={youId} timeText={timeText} busy={restoringDeleted} onBack={() => { if (!stepBack()) goGroups() }} onRestore={() => { void restoreDeleted(deletedEntry) }} />
@@ -1283,7 +1345,7 @@ function Ledger({
             contentH.current = h
             restoreScroll()
             // A short list that does not fill the screen asks for the next page by itself.
-            if (feedScreen && pendingY.current === null && (sectionedFeed ? shouldAutoLoadSections : shouldAutoLoad)(activeFeed.state, h - scrollY.current - viewH.current)) activeFeed.more()
+            if (feedScreen && pendingY.current === null && shouldAutoLoad(activeFeed.state, h - scrollY.current - viewH.current)) activeFeed.more()
           }}
           refreshControl={feedScreen && home ? <RefreshControl refreshing={activeFeed.state.loading && activeFeed.state.loaded} onRefresh={activeFeed.retry} tintColor="#0f766e" colors={['#0f766e']} /> : undefined}>
           {body}

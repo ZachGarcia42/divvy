@@ -64,6 +64,9 @@ export type FeedEntry = {
 
 export type FeedPage = { items: FeedEntry[]; nextCursor: string | null }
 
+/** The All view of Activity: one section per group with activity, the group with the latest entry first. `total` counts every entry the group has in the feed; `items` are its newest few. */
+export type FeedSections = { sections: { group: FeedEntry['group']; total: number; items: FeedEntry[] }[] }
+
 /** One row of the activity log, with its JSON payload already parsed. */
 export type RawActivity = {
   id: string
@@ -254,6 +257,16 @@ export function clampFeedLimit(raw: unknown): number {
   const n = typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : typeof raw === 'number' ? raw : NaN
   if (!Number.isFinite(n)) return FEED_PAGE_DEFAULT
   return Math.min(FEED_PAGE_MAX, Math.max(1, Math.floor(n)))
+}
+
+export const FEED_SECTION_ROWS_DEFAULT = 4
+export const FEED_SECTION_ROWS_MAX = 10
+
+/** How many entries each group section carries (`?per=`): 4 unless asked, never fewer than 1 or more than 10. */
+export function clampSectionRows(raw: unknown): number {
+  const n = typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : typeof raw === 'number' ? raw : NaN
+  if (!Number.isFinite(n)) return FEED_SECTION_ROWS_DEFAULT
+  return Math.min(FEED_SECTION_ROWS_MAX, Math.max(1, Math.floor(n)))
 }
 
 /** A cursor is the sort key of the last row seen: its exact timestamp (microseconds) and id. Opaque to clients. */

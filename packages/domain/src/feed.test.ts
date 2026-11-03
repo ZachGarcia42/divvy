@@ -4,6 +4,7 @@ import {
   FEED_PAGE_MAX,
   buildFeedEntry,
   clampFeedLimit,
+  clampSectionRows,
   decodeFeedCursor,
   encodeFeedCursor,
   feedAmountText,
@@ -247,5 +248,18 @@ describe('feed: converted amounts and receipt photos', () => {
     expect(sentence('expense.photo_replaced')).toBe('You replaced the receipt on “Dinner”')
     expect(sentence('expense.photo_removed')).toBe('You removed the receipt from “Dinner”')
     expect(feedTone({ kind: 'expense.photo_added' })).toBe('photo')
+  })
+})
+
+describe('clampSectionRows: how many rows each group shows on the all-groups feed', () => {
+  it('defaults to 4 and stays between 1 and 10', () => {
+    expect(clampSectionRows(undefined)).toBe(4)
+    expect(clampSectionRows('')).toBe(4)
+    expect(clampSectionRows('abc')).toBe(4)
+    expect(clampSectionRows('6')).toBe(6)
+    expect(clampSectionRows('0')).toBe(1)
+    expect(clampSectionRows('-3')).toBe(1)
+    expect(clampSectionRows('500')).toBe(10)
+    expect(clampSectionRows('2.7')).toBe(2)
   })
 })

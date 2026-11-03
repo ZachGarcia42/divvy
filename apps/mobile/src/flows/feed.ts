@@ -150,79 +150,93 @@ export function groupFeedByDay(items: FeedEntry[], todayIso: string, offsetMinut
 
 // ─── Split by group ───
 
-/** Entries each group section shows before "Show N more". */
+/** Entries each group section carries from the server (`?per=`) before "Show N more". */
 export const SECTION_ROWS = 4
-/** The all-groups feed stops loading pages by itself at this many entries; "Show older activity" asks for more, and a group chip loads that group alone. */
-export const SECTIONS_AUTOLOAD_MAX = 120
+
+export const sectionsPath = (per = SECTION_ROWS) => `/api/feed/sections?per=${per}`
+
+/** One group's slice of the All view, as the server sends it: the group's newest entries and how many it has in all. */
+export type SectionData = { group: FeedEntry['group']; total: number; items: FeedEntry[] }
+
+export type SectionsState = { sections: SectionData[]; loading: boolean; loaded: boolean; error: string | null }
+export const emptySections: SectionsState = { sections: [], loading: false, loaded: false, error: null }
+/** Requested: what is on screen stays (no flash) while it reloads. */
+export const sectionsRequested = (state: SectionsState): SectionsState => ({ ...state, loading: true, error: null })
+export const sectionsArrived = (page: { sections: SectionData[] }): SectionsState => ({ sections: page.sections, loading: false, loaded: true, error: null })
+export const sectionsFailed = (state: SectionsState, message: string): SectionsState => ({ ...state, loading: false, error: message })
+
+/** The All view as a FeedState, so it shares the loading, error and empty screens (and the refresh snackbar) with the other feeds. It never has a next page: every group is already there. */
+export function sectionsAsFeed(state: SectionsState): FeedState {
+  return { items: state.sections.flatMap((section) => section.items), nextCursor: null, loading: state.loading && !state.loaded, loadingMore: false, loaded: state.loaded, error: state.error, errorMore: false }
+}
 
 export type FeedSection = {
   group: FeedEntry['group']
-  /** Every loaded entry of this group, newest first. */
-  items: FeedEntry[]
-  /** The ones on screen: all of them when expanded, else the first SECTION_ROWS. */
+  /** Every entry the group has in the feed (the server's count), loaded or not. */
+  total: number
+  /** The ones on screen: the newest few, or everything loaded when the section is open. */
   shown: FeedEntry[]
-  /** How many are folded behind "Show more" (0 when everything fits or the section is expanded). */
+  /** How many entries are not on screen yet: what "Show N more" says. */
   hidden: number
   expanded: boolean
+  /** The next batch is on its way. */
+  loadingMore: boolean
+  /** The last request for this section's entries failed. */
+  failed: boolean
 }
 
 /**
- * Cut the all-groups feed (already newest first) into one section per group. The sections are in order of each group's most recent
- * entry, because that is the order the groups first appear in the list; entries stay newest first inside each.
+ * The sections on screen. The server sends one per group with activity, latest first, each with its newest entries and its total, so
+ * the order and the counts do not depend on how busy any one group is. An open section shows its group's own feed as far as it has
+ * been loaded (`pages`), which starts with the same newest entries.
  */
-export function groupFeedByGroup(items: FeedEntry[], expanded: Record<string, boolean> = {}, cap = SECTION_ROWS): FeedSection[] {
-  const sections: FeedSection[] = []
-  const byId = new Map<string, FeedSection>()
-  for (const item of items) {
-    let section = byId.get(item.group.id)
-    if (!section) {
-      section = { group: item.group, items: [], shown: [], hidden: 0, expanded: !!expanded[item.group.id] }
-      byId.set(item.group.id, section)
-      sections.push(section)
+export function buildSections(data: SectionData[], pages: Record<string, FeedState> = {}, open: Record<string, boolean> = {}): FeedSection[] {
+  return data.map((section) => {
+    const id = section.group.id
+    const page = pages[id]
+    const expanded = !!open[id]
+    const loadedAll = expanded && !!page?.loaded && page.items.length >= section.items.length
+    const shown = loadedAll ? page!.items : section.items
+    // Once a whole group has been read, its own list is the truth even if the count was a moment out of date.
+    const exhausted = loadedAll && page!.nextCursor === null
+    return {
+      group: section.group,
+      total: section.total,
+      shown,
+      hidden: exhausted ? 0 : Math.max(0, section.total - shown.length),
+      expanded,
+      loadingMore: expanded && !!page && (page.loadingMore || (page.loading && !page.loaded)),
+      failed: expanded && !!page && page.error !== null,
     }
-    section.items.push(item)
-  }
-  for (const section of sections) {
-    const open = section.expanded || section.items.length <= cap
-    section.shown = open ? section.items : section.items.slice(0, cap)
-    section.hidden = open ? 0 : section.items.length - cap
-  }
-  return sections
+  })
 }
 
 export type FeedChip = { id: string | null; emoji: string; title: string; label: string }
 
 /**
  * The filter chips: "All", then each group, the ones with the latest activity first (the same order as the sections), then the rest
- * as the groups list has them. An archived group only has a chip while it still has activity on screen.
+ * as the groups list has them. An archived group only has a chip while it still has activity.
  */
-export function feedChips(groups: { id: string; name: string; emoji?: string | null; archived?: boolean }[], items: FeedEntry[]): FeedChip[] {
-  const recent = groupFeedByGroup(items).map((section) => section.group.id)
+export function feedChips(groups: { id: string; name: string; emoji?: string | null; archived?: boolean }[], recent: FeedEntry['group'][]): FeedChip[] {
+  const recentIds = recent.map((group) => group.id)
   const known = new Map(groups.map((group) => [group.id, group]))
-  const rank = (id: string) => { const at = recent.indexOf(id); return at === -1 ? recent.length : at }
-  const chosen = groups.filter((group) => !group.archived || recent.includes(group.id))
+  const rank = (id: string) => { const at = recentIds.indexOf(id); return at === -1 ? recentIds.length : at }
+  const chosen = groups.filter((group) => !group.archived || recentIds.includes(group.id))
   const ordered = chosen.map((group, index) => ({ group, index })).sort((a, b) => rank(a.group.id) - rank(b.group.id) || a.index - b.index).map((entry) => entry.group)
-  const chips: FeedChip[] = ordered.map((group) => {
+  const chipOf = (group: { id: string; name: string; emoji?: string | null }): FeedChip => {
     const icon = groupIcon(group)
     return { id: group.id, emoji: icon.emoji, title: icon.title, label: [icon.emoji, icon.title].filter(Boolean).join(' ') }
-  })
-  // A group in the feed that the list has not caught up with yet still gets its section's chip.
-  for (const id of recent) {
-    if (known.has(id)) continue
-    const group = items.find((item) => item.group.id === id)!.group
-    const icon = groupIcon(group)
-    chips.splice(Math.min(recent.indexOf(id), chips.length), 0, { id, emoji: icon.emoji, title: icon.title, label: [icon.emoji, icon.title].filter(Boolean).join(' ') })
+  }
+  const chips = ordered.map(chipOf)
+  // A group with activity that the list has not caught up with yet still gets its section's chip.
+  for (const group of recent) {
+    if (!known.has(group.id)) chips.splice(Math.min(recentIds.indexOf(group.id), chips.length), 0, chipOf(group))
   }
   return [{ id: null, emoji: '', title: 'All', label: 'All' }, ...chips]
 }
 
 /** The chip to show as picked: the filter when that group is still one of the chips, else All. */
 export const activeChip = (chips: FeedChip[], filter: string | null): string | null => (filter !== null && chips.some((chip) => chip.id === filter) ? filter : null)
-
-/** Auto-loading for the sectioned feed: like shouldAutoLoad, but it stops at SECTIONS_AUTOLOAD_MAX entries (the folded sections barely grow the list). */
-export function shouldAutoLoadSections(state: FeedState, distanceFromBottom: number): boolean {
-  return state.items.length < SECTIONS_AUTOLOAD_MAX && shouldAutoLoad(state, distanceFromBottom)
-}
 
 /** "Today", "Yesterday", else "Fri, Oct 30" (with the year when it is not this year): the day on a row that no day heading sits above. */
 export function dayLabel(at: string, todayIso: string, offsetMinutes?: number): string {

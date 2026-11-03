@@ -295,6 +295,16 @@ export function createApp(sql: Sql, options?: {
     return c.json({ error: { code: 'INTERNAL', message: 'Something went wrong' } }, 500)
   })
 
+  // A NUL byte in an id (the path, or ?groupId=) can never match a group: a plain 404, not a database error.
+  app.use('/api/*', async (c, next) => {
+    const raw = c.req.url
+    const target = raw.slice(raw.indexOf('/api'))
+    const [path = '', query = ''] = target.split('?', 2)
+    const nul = (text: string) => { try { return decodeURIComponent(text).includes('\u0000') } catch { return false } }
+    const groupId = new URLSearchParams(query).getAll('groupId')
+    if (nul(path) || groupId.some((id) => id.includes('\u0000'))) return c.json({ error: { code: 'NOT_FOUND', message: 'Not found' } }, 404)
+    await next()
+  })
   const tokenOf = (c: { req: { header: (name: string) => string | undefined } }) => {
     const header = c.req.header('authorization')
     if (header?.toLowerCase().startsWith('bearer ')) return header.slice(7)
@@ -606,6 +616,8 @@ export function createApp(sql: Sql, options?: {
   app.get('/api/groups/:id/activity', async (c) => c.json(await repo.listActivity(await actor(c), c.req.param('id'))))
   app.get('/api/groups/:id/feed', async (c) => c.json(await repo.feed(await actor(c), { groupId: c.req.param('id'), limit: c.req.query('limit'), cursor: c.req.query('cursor') })))
   // `?groupId=` narrows it to one group (members only), the same page as /api/groups/:id/feed.
+  // The All view: one section per group with activity (its newest `per` entries, default 4, and its total), latest activity first.
+  app.get('/api/feed/sections', async (c) => c.json(await repo.feedSections(await actor(c), { per: c.req.query('per') })))
   app.get('/api/feed', async (c) => c.json(await repo.feed(await actor(c), { groupId: c.req.query('groupId') || undefined, limit: c.req.query('limit'), cursor: c.req.query('cursor') })))
   app.get('/api/groups/:id/charts', async (c) => c.json(await repo.charts(await actor(c), c.req.param('id'), c.req.query('from'), c.req.query('to'))))
   app.get('/api/groups/:id/comments', async (c) => c.json(await repo.comments(await actor(c), c.req.param('id'), c.req.query('targetId') ?? '')))

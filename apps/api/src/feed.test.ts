@@ -305,6 +305,75 @@ describe('activity feed: who can see what', () => {
     expect((await call('GET', '/api/feed?groupId=nope')).status).toBe(404)
   })
 
+  it('/api/feed/sections: one section per group with activity, however busy one group is', async () => {
+    const { call, groupId, add, second } = await setup()
+    const quiet = await second('Roommates')
+    const empty = await second('Nothing yet')
+    await add({ description: 'Rent' }, quiet)
+    // The busy group has more entries than a section carries, all of them newer than the quiet group's one.
+    for (let i = 0; i < 6; i++) await add({ description: `Busy ${i}` })
+    const res = await call('GET', '/api/feed/sections')
+    expect(res.status).toBe(200)
+    const { sections } = res.json
+    expect(sections.map((section: any) => section.group.id)).toEqual([groupId, quiet])
+    expect(sections.some((section: any) => section.group.id === empty)).toBe(false)
+    expect(sections[0]).toMatchObject({ total: 6 })
+    expect(sections[0].items.map((item: any) => item.target.label)).toEqual(['Busy 5', 'Busy 4', 'Busy 3', 'Busy 2'])
+    expect(sections[1]).toMatchObject({ total: 1 })
+    expect(sections[1].items.map((item: any) => item.target.label)).toEqual(['Rent'])
+    expect(sections[1].items[0].group).toMatchObject({ id: quiet, name: 'Roommates' })
+    // A section's entries are the same entries its group's feed starts with.
+    const own = (await call('GET', `/api/groups/${groupId}/feed?limit=4`)).json.items
+    expect(sections[0].items).toEqual(own)
+  })
+
+  it('/api/feed/sections: ?per= sets the rows (1 to 10, 4 by default), the latest group leads, and entries of every kind count', async () => {
+    const { call, groupId, you, maya, add, second } = await setup()
+    const other = await second('Roommates')
+    const id = await add({ description: 'Gas' })
+    await call('DELETE', `/api/groups/${groupId}/expenses/${id}`, { version: 1 })
+    await add({ description: 'Rent' }, other)
+    await call('POST', `/api/groups/${groupId}/settlements`, { fromId: maya, toId: you, minor: 500 })
+    const { sections } = (await call('GET', '/api/feed/sections?per=1')).json
+    // The payment is the newest entry, so the busier group (3 entries: add, delete, payment) leads.
+    expect(sections.map((section: any) => [section.group.id, section.total, section.items.length])).toEqual([[groupId, 3, 1], [other, 1, 1]])
+    expect(sections[0].items[0].kind).toBe('settlement.created')
+    for (const [per, rows] of [['0', 1], ['-3', 1], ['abc', 3], ['', 3], ['99', 3], ['2', 2]] as const) {
+      const res = await call('GET', `/api/feed/sections?per=${per}`)
+      expect(res.json.sections[0].items.length, `per=${per}`).toBe(rows)
+    }
+  })
+
+  it('/api/feed/sections: only groups you are in, never a stranger\'s, and signed out is 401', async () => {
+    const { app, add } = await setup()
+    await add({ description: 'Secret' })
+    const token = await sessionFor(app, 'stranger@example.com')
+    const res = await app.request('/api/feed/sections', { headers: { authorization: `Bearer ${token}` } })
+    expect(res.status).toBe(200)
+    expect((await res.json()).sections).toEqual([])
+    expect(await app.request('/api/feed/sections')).toHaveProperty('status', 401)
+  })
+
+  it('a NUL byte in a group id is a 404 on every route that takes one, not a 500', async () => {
+    const { app, groupId, call } = await setup()
+    const token = await sessionFor(app, 'stranger@example.com')
+    for (const path of [
+      '/api/feed?groupId=%00', `/api/feed?groupId=${groupId}%00`, '/api/feed?groupId=a%00b', `/api/feed?groupId=${groupId}&groupId=%00`,
+      '/api/groups/%00', '/api/groups/%00/feed', `/api/groups/${groupId}%00/feed`, `/api/groups/${groupId}/expenses/%00`, '/api/groups/a%00b/feed?limit=5',
+    ]) {
+      const res = await call('GET', path)
+      expect(res.status, path).toBe(404)
+      expect(res.json, path).toEqual({ error: { code: 'NOT_FOUND', message: 'Not found' } })
+      // Signed in as someone else, or not at all, it is the same answer.
+      expect((await app.request(path, { headers: { authorization: `Bearer ${token}` } })).status, path).toBe(404)
+    }
+    expect((await call('DELETE', '/api/groups/%00')).status).toBe(404)
+    expect((await call('PATCH', '/api/groups/%00', { name: 'x' })).status).toBe(404)
+    // A good id still works, and a broken %-escape is no worse than before.
+    expect((await call('GET', `/api/groups/${groupId}/feed`)).status).toBe(200)
+    expect((await call('GET', '/api/groups/%E0%A4%A/feed')).status).toBe(404)
+  })
+
   it('a member who has left stops seeing that group in their global feed', async () => {
     const ctx = await setup()
     const invite = await ctx.call('POST', `/api/groups/${ctx.groupId}/invite-link`)

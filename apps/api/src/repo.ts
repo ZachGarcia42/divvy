@@ -14,6 +14,7 @@ import {
   buildFeedEntry,
   calendarDateInTimeZone,
   clampFeedLimit,
+  clampSectionRows,
   decodeFeedCursor,
   encodeFeedCursor,
   canMove,
@@ -37,6 +38,7 @@ import {
   type FeedChange,
   type FeedEntry,
   type FeedPage,
+  type FeedSections,
   retargetSettlement,
   suggestedPayments,
   type Frequency,
@@ -55,6 +57,7 @@ import { createHash, randomBytes, randomInt, randomUUID, timingSafeEqual } from 
 import type { Sql } from './db.ts'
 import { checkPhoto, newPhotoId, type PhotoStore } from './photos.ts'
 
+type FeedRow = { id: string; group_id: string; actor_participant_id: string | null; actor_name: string | null; kind: string; summary: string; payload: string; at: string }
 type Actor = { userId: string; email: string; participantId: string; displayName: string; homeCurrency: string }
 
 type ExpenseInput = {
@@ -1278,7 +1281,7 @@ export class Repo {
       : `a.group_id in (select group_id from memberships where participant_id = ${ph(actor.participantId)} and removed_at is null)`
     const kinds = `a.kind in (${FEED_KINDS.map((kind) => ph(kind)).join(',')})`
     const after = cursor ? `and (a.created_at, a.id) < (${ph(cursor.at)}::timestamptz, ${ph(cursor.id)})` : ''
-    const rows = await this.sql.query<{ id: string; group_id: string; actor_participant_id: string | null; actor_name: string | null; kind: string; summary: string; payload: string; at: string }>(
+    const rows = await this.sql.query<FeedRow>(
       `select a.id, a.group_id, a.actor_participant_id, p.display_name as actor_name, a.kind, a.summary, a.payload,
               to_char(a.created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as at
        from activity a left join participants p on p.id = a.actor_participant_id
@@ -1291,6 +1294,49 @@ export class Repo {
     const last = page[page.length - 1]
     const nextCursor = rows.length > limit && last ? encodeFeedCursor({ at: last.at, id: last.id }) : null
 
+    return { items: await this.hydrateFeed(page), nextCursor }
+  }
+
+  /** The Activity feed in one section per group: each group's newest `per` entries and how many it has in all, the group with the latest activity first. */
+  async feedSections(actor: Actor, opts: { per?: unknown }): Promise<FeedSections> {
+    const per = clampSectionRows(opts.per)
+    const params: unknown[] = [actor.participantId]
+    const kinds = FEED_KINDS.map((kind) => { params.push(kind); return `$${params.length}` }).join(',')
+    params.push(per)
+    const rows = await this.sql.query<FeedRow & { total: string | number }>(
+      `select * from (
+         select a.id, a.group_id, a.actor_participant_id, p.display_name as actor_name, a.kind, a.summary, a.payload,
+                to_char(a.created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as at,
+                a.created_at as sort_at,
+                row_number() over (partition by a.group_id order by a.created_at desc, a.id desc) as rn,
+                count(*) over (partition by a.group_id) as total
+         from activity a left join participants p on p.id = a.actor_participant_id
+         where a.group_id in (select group_id from memberships where participant_id = $1 and removed_at is null) and a.kind in (${kinds})
+       ) t
+       where rn <= $${params.length}
+       order by sort_at desc, id desc`,
+      params,
+    )
+    const entries = await this.hydrateFeed(rows)
+    const byId = new Map(entries.map((entry) => [entry.id, entry]))
+    const sections: FeedSections['sections'] = []
+    const at = new Map<string, FeedSections['sections'][number]>()
+    for (const row of rows) {
+      const entry = byId.get(row.id)
+      if (!entry) continue
+      let section = at.get(row.group_id)
+      if (!section) {
+        section = { group: entry.group, total: Number(row.total), items: [] }
+        at.set(row.group_id, section)
+        sections.push(section)
+      }
+      section.items.push(entry)
+    }
+    return { sections }
+  }
+
+  /** Turn feed rows (newest first) into entries: the group, expense, payment and edit details each one needs. */
+  private async hydrateFeed(page: FeedRow[]): Promise<FeedEntry[]> {
     const payloads = page.map((row) => obj(parseJson(row.payload)))
     const unique = (values: (string | null | undefined)[]) => [...new Set(values.filter((value): value is string => typeof value === 'string' && value !== ''))]
     const numbered = (ids: string[], offset = 0) => ids.map((_, i) => `$${offset + i + 1}`).join(',')
@@ -1352,7 +1398,7 @@ export class Repo {
       )
       if (entry) items.push(entry)
     })
-    return { items, nextCursor }
+    return items
   }
 
   private async settlementRow(groupId: string, settlementId: string) {

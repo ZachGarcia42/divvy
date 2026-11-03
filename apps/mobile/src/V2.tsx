@@ -1,7 +1,7 @@
 // Design v2 screens: Groups home, group view, Add-expense ink sheet, expense detail, settle up.
 // Data logic stays in App.tsx (Ledger) and flows/*; these components only render and report taps.
 import { exponentOf, formatMoney, parseMajor, searchCurrencies, type SplitMethod, type SplitSpec } from '@divvy/domain'
-import { useEffect, useMemo, useState, type ComponentProps, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ComponentProps, type ReactNode } from 'react'
 import { ActivityIndicator, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native'
 import { adjustDisplay, adjustSign, adjustTyped, sanitizeAmountText, evaluate, groupedMajor, majorString, METHOD_LABELS, METHODS, newDraft, switchMethod, toggleAdjustSign, type Draft } from './flows/split'
 import {
@@ -9,7 +9,7 @@ import {
   signedMoney, groupIcon, PICKER_EMOJIS, DEFAULT_EMOJI, updatedPhrase, yourPosition, type HistoryEntry,
 } from './flows/view'
 import { amountWidth } from './flows/amount'
-import { canLoadMore, feedRow, feedView, groupFeedByDay, groupFeedByGroup, SECTIONS_AUTOLOAD_MAX, TONE_ICON, type FeedChip, type FeedEntry, type FeedSection, type FeedState, type FeedTone } from './flows/feed'
+import { canLoadMore, feedRow, feedView, groupFeedByDay, TONE_ICON, type FeedChip, type FeedEntry, type FeedSection, type FeedState, type FeedTone } from './flows/feed'
 import { middleEllipsis } from './flows/composer'
 import { Ionicons } from '@expo/vector-icons'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
@@ -328,16 +328,35 @@ function FeedMessage({ icon, tone, title, body, action, onAction, testID, action
  *  - `chips` set, `filter` a group id: only that group, by day. The chips row on top switches between them.
  * Paging is by scrolling (App watches the scroll position); the states are skeleton rows, a friendly error, and an empty state with a button.
  */
-export function ActivityScreen({ group, feed, youId, today, chips, filter = null, expanded, onFilter, onToggle, onBack, onOpen, onMore, onRetry, onEmptyAction }: {
+export function ActivityScreen({ group, feed, youId, today, chips, filter = null, sections = [], onFilter, onSectionMore, onSectionLess, onBack, onOpen, onMore, onRetry, onEmptyAction }: {
   group?: { emoji: string; title: string }; feed: FeedState; youId: string | null; today: string
-  chips?: FeedChip[]; filter?: string | null; expanded?: Record<string, boolean>; onFilter?: (id: string | null) => void; onToggle?: (id: string) => void
+  chips?: FeedChip[]; filter?: string | null; sections?: FeedSection[]; onFilter?: (id: string | null) => void; onSectionMore?: (id: string) => void; onSectionLess?: (id: string) => void
   onBack?: () => void; onOpen: (entry: FeedEntry) => void; onMore: () => void; onRetry: () => void; onEmptyAction: () => void
 }) {
   const view = feedView(feed)
   const showChips = !group && !!chips && chips.length > 1 && !!onFilter
   const sectioned = !group && filter === null && !!chips
   const filtered = !group && filter !== null
-  const sections = sectioned ? groupFeedByGroup(feed.items, expanded) : []
+  const chipRef = useRef<ScrollView>(null)
+  const chipWidth = useRef<Record<string, number>>({})
+  const chipScroll = useRef({ x: 0, w: 0, placed: false })
+  const pickedKey = filter ?? 'all'
+  // The picked chip is always in view: when the filter changes (a chip, "See all", or coming back to a filter already set) the row scrolls just far enough to show it.
+  const reveal = (key: string) => {
+    // Where a chip sits is worked out from the widths of the chips before it: onLayout only reports when a size changes, so a chip that was merely pushed along by a new one would still carry its old x.
+    const edge = 18, gap = 8
+    const order = (chips ?? []).map((chip) => chip.id ?? 'all')
+    const at = order.includes(key) && order.every((chipKey) => chipWidth.current[chipKey] !== undefined)
+      ? { x: edge + order.slice(0, order.indexOf(key)).reduce((sum, chipKey) => sum + chipWidth.current[chipKey]! + gap, 0), w: chipWidth.current[key]! }
+      : null
+    const view = chipScroll.current
+    if (!at || view.w === 0) return
+    const target = at.x < view.x + edge ? Math.max(0, at.x - edge) : at.x + at.w > view.x + view.w - edge ? at.x + at.w - view.w + edge : null
+    if (target === null) { view.placed = true; return }
+    chipRef.current?.scrollTo({ x: target, animated: view.placed })
+    view.x = target; view.placed = true
+  }
+  useEffect(() => { reveal(pickedKey) }, [pickedKey, chips?.length])
   const days = sectioned ? [] : groupFeedByDay(feed.items, today)
   const chosen = filtered ? chips?.find((chip) => chip.id === filter) : undefined
   return (
@@ -354,12 +373,14 @@ export function ActivityScreen({ group, feed, youId, today, chips, filter = null
         </Text>
       )}
       {showChips && (
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={k.chipScroll} contentContainerStyle={k.chipRow} accessibilityRole="tablist" testID="activity-filter">
+        <ScrollView ref={chipRef} horizontal showsHorizontalScrollIndicator={false} style={k.chipScroll} scrollEventThrottle={16}
+          onLayout={(e) => { chipScroll.current.w = e.nativeEvent.layout.width; reveal(pickedKey) }} onScroll={(e) => { chipScroll.current.x = e.nativeEvent.contentOffset.x }} contentContainerStyle={k.chipRow} accessibilityRole="tablist" testID="activity-filter">
           {chips!.map((chip) => {
             const on = chip.id === filter
             return (
               <Pressable key={chip.id ?? 'all'} onPress={() => onFilter!(chip.id)} accessibilityRole="tab" accessibilityState={{ selected: on }} aria-selected={on}
                 accessibilityLabel={chip.id === null ? 'All groups' : `${chip.title} only`} testID={`activity-chip-${chip.id ?? 'all'}`}
+                onLayout={(e) => { const key = chip.id ?? 'all'; chipWidth.current[key] = e.nativeEvent.layout.width; if (key === pickedKey) reveal(key) }}
                 style={[k.filterChip, on && k.filterChipOn]}>
                 {chip.emoji ? <Text style={k.groupEmojiSm} accessible={false}>{chip.emoji}</Text> : null}
                 <Text style={[k.filterChipText, on && k.filterChipTextOn]} numberOfLines={1}>{chip.title}</Text>
@@ -380,7 +401,7 @@ export function ActivityScreen({ group, feed, youId, today, chips, filter = null
           body={group || filtered ? 'Add an expense and it shows up here.' : 'Adds, edits, deletes and payments from all your groups show up here as they happen.'}
           action={group ? 'Add expense' : filtered ? 'Open group' : 'Go to Groups'} onAction={onEmptyAction} />
       )}
-      {sections.map((section) => <FeedSectionView key={section.group.id} section={section} youId={youId} today={today} onOpen={onOpen} onToggle={onToggle} onSeeAll={onFilter} />)}
+      {(sectioned ? sections : []).map((section) => <FeedSectionView key={section.group.id} section={section} youId={youId} today={today} onOpen={onOpen} onMore={onSectionMore} onLess={onSectionLess} onSeeAll={onFilter} />)}
       {days.map((day) => (
         <View key={day.day || 'unknown'}>
           <Text style={k.date} accessibilityRole="header">{day.heading}</Text>
@@ -390,11 +411,6 @@ export function ActivityScreen({ group, feed, youId, today, chips, filter = null
         </View>
       ))}
       {feed.loadingMore && <ActivityIndicator style={{ marginTop: 16 }} color={T.teal} accessibilityLabel="Loading older activity" testID="activity-loading-more" />}
-      {sectioned && view === 'list' && feed.nextCursor !== null && feed.error === null && !feed.loadingMore && feed.items.length >= SECTIONS_AUTOLOAD_MAX && (
-        <Pressable style={[k.btn, k.ghost, { marginTop: 16, minHeight: 46, paddingVertical: 12 }]} onPress={onMore} accessibilityRole="button" testID="activity-older">
-          <Text style={[k.btnText, { color: T.teal, fontSize: 15 }]}>Show older activity</Text>
-        </Pressable>
-      )}
       {view === 'list' && feed.error !== null && canLoadMore(feed) && (
         <Pressable style={[k.btn, k.ghost, { marginTop: 16, minHeight: 46, paddingVertical: 12 }]} onPress={onMore} accessibilityRole="button" testID="activity-more">
           <Text style={[k.btnText, { color: T.teal, fontSize: 15 }]}>Show older</Text>
@@ -405,13 +421,16 @@ export function ActivityScreen({ group, feed, youId, today, chips, filter = null
   )
 }
 
-/** One group's section on the all-groups feed: the group's name with "See all", its newest few entries, and "Show N more". */
-function FeedSectionView({ section, youId, today, onOpen, onToggle, onSeeAll }: {
-  section: FeedSection; youId: string | null; today: string; onOpen: (entry: FeedEntry) => void; onToggle?: (id: string) => void; onSeeAll?: (id: string | null) => void
+/** One group's section on the all-groups feed: the group's name with "See all (N)", its newest few entries, and "Show N more" / "Show less". */
+function FeedSectionView({ section, youId, today, onOpen, onMore, onLess, onSeeAll }: {
+  section: FeedSection; youId: string | null; today: string; onOpen: (entry: FeedEntry) => void
+  onMore?: (id: string) => void; onLess?: (id: string) => void; onSeeAll?: (id: string | null) => void
 }) {
   const icon = groupIcon(section.group)
   const id = section.group.id
-  const folded = section.hidden > 0
+  const more = section.hidden > 0 && !!onMore
+  const less = section.expanded && !!onLess
+  const moreText = section.failed ? 'Couldn’t load. Try again' : section.loadingMore ? 'Loading…' : `Show ${section.hidden} more`
   return (
     <View testID={`activity-section-${id}`}>
       <View style={k.sectionHead}>
@@ -420,20 +439,31 @@ function FeedSectionView({ section, youId, today, onOpen, onToggle, onSeeAll }: 
           <Text style={k.sectionTitle} numberOfLines={1} accessibilityRole="header">{icon.title}</Text>
         </View>
         {onSeeAll && (
-          <Pressable onPress={() => onSeeAll(id)} accessibilityRole="button" accessibilityLabel={`See all activity in ${icon.title}`} testID={`activity-seeall-${id}`} style={k.seeAll} hitSlop={6}>
-            <Text style={k.seeAllText}>See all</Text>
+          <Pressable onPress={() => onSeeAll(id)} accessibilityRole="button" accessibilityLabel={`See all ${section.total} ${section.total === 1 ? 'entry' : 'entries'} in ${icon.title}`} testID={`activity-seeall-${id}`} style={k.seeAll} hitSlop={6}>
+            <Text style={k.seeAllText}>{`See all (${section.total})`}</Text>
             <Ionicons name="chevron-forward" size={14} color={T.teal} accessible={false} />
           </Pressable>
         )}
       </View>
       <View style={k.feedCard}>
         {section.shown.map((entry, i) => <FeedRowView key={entry.id} entry={entry} first={i === 0} youId={youId} today={today} showGroup={false} showDay onOpen={onOpen} />)}
-        {onToggle && (folded || section.expanded) && (
-          <Pressable onPress={() => onToggle(id)} accessibilityRole="button" accessibilityState={{ expanded: section.expanded }}
-            accessibilityLabel={folded ? `Show ${section.hidden} more in ${icon.title}` : `Show fewer in ${icon.title}`} testID={`activity-section-more-${id}`} style={[k.sectionMore, k.rowLine]}>
-            <Text style={k.sectionMoreText}>{folded ? `Show ${section.hidden} more` : 'Show less'}</Text>
-            <Ionicons name={folded ? 'chevron-down' : 'chevron-up'} size={16} color={T.teal} accessible={false} />
-          </Pressable>
+        {(more || less) && (
+          <View style={[k.sectionFoot, k.rowLine]}>
+            {more && (
+              <Pressable onPress={() => onMore!(id)} disabled={section.loadingMore} accessibilityRole="button" accessibilityState={{ busy: section.loadingMore }}
+                accessibilityLabel={`Show ${section.hidden} more in ${icon.title}`} testID={`activity-section-more-${id}`} style={k.sectionMore}>
+                <Text style={k.sectionMoreText}>{moreText}</Text>
+                {!section.loadingMore && <Ionicons name="chevron-down" size={16} color={T.teal} accessible={false} />}
+              </Pressable>
+            )}
+            {less && (
+              <Pressable onPress={() => onLess!(id)} accessibilityRole="button" accessibilityState={{ expanded: true }}
+                accessibilityLabel={`Show fewer in ${icon.title}`} testID={`activity-section-less-${id}`} style={k.sectionMore}>
+                <Text style={k.sectionMoreText}>Show less</Text>
+                <Ionicons name="chevron-up" size={16} color={T.teal} accessible={false} />
+              </Pressable>
+            )}
+          </View>
         )}
       </View>
     </View>
@@ -1264,7 +1294,8 @@ const k = StyleSheet.create({
   sectionTitle: { fontSize: 18, fontWeight: '900', color: T.ink, letterSpacing: -0.3, flexShrink: 1 },
   seeAll: { flexDirection: 'row', alignItems: 'center', gap: 2, minHeight: 36, paddingLeft: 10, justifyContent: 'center' },
   seeAllText: { fontSize: 14, fontWeight: '800', color: T.teal },
-  sectionMore: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, minHeight: 48, paddingVertical: 12 },
+  sectionFoot: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', flexWrap: 'wrap' },
+  sectionMore: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, minHeight: 48, paddingVertical: 12, paddingHorizontal: 8 },
   sectionMoreText: { fontSize: 14.5, fontWeight: '800', color: T.teal },
   feedChipText: { fontSize: 13.5, fontWeight: '800', color: T.ink, flexShrink: 1 },
   feedMsg: { alignItems: 'center', paddingHorizontal: 22, paddingTop: 56, paddingBottom: 24 },

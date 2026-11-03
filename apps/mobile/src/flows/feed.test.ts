@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   PAGE_SIZE, LOAD_AHEAD_PX, TONE_ICON, originStays, returnsToFeed, type FeedOrigin, canLoadMore, changeSummary, clockText, datedLine, emptyFeed, feedArrived, feedFailed, feedPath, feedRefreshed, feedRequested, feedRow, feedSnack, feedTarget, feedView,
   groupFeedByDay, localDay, shouldAutoLoad,
-  SECTION_ROWS, SECTIONS_AUTOLOAD_MAX, activeChip, dayLabel, feedChips, groupFeedByGroup, shouldAutoLoadSections,
+  SECTION_ROWS, activeChip, buildSections, dayLabel, emptySections, feedChips, sectionsArrived, sectionsAsFeed, sectionsFailed, sectionsPath, sectionsRequested,
   type FeedEntry,
 } from './feed'
 
@@ -285,37 +285,66 @@ const inGroup = (id: string, gid: string, name: string, at: string, emoji: strin
   entry(id, { at, group: { id: gid, name, emoji, currency: 'USD' } })
 
 describe('split by group: sections', () => {
-  const items = [
-    inGroup('a1', 'tahoe', 'Tahoe', '2026-11-02T20:00:00.000Z'),
-    inGroup('b1', 'mission', 'Mission St', '2026-11-02T19:00:00.000Z'),
-    inGroup('a2', 'tahoe', 'Tahoe', '2026-11-02T18:00:00.000Z'),
-    inGroup('c1', 'nopa', 'Nopa', '2026-11-01T18:00:00.000Z'),
-    inGroup('b2', 'mission', 'Mission St', '2026-10-30T18:00:00.000Z'),
+  const tahoe: FeedEntry['group'] = { id: 'tahoe', name: 'Tahoe', emoji: null, currency: 'USD' }
+  const mission: FeedEntry['group'] = { id: 'mission', name: 'Mission St', emoji: '🏠', currency: 'USD' }
+  const mk = (gid: string, group: FeedEntry['group'], n: number, from = 0) => Array.from({ length: n }, (_, i) => inGroup(`${gid}${from + i}`, gid, group.name, `2026-11-02T${String(20 - from - i).padStart(2, '0')}:00:00.000Z`))
+  const data = [
+    { group: tahoe, total: 130, items: mk('tahoe', tahoe, SECTION_ROWS) },
+    { group: mission, total: 1, items: mk('mission', mission, 1) },
   ]
-  it('one section per group, ordered by each group’s most recent entry, newest first inside', () => {
-    const sections = groupFeedByGroup(items)
-    expect(sections.map((s) => s.group.id)).toEqual(['tahoe', 'mission', 'nopa'])
-    expect(sections.map((s) => s.items.map((i) => i.id))).toEqual([['a1', 'a2'], ['b1', 'b2'], ['c1']])
-    expect(sections.every((s) => s.hidden === 0 && !s.expanded)).toBe(true)
+  const page = (items: ReturnType<typeof mk>, nextCursor: string | null, extra = {}) => ({ ...emptyFeed, loaded: true, items, nextCursor, ...extra })
+
+  it('one section per group the server sent, in its order, with the server’s counts: a busy group does not crowd the others out', () => {
+    const sections = buildSections(data)
+    expect(sections.map((s) => s.group.id)).toEqual(['tahoe', 'mission'])
+    expect(sections.map((s) => s.total)).toEqual([130, 1])
+    // Only the newest four on screen, and "Show N more" counts what is really left, not what happens to be loaded.
+    expect(sections[0]).toMatchObject({ hidden: 126, expanded: false, loadingMore: false, failed: false })
+    expect(sections[0]!.shown.map((i) => i.id)).toEqual(['tahoe0', 'tahoe1', 'tahoe2', 'tahoe3'])
+    expect(sections[1]).toMatchObject({ hidden: 0 })
   })
-  it('an empty feed has no sections', () => expect(groupFeedByGroup([])).toEqual([]))
-  it(`shows the newest ${SECTION_ROWS} and folds the rest behind Show more until the section is opened`, () => {
-    const many = Array.from({ length: 7 }, (_, i) => inGroup(`t${i}`, 'tahoe', 'Tahoe', `2026-11-02T1${9 - i}:00:00.000Z`))
-    const [folded] = groupFeedByGroup([...many, inGroup('m1', 'mission', 'Mission St', '2026-11-01T10:00:00.000Z')])
-    expect(folded!.shown.map((i) => i.id)).toEqual(['t0', 't1', 't2', 't3'])
-    expect(folded!.hidden).toBe(3)
-    const [open] = groupFeedByGroup(many, { tahoe: true })
-    expect(open!.shown).toHaveLength(7)
-    expect(open!.hidden).toBe(0)
-    expect(open!.expanded).toBe(true)
-    // Exactly the cap is not folded.
-    expect(groupFeedByGroup(many.slice(0, SECTION_ROWS))[0]!.hidden).toBe(0)
-    expect(groupFeedByGroup(many.slice(0, SECTION_ROWS + 1))[0]!.hidden).toBe(1)
+  it('no groups with activity: no sections', () => expect(buildSections([])).toEqual([]))
+  it('exactly the rows the server sent is not folded; one more is', () => {
+    expect(buildSections([{ group: tahoe, total: SECTION_ROWS, items: mk('t', tahoe, SECTION_ROWS) }])[0]!.hidden).toBe(0)
+    expect(buildSections([{ group: tahoe, total: SECTION_ROWS + 1, items: mk('t', tahoe, SECTION_ROWS) }])[0]!.hidden).toBe(1)
   })
-  it('a group whose first entry arrives on a later page takes its place after the groups already shown', () => {
-    const first = groupFeedByGroup(items.slice(0, 2)).map((s) => s.group.id)
-    const later = groupFeedByGroup(items).map((s) => s.group.id)
-    expect(later.slice(0, first.length)).toEqual(first)
+  it('opening a section shows what its own feed has loaded, and the count falls as pages arrive', () => {
+    const open = { tahoe: true }
+    // Opened, nothing back yet: the same four, the same count, and it says it is loading.
+    expect(buildSections(data, { tahoe: { ...emptyFeed, loading: true } }, open)[0]).toMatchObject({ expanded: true, hidden: 126, loadingMore: true })
+    const loaded = mk('tahoe', tahoe, 30)
+    const first = buildSections(data, { tahoe: page(loaded, 'c1') }, open)[0]!
+    expect(first.shown).toHaveLength(30)
+    expect(first.hidden).toBe(100)
+    expect(buildSections(data, { tahoe: page(loaded, 'c1', { loadingMore: true }) }, open)[0]!.loadingMore).toBe(true)
+    // A quiet refresh of what is loaded is not "loading more".
+    expect(buildSections(data, { tahoe: page(loaded, 'c1', { loading: true }) }, open)[0]!.loadingMore).toBe(false)
+    expect(buildSections(data, { tahoe: page(loaded, 'c1', { error: 'x', errorMore: true }) }, open)[0]!.failed).toBe(true)
+  })
+  it('a section that has been read to the end has nothing hidden, even when the count was a moment out of date', () => {
+    const all = mk('tahoe', tahoe, 6)
+    const [section] = buildSections([{ group: tahoe, total: 7, items: all.slice(0, SECTION_ROWS) }], { tahoe: page(all, null) }, { tahoe: true })
+    expect(section!.shown).toHaveLength(6)
+    expect(section!.hidden).toBe(0)
+  })
+  it('closing a section goes back to the newest four whatever was loaded', () => {
+    const [closed] = buildSections(data, { tahoe: page(mk('tahoe', tahoe, 30), 'c1') }, { tahoe: false })
+    expect(closed!.shown).toHaveLength(SECTION_ROWS)
+    expect(closed!.hidden).toBe(126)
+  })
+  it('the sections request and its states', () => {
+    expect(sectionsPath()).toBe('/api/feed/sections?per=4')
+    const loading = sectionsRequested(emptySections)
+    expect(sectionsAsFeed(loading)).toMatchObject({ loading: true, loaded: false, items: [] })
+    const arrived = sectionsArrived({ sections: data })
+    expect(arrived).toMatchObject({ loaded: true, loading: false, error: null })
+    // A refresh keeps what is on screen; a failure keeps it too and says so.
+    expect(sectionsRequested(arrived).sections).toHaveLength(2)
+    const failed = sectionsFailed(arrived, 'offline')
+    expect(failed.sections).toHaveLength(2)
+    expect(sectionsAsFeed(failed)).toMatchObject({ error: 'offline', loaded: true, nextCursor: null })
+    expect(sectionsAsFeed(failed).items).toHaveLength(5)
+    expect(sectionsAsFeed(sectionsArrived({ sections: [] }))).toMatchObject({ loaded: true, items: [] })
   })
 })
 
@@ -327,7 +356,7 @@ describe('split by group: chips', () => {
     { id: 'old', name: 'Old trip', archived: true },
     { id: 'quiet', name: 'Quiet', archived: false },
   ]
-  const items = [inGroup('a', 'tahoe', 'Tahoe', '2026-11-02T20:00:00.000Z'), inGroup('b', 'mission', 'Mission St', '2026-11-02T19:00:00.000Z', '🏠')]
+  const items = [{ id: 'tahoe', name: 'Tahoe', emoji: null, currency: 'USD' }, { id: 'mission', name: 'Mission St', emoji: '🏠', currency: 'USD' }]
   it('All first, then groups with the latest activity, then the rest in list order; archived groups with nothing on screen are left out', () => {
     const chips = feedChips(groups, items)
     expect(chips.map((c) => c.id)).toEqual([null, 'tahoe', 'mission', 'nopa', 'quiet'])
@@ -336,7 +365,7 @@ describe('split by group: chips', () => {
     expect(chips.find((c) => c.id === 'nopa')).toMatchObject({ emoji: '🍜', title: 'Nopa' })
   })
   it('an archived group that still has activity on screen keeps its chip', () => {
-    const chips = feedChips(groups, [inGroup('o', 'old', 'Old trip', '2026-11-02T20:00:00.000Z')])
+    const chips = feedChips(groups, [{ id: 'old', name: 'Old trip', emoji: null, currency: 'USD' }])
     expect(chips.map((c) => c.id)).toContain('old')
   })
   it('a group in the feed that the list does not have yet still gets a chip', () => {
@@ -368,12 +397,5 @@ describe('split by group: rows, paths and paging', () => {
   it('a group chip asks for that group’s own feed, All for the whole one', () => {
     expect(feedPath('tahoe', null)).toBe('/api/groups/tahoe/feed?limit=30')
     expect(feedPath(null, 'c')).toBe('/api/feed?limit=30&cursor=c')
-  })
-  it('the sectioned feed stops loading pages by itself at a cap, the single-group feed does not', () => {
-    const page = (n: number) => ({ ...emptyFeed, loaded: true, items: Array.from({ length: n }, (_, i) => entry(`i${i}`)), nextCursor: 'c' })
-    expect(shouldAutoLoadSections(page(SECTIONS_AUTOLOAD_MAX - 1), 0)).toBe(true)
-    expect(shouldAutoLoadSections(page(SECTIONS_AUTOLOAD_MAX), 0)).toBe(false)
-    expect(shouldAutoLoad(page(SECTIONS_AUTOLOAD_MAX), 0)).toBe(true)
-    expect(shouldAutoLoadSections({ ...page(3), nextCursor: null }, 0)).toBe(false)
   })
 })

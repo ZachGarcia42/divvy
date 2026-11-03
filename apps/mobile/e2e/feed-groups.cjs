@@ -52,11 +52,13 @@ const check = (name, ok, extra = '') => { console.log(ok ? 'PASS' : 'FAIL', name
   if (shot) { fs.mkdirSync(require('path').dirname(shot), { recursive: true }); await p.waitForTimeout(400); await p.screenshot({ path: shot }); console.log('shot', shot) }
 
   // ── show more / show less ──
+  check('the header counts the group\'s entries: See all (7)', /See all \(7\)/.test(await id(`activity-seeall-${tahoe}`).innerText()))
   await id(`activity-section-more-${tahoe}`).click()
-  check('Show more opens the section (7 rows) and offers Show less', (await rows(id(`activity-section-${tahoe}`)).count()) === 7 && /^Show less/.test((await id(`activity-section-more-${tahoe}`).innerText()).trim()))
+  await p.waitForFunction((sel) => document.querySelectorAll(`${sel} [role="button"][data-testid^="feed-"]`).length === 7, `[data-testid="activity-section-${tahoe}"]`)
+  check('Show more opens the section (7 rows), no more to show, and offers Show less', (await rows(id(`activity-section-${tahoe}`)).count()) === 7 && (await id(`activity-section-more-${tahoe}`).count()) === 0 && /^Show less/.test((await id(`activity-section-less-${tahoe}`).innerText()).trim()))
   check('other sections stay as they were', (await rows(id(`activity-section-${nopa}`)).count()) === 1 && (await rows(id(`activity-section-${mission}`)).count()) === 3)
-  await id(`activity-section-more-${tahoe}`).click()
-  check('Show less folds it back to 4', (await rows(id(`activity-section-${tahoe}`)).count()) === 4)
+  await id(`activity-section-less-${tahoe}`).click()
+  check('Show less folds it back to 4, with Show 3 more again', (await rows(id(`activity-section-${tahoe}`)).count()) === 4 && /^Show 3 more/.test(await id(`activity-section-more-${tahoe}`).innerText()))
 
   // ── a chip narrows to one group ──
   await id(`activity-chip-${nopa}`).click()
@@ -99,8 +101,48 @@ const check = (name, ok, extra = '') => { console.log(ok ? 'PASS' : 'FAIL', name
   await p.getByText('Quiet group').first().waitFor({ timeout: 8000 }).catch(() => {})
   check('Open group opens that group', (await p.getByText('Quiet group').count()) > 0)
 
+  // ── a very busy group does not crowd the others out of All, and the picked chip is always in view ──
+  const [oldQuiet, oldQuietYou, oldQuietMaya] = await make('🪴 Old and quiet')
+  await add(oldQuiet, oldQuietYou, 'Plant food', 1200, oldQuietMaya)
+  const [busy, busyYou, busyMaya] = await make('🔥 Busy group')
+  for (let i = 0; i < 65; i += 13) await Promise.all(Array.from({ length: 13 }, (_, j) => add(busy, busyYou, `Busy ${i + j}`, 100 + i + j, busyMaya)))
+  await id('tab-groups').click(); await id('tab-activity').click()
+  await id('activity-chip-all').click()   // the filter (Quiet group) is still set from before
+  await id(`activity-section-${busy}`).waitFor({ timeout: 15000 })
+  await id(`activity-section-${oldQuiet}`).waitFor({ timeout: 15000 })
+  const order = await sectionOrder()
+  check('the busy group leads, and the quiet one still has its section', order[0] === busy && order.includes(oldQuiet) && order.includes(mission) && order.includes(nopa), JSON.stringify(order))
+  check('the busy section: 4 rows and an honest "Show 61 more" and "See all (65)"', (await rows(id(`activity-section-${busy}`)).count()) === 4 && /^Show 61 more/.test(await id(`activity-section-more-${busy}`).innerText()) && /See all \(65\)/.test(await id(`activity-seeall-${busy}`).innerText()))
+  check('the quiet section shows its one entry, nothing to show more of', (await rows(id(`activity-section-${oldQuiet}`)).count()) === 1 && (await id(`activity-section-more-${oldQuiet}`).count()) === 0 && /See all \(1\)/.test(await id(`activity-seeall-${oldQuiet}`).innerText()))
+  check('no "Show older activity" button: every group is already there', (await id('activity-older').count()) === 0)
+  await id(`activity-section-more-${busy}`).click()
+  await p.waitForFunction((sel) => document.querySelectorAll(`${sel} [role="button"][data-testid^="feed-"]`).length === 30, `[data-testid="activity-section-${busy}"]`)
+  check('Show more brings the next batch (30 rows) and counts what is left (Show 35 more)', /^Show 35 more/.test(await id(`activity-section-more-${busy}`).innerText()) && (await id(`activity-section-less-${busy}`).count()) === 1)
+  await id(`activity-section-more-${busy}`).click()
+  await p.waitForFunction((sel) => document.querySelectorAll(`${sel} [role="button"][data-testid^="feed-"]`).length === 60, `[data-testid="activity-section-${busy}"]`)
+  await id(`activity-section-more-${busy}`).click()
+  await p.waitForFunction((sel) => document.querySelectorAll(`${sel} [role="button"][data-testid^="feed-"]`).length === 65, `[data-testid="activity-section-${busy}"]`)
+  check('and the last batch ends it: 65 rows, only Show less left', (await id(`activity-section-more-${busy}`).count()) === 0 && (await id(`activity-section-less-${busy}`).count()) === 1)
+  await id(`activity-section-less-${busy}`).click()
+
+  const inView = async (key) => {
+    const [fb, cb] = await Promise.all([id('activity-filter').boundingBox(), id(`activity-chip-${key}`).boundingBox()])
+    return !!fb && !!cb && cb.x >= fb.x - 1 && cb.x + cb.width <= fb.x + fb.width + 1
+  }
+  check('All starts in view', await inView('all'))
+  check('the last chip starts off screen to the right (the setup is a real test)', !(await inView(nopa)))
+  await id(`activity-seeall-${nopa}`).click()
+  await p.waitForTimeout(900)
+  check('"See all" on the last group scrolls its chip into view, selected', (await inView(nopa)) && (await id(`activity-chip-${nopa}`).getAttribute('aria-selected')) === 'true')
+  await id('tab-groups').click(); await id('tab-activity').click()
+  await p.waitForTimeout(700)
+  check('coming back to a filter that is already set shows its chip, too', (await inView(nopa)) && (await id(`activity-chip-${nopa}`).getAttribute('aria-selected')) === 'true')
+  await id('activity-chip-all').click()
+  await p.waitForTimeout(700)
+  check('All brings the row back to the start', await inView('all') && !(await inView(nopa)))
+
   // ── the group's own screen reaches its activity ──
-  await id(`back-to-groups`).click(); await id(`group-${tahoe}`).click(); await id('group-activity').click()
+  await id('tab-groups').click(); await id(`group-${tahoe}`).click(); await id('group-activity').click()
   await id('activity-group-chip').waitFor({ timeout: 8000 })
   await rows().first().waitFor({ timeout: 8000 })
   check('the group screen\'s Activity button opens only that group\'s feed', (await rows().count()) === 7 && (await id('activity-group-chip').innerText()).includes('Tahoe') && (await p.locator('[data-testid^="activity-chip-"]').count()) === 0, `rows=${await rows().count()} chip=${await id('activity-group-chip').innerText()} chips=${await p.locator('[data-testid^="activity-chip-"]').count()}`)
@@ -110,6 +152,11 @@ const check = (name, ok, extra = '') => { console.log(ok ? 'PASS' : 'FAIL', name
   // ── the new line on the API: ?groupId= on /api/feed ──
   const one = await api(`/api/feed?groupId=${mission}`)
   check('GET /api/feed?groupId= returns one group\'s page', one.items.length === 3 && one.items.every((i) => i.group.id === mission) && one.items[0].id === (await api(`/api/groups/${mission}/feed`)).items[0].id)
+  const status = async (path) => (await fetch(base + path, { headers: { authorization: `Bearer ${TOKEN}` } })).status
+  const nul = [await status('/api/feed?groupId=%00'), await status('/api/groups/%00'), await status('/api/groups/%00/feed'), await status('/api/groups/a%00b/expenses'), await status('/api/feed/sections?groupId=x%00')]
+  check('a malformed group id (NUL) is a 404 on every route, not a 500', nul.every((n) => n === 404), nul.join(','))
+  const sec = await api('/api/feed/sections')
+  check('GET /api/feed/sections: one section per group with activity, totals counted, 4 items each', sec.sections.length === 5 && sec.sections.every((x) => x.items.length === Math.min(4, x.total)) && sec.sections.find((x) => x.group.id === busy).total === 65, sec.sections.map((x) => x.group.name + ':' + x.total).join(','))
   check('no page errors', errors.length === 0, errors.join(' | '))
   await browser.close()
   console.log(fails ? `${fails} FAIL` : 'ALL PASS')
