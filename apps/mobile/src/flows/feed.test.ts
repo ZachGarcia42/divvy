@@ -346,6 +346,22 @@ describe('split by group: sections', () => {
     expect(sectionsAsFeed(failed).items).toHaveLength(5)
     expect(sectionsAsFeed(sectionsArrived({ sections: [] }))).toMatchObject({ loaded: true, items: [] })
   })
+  it('a reply without a sections array does not blank Activity: it falls back to the plain feed (B-5)', () => {
+    for (const reply of [{}, { sections: null }, { sections: 'x' }, null, undefined]) {
+      const state = sectionsArrived(reply as never)
+      expect(state).toMatchObject({ flat: true, loaded: true, error: null, sections: [] })
+      expect(() => sectionsAsFeed(state)).not.toThrow()
+    }
+    expect(sectionsArrived({ sections: [] }).flat).toBeUndefined()
+    expect(sectionsArrived({ sections: data }).flat).toBeUndefined()
+  })
+  it('a section with a missing item list is shown empty, and one without a group is dropped', () => {
+    const state = sectionsArrived({ sections: [{ group: data[0]!.group, total: 3 }, { total: 1, items: [] }, null, data[1]] })
+    expect(state.sections).toHaveLength(2)
+    expect(state.sections[0]).toMatchObject({ total: 3, items: [] })
+    expect(() => buildSections(state.sections)).not.toThrow()
+    expect(sectionsAsFeed(state).items).toHaveLength(data[1]!.items.length)
+  })
 })
 
 describe('split by group: chips', () => {

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { jsonHasNul } from './app.ts'
 import { groupOf, sessionFor } from './testkit.ts'
 
 const base = { description: 'Dinner', date: '2026-10-20', originalCurrency: 'USD' }
@@ -372,6 +373,38 @@ describe('activity feed: who can see what', () => {
     // A good id still works, and a broken %-escape is no worse than before.
     expect((await call('GET', `/api/groups/${groupId}/feed`)).status).toBe(200)
     expect((await call('GET', '/api/groups/%E0%A4%A/feed')).status).toBe(404)
+  })
+
+  it('a NUL byte in a JSON string or a query value is a 400, not a 500 (B-4)', async () => {
+    const { call, groupId, you, maya, add } = await setup()
+    const id = await add()
+    const bad = { error: { code: 'BAD_INPUT', message: 'The request contains a character that is not allowed' } }
+    const posts: [string, string, unknown][] = [
+      ['POST', '/api/groups', { name: 'Tri\u0000p', currency: 'USD', timezone: 'UTC' }],
+      ['POST', `/api/groups/${groupId}/expenses`, { ...base, description: 'Din\u0000ner', originalMinor: 100, payers: [{ participantId: you, minor: 100 }], split: { type: 'equal', participantIds: [you, maya] } }],
+      ['PATCH', `/api/groups/${groupId}/expenses/${id}`, { version: 1, description: '\u0000' }],
+      ['POST', `/api/groups/${groupId}/comments`, { targetType: 'expense', targetId: id, body: 'hi\u0000' }],
+      ['POST', `/api/groups/${groupId}/comments`, { targetType: 'expense', targetId: `${id}\u0000`, body: 'hi' }],
+      ['POST', `/api/groups/${groupId}/people`, { name: 'Zed\u0000' }],
+    ]
+    for (const [method, path, body] of posts) {
+      const res = await call(method, path, body)
+      expect(res.status, `${method} ${path}`).toBe(400)
+      expect(res.json).toEqual(bad)
+    }
+    for (const path of [`/api/groups/${groupId}/comments?targetId=%00`, `/api/groups/${groupId}/comments?targetId=${id}%00`, `/api/groups/${groupId}/comments?x=%E0%A4%A&targetId=%00`]) {
+      const res = await call('GET', path)
+      expect(res.status, path).toBe(400)
+      expect(res.json).toEqual(bad)
+    }
+    // Ordinary input, a backslash-u text that is not a NUL, and the same routes without a NUL still work.
+    expect((await call('GET', `/api/groups/${groupId}/comments?targetId=${id}`)).status).toBe(200)
+    const ok = await call('POST', `/api/groups/${groupId}/comments`, { targetType: 'expense', targetId: id, body: 'literal \\u0000 text' })
+    expect(ok.status).toBe(200)
+    expect(jsonHasNul('{"a":"\\\\u0000"}')).toBe(false)
+    expect(jsonHasNul('{"a":["x","\\u0000"]}')).toBe(true)
+    expect(jsonHasNul('{"\\u0000":1}')).toBe(true)
+    expect(jsonHasNul('not json u0000')).toBe(false)
   })
 
   it('a member who has left stops seeing that group in their global feed', async () => {

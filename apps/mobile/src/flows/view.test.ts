@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { contentTopGap, NEW_GROUP_CURRENCY, SNACK_MS, snackOwner, snackStays, breakdown, dateHeading, groupByDate, historyLines, methodPhrase, netTone, overallUsd, paidPhrase, rowSubtitle, signedMoney, groupIcon, PICKER_EMOJIS, splitGroupName, startScreen, updatedPhrase, yourPosition } from './view'
+import { defaultPayment, contentTopGap, NEW_GROUP_CURRENCY, SNACK_MS, snackOwner, snackStays, breakdown, dateHeading, groupByDate, historyLines, methodPhrase, netTone, overallUsd, paidPhrase, rowSubtitle, signedMoney, groupIcon, PICKER_EMOJIS, splitGroupName, startScreen, updatedPhrase, yourPosition } from './view'
 import { originalText, rowOriginalText } from './fx'
 
 const g = (id: string, net: number, extra: object = {}) => ({ id, name: id, currency: 'USD', yourNetMinor: net, archived: false, ...extra })
@@ -171,5 +171,22 @@ describe('contentTopGap', () => {
     expect(contentTopGap('android')).toBeLessThanOrEqual(4)
     expect(contentTopGap('ios')).toBeLessThanOrEqual(4)
     expect(contentTopGap('web')).toBe(18)
+  })
+})
+
+describe('Settle up default transfer', () => {
+  const sam = { fromId: 's', toId: 'j', minor: 9000 }
+  const youPay = { fromId: 'me', toId: 'j', minor: 1000 }
+  const youGet = { fromId: 's', toId: 'me', minor: 500 }
+  it('opens on what you owe even when another transfer is larger', () => {
+    expect(defaultPayment([sam, youGet, youPay], 'me')).toBe(youPay)
+  })
+  it('then on what you are owed', () => {
+    expect(defaultPayment([sam, youGet], 'me')).toBe(youGet)
+  })
+  it('falls back to the largest when you are in none, or your id is unknown', () => {
+    expect(defaultPayment([sam], 'me')).toBe(sam)
+    expect(defaultPayment([sam, youPay], null)).toBe(sam)
+    expect(defaultPayment([], 'me')).toBeNull()
   })
 })

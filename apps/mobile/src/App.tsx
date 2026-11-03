@@ -35,7 +35,7 @@ import { StatusBar } from 'expo-status-bar'
 import { inviteFromNext, invitePath, isToken, parseDeepLink, parseInvitePreview, PENDING_INVITE_KEY, tokenFromInput, type InvitePreview } from './links'
 import { SocialSignIn } from './SocialSignIn'
 import type { Expense, GroupDetail, Home, HomeGroup, Payment, PhotoInfo, Settlement } from './types'
-import { apiBase, SIGN_IN_WIDTH, webLinkUrl } from './flows/web'
+import { apiBase, SIGN_IN_WIDTH, webBackPlan, webLinkUrl } from './flows/web'
 import { FALLBACK_PROVIDERS, parseProviders, type Providers } from './flows/providers'
 import { CheckEmail, ExpiredLink, JoinCard, NamePrompt, NameSheet, Toast } from './November'
 import { createOnce, joinFailure, joinedWasAlreadyMember, loadJoinView, type JoinView } from './flows/join'
@@ -485,7 +485,7 @@ function SignIn({ onToken, pendingInvite, onDismissInvite, linkFailure, onClearL
           value={email}
           onChangeText={(text) => { setEmail(text); setError(null) }}
           placeholder="you@example.com"
-          placeholderTextColor="#6b7a72"
+          placeholderTextColor="#5f6f67"
           testID="sign-in-email"
         />
         {shownError && (offline
@@ -580,7 +580,7 @@ function useSections(token: string, enabled: boolean) {
   const load = () => {
     const id = ++latest.current
     setState(sectionsRequested)
-    call<{ sections: SectionData[] }>(token, sectionsPath())
+    call<{ sections?: SectionData[] }>(token, sectionsPath())
       .then((page) => { if (latest.current === id) setState(sectionsArrived(page)) })
       .catch((reason: Error) => { if (latest.current === id) setState((current) => sectionsFailed(current, reason.message)) })
   }
@@ -686,6 +686,8 @@ function Ledger({
   const viewH = useRef(0)
   const contentH = useRef(0)
   const pendingY = useRef<number | null>(null)
+  // Where the group's expense list was scrolled to when a detail, Settle up or the group's Activity was opened from it.
+  const groupY = useRef<number | null>(null)
   // A lasting "You're in <group>" confirmation after accepting a group link (cleared on dismiss).
   const [welcome, setWelcome] = useState<{ groupId: string; text: string } | null>(null)
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -733,6 +735,8 @@ function Ledger({
   const chipFilter = activeChip(chips, feedFilter)
   const chipFeed = useFeed(token, chipFilter, screen === 'activity' && chipFilter !== null)
   const groupFeed = useFeed(token, groupId, screen === 'groupActivity' && !!groupId)
+  // Only when the sections reply was unusable: the All view as one plain feed.
+  const flatFeed = useFeed(token, null, screen === 'activity' && chipFilter === null && sectionsFeed.state.flat === true)
   useEffect(() => {
     let cancelled = false
     Promise.all([call<Home>(token, '/api/home'), AsyncStorage.getItem(LAST_GROUP_KEY).catch(() => null)])
@@ -849,7 +853,12 @@ function Ledger({
       setScreen(origin.screen)
       return true
     }
-    if (screen === 'expense' || screen === 'settle' || screen === 'groupActivity') { setScreen('group'); return true }
+    if (screen === 'expense' || screen === 'settle' || screen === 'groupActivity') {
+      pendingY.current = groupY.current
+      groupY.current = null
+      setScreen('group')
+      return true
+    }
     if (screen === 'group' || screen === 'account' || screen === 'activity' || screen === 'deleted') { goGroups(); return true }
     return false
   }
@@ -858,6 +867,32 @@ function Ledger({
     const sub = BackHandler.addEventListener('hardwareBackPress', stepBack)
     return () => sub.remove()
   }, [screen, origin, editingPay])
+
+  // Browser Back on the web: see webBackPlan. The page keeps one extra history entry while a screen other than Groups shows,
+  // and popping it steps back inside the app (stepBack) instead of leaving the site.
+  const stepBackRef = useRef(stepBack)
+  stepBackRef.current = stepBack
+  const backDepth = useRef<0 | 1>(0)
+  const ignorePops = useRef(0)
+  useEffect(() => {
+    if (Platform.OS !== 'web') return
+    const hist = (globalThis as unknown as { history?: { pushState(state: unknown, title: string): void; back(): void } }).history
+    if (!hist) return
+    const plan = webBackPlan(screen, backDepth.current)
+    if (plan === 'push') { hist.pushState({ divvy: 1 }, ''); backDepth.current = 1 }
+    if (plan === 'unwind') { backDepth.current = 0; ignorePops.current += 1; hist.back() }
+  })
+  useEffect(() => {
+    if (Platform.OS !== 'web') return
+    const w = globalThis as unknown as { addEventListener?: (e: string, f: () => void) => void; removeEventListener?: (e: string, f: () => void) => void }
+    const onPop = () => {
+      if (ignorePops.current > 0) { ignorePops.current -= 1; return }
+      backDepth.current = 0
+      stepBackRef.current()
+    }
+    w.addEventListener?.('popstate', onPop)
+    return () => w.removeEventListener?.('popstate', onPop)
+  }, [])
 
   // Put the saved scroll offset back once the feed it belongs to is tall enough again (the list is kept, so this is immediate).
   const restoreScroll = () => {
@@ -924,6 +959,7 @@ function Ledger({
 
   const goGroups = () => {
     setOrigin(null)
+    groupY.current = null
     setScreen('groups')
     setExpenseId(null)
     call<Home>(token, '/api/home').then(setHome).catch(() => undefined)
@@ -931,6 +967,7 @@ function Ledger({
   const openGroup = (id: string) => {
     setSwitcher(false)
     setOrigin(null)
+    groupY.current = null
     setExpenseId(null)
     setGroupId(id)
     setScreen('group')
@@ -1237,7 +1274,8 @@ function Ledger({
   const showTabs = !join && (screen === 'groups' || screen === 'group' || screen === 'account' || screen === 'activity')
   const youId = participantId ?? detail?.yourParticipantId ?? null
   const feedScreen = screen === 'activity' || screen === 'groupActivity'
-  const activeFeed = screen === 'groupActivity' ? groupFeed : chipFilter ? chipFeed : allFeed
+  const flatAll = sectionsFeed.state.flat === true
+  const activeFeed = screen === 'groupActivity' ? groupFeed : chipFilter ? chipFeed : flatAll ? flatFeed : allFeed
   const feedBar = feedScreen ? feedSnack(activeFeed.state) : null
   const openFeedEntry = (entry: FeedEntry) => {
     const target = feedTarget(entry)
@@ -1250,6 +1288,13 @@ function Ledger({
     if (target.kind === 'deleted') setDeletedEntry(entry)
     setScreen(at)
     setDetailTick((n) => n + 1)
+    scrollRef.current?.scrollTo({ y: 0, animated: false })
+  }
+  // From the group's list into a screen of its own: remember where the list was, open the new screen at its top.
+  const leaveGroupList = (next: 'expense' | 'settle' | 'groupActivity') => {
+    groupY.current = scrollY.current
+    pendingY.current = null
+    setScreen(next)
     scrollRef.current?.scrollTo({ y: 0, animated: false })
   }
   const onFeedScroll = (y: number) => {
@@ -1285,7 +1330,7 @@ function Ledger({
       onSignedOut()
     }} />
   } else if (screen === 'activity') {
-    body = <ActivityScreen feed={activeFeed.state} youId={youId} today={today} chips={chips} filter={chipFilter} sections={sections}
+    body = <ActivityScreen feed={activeFeed.state} youId={youId} today={today} chips={chips} filter={chipFilter} sections={sections} flat={flatAll}
       onFilter={(id) => { setFeedFilter(id); scrollRef.current?.scrollTo({ y: 0, animated: false }) }}
       onSectionMore={(id) => { if (openSections[id]) sectionPages.more(id); else setOpenSections((current) => ({ ...current, [id]: true })) }}
       onSectionLess={(id) => setOpenSections((current) => ({ ...current, [id]: false }))}
@@ -1309,7 +1354,7 @@ function Ledger({
       </View>
     )
   } else if (screen === 'groupActivity') {
-    body = <ActivityScreen group={groupIcon(detail.group)} feed={groupFeed.state} youId={youId} today={today} onBack={() => setScreen('group')} onOpen={openFeedEntry} onMore={groupFeed.more} onRetry={groupFeed.retry} onEmptyAction={() => setAdding({ edit: null })} />
+    body = <ActivityScreen group={groupIcon(detail.group)} feed={groupFeed.state} youId={youId} today={today} onBack={() => { stepBack() }} onOpen={openFeedEntry} onMore={groupFeed.more} onRetry={groupFeed.retry} onEmptyAction={() => setAdding({ edit: null })} />
   } else if (screen === 'settle') {
     body = <SettleScreen detail={detail} busyKey={busyKey} youPay={home.you.pay} onBack={() => { stepBack() }} onRecord={record} onUndo={(id) => { void undo(id) }} onPayLink={openPayLink} onAddPayNames={() => { setEditingPay(true); setScreen('account') }} />
   } else if (screen === 'expense') {
@@ -1331,7 +1376,7 @@ function Ledger({
         ) : undefined}
         footer={<InviteCard url={inviteUrl} onShare={shareLink} />}
         onBack={() => { stepBack() }} onSwitcher={() => setSwitcher(true)} onShare={shareLink}
-        onOpenExpense={(id) => { setHistory(null); setPhoto(undefined); setPhotoError(null); setExpenseId(id); setScreen('expense') }} onSettle={() => setScreen('settle')} onActivity={() => setScreen('groupActivity')} onAdd={() => setAdding({ edit: null })} />
+        onOpenExpense={(id) => { setHistory(null); setPhoto(undefined); setPhotoError(null); setExpenseId(id); leaveGroupList('expense') }} onSettle={() => leaveGroupList('settle')} onActivity={() => leaveGroupList('groupActivity')} onAdd={() => setAdding({ edit: null })} />
     )
   }
 
@@ -1420,8 +1465,8 @@ const styles = StyleSheet.create({
   secondary: { borderRadius: 999, paddingVertical: 10, paddingHorizontal: 14, alignItems: 'center', borderWidth: 1, borderColor: '#cfe3db', backgroundColor: '#f3faf7' },
   secondaryText: { color: '#0f766e', fontWeight: '700' },
   error: { color: '#8d2f39' },
-  muted: { color: '#6b7a72', fontSize: 14 },
-  section: { marginTop: 8, fontSize: 13, fontWeight: '700', letterSpacing: 0.6, textTransform: 'uppercase', color: '#6b7a72' },
+  muted: { color: '#5f6f67', fontSize: 14 },
+  section: { marginTop: 8, fontSize: 13, fontWeight: '700', letterSpacing: 0.6, textTransform: 'uppercase', color: '#5f6f67' },
   line: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 12, paddingVertical: 8, borderTopWidth: 1, borderTopColor: '#eef2ee' },
   lineCopy: { flex: 1, gap: 2 },
   lineLabel: { flex: 1, color: '#14221c', fontSize: 16 },

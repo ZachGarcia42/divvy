@@ -21,3 +21,16 @@ export async function sha256Hex(value: string, subtle: { digest(algorithm: strin
 
 /** One shared width for the sign-in column: the Google button is rendered at this width and app buttons/fields stretch to it. */
 export const SIGN_IN_WIDTH = 320
+
+/**
+ * Browser Back inside the single-page app. The app has no URL routes, so one Back would leave the site. While any screen
+ * other than Groups is showing, one history entry sits on top of the page the user arrived on; popping it (Back) steps back
+ * inside the app the same way the Android hardware button does. Back from Groups itself leaves the site, as expected.
+ * `depth` is 1 while that extra entry exists. Returns what the host should do after a render.
+ */
+export type WebBackPlan = 'push' | 'unwind' | 'none'
+export function webBackPlan(screen: string, depth: 0 | 1): WebBackPlan {
+  if (screen !== 'groups' && depth === 0) return 'push'
+  if (screen === 'groups' && depth === 1) return 'unwind'
+  return 'none'
+}

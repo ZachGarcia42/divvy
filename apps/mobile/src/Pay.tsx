@@ -7,7 +7,7 @@ import { Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-na
 import { BottomSheet } from './BottomSheet'
 import { PAY_TILE, RETURN_HINT, returnQuestion, type PayRow, type PayRows, type PendingPay } from './flows/pay'
 
-const C = { bg: '#f6f7f4', card: '#ffffff', line: '#e4e8e2', teal: '#0f766e', mint: '#cfe3db', soft: '#f3faf7', ink: '#14221c', muted: '#6b7a72', hint: '#8aa099', red: '#b4323f' }
+const C = { bg: '#f6f7f4', card: '#ffffff', line: '#e4e8e2', teal: '#0f766e', mint: '#cfe3db', soft: '#f3faf7', ink: '#14221c', muted: '#5f6f67', hint: '#5f6f67', red: '#b4323f' }
 const web = Platform.OS === 'web'
 const noOutline = (web ? { outlineStyle: 'none' } : {}) as object
 

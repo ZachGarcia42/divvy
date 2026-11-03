@@ -240,3 +240,18 @@ export const snackStays = (owner: string | undefined, screen: string, groupId: s
 export function contentTopGap(os: string): number {
   return os === 'web' ? 18 : 2
 }
+
+/**
+ * Which suggested transfer Settle up opens on. One that involves you comes first: what you owe (so the pay links show),
+ * then what you are owed; only when you are not in any, the largest. `payments` is sorted largest first by the caller.
+ */
+export function defaultPayment<T extends { fromId: string; toId: string }>(payments: T[], youId: string | null | undefined): T | null {
+  if (payments.length === 0) return null
+  if (youId) {
+    const owe = payments.find((p) => p.fromId === youId)
+    if (owe) return owe
+    const owed = payments.find((p) => p.toId === youId)
+    if (owed) return owed
+  }
+  return payments[0]
+}

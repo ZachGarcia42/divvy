@@ -289,6 +289,9 @@ export function createApp(sql: Sql, options?: {
         : 400
       return c.json({ error: { code: error.code, message: error.message } }, status)
     }
+    // Postgres refuses a NUL in text (22021 invalid byte sequence, 22P05 untranslatable character): the caller's input, not ours.
+    const pgCode = (error as { code?: unknown } | null)?.code
+    if (pgCode === '22021' || pgCode === '22P05') return c.json({ error: { code: 'BAD_INPUT', message: 'The request contains a character that is not allowed' } }, 400)
     // A body that is not valid JSON (any route that reads one) is the caller's mistake, not ours.
     if (error instanceof SyntaxError) return c.json({ error: { code: 'BAD_JSON', message: 'The request body is not valid JSON' } }, 400)
     console.error(error)
@@ -303,6 +306,15 @@ export function createApp(sql: Sql, options?: {
     const nul = (text: string) => { try { return decodeURIComponent(text).includes('\u0000') } catch { return false } }
     const groupId = new URLSearchParams(query).getAll('groupId')
     if (nul(path) || groupId.some((id) => id.includes('\u0000'))) return c.json({ error: { code: 'NOT_FOUND', message: 'Not found' } }, 404)
+    // Any other query value with a NUL (?targetId=, ?version=, ...) can never be valid either: 400 before it reaches the database.
+    const params = new URLSearchParams(query)
+    if ([...params.entries()].some(([key, value]) => key.includes('\u0000') || value.includes('\u0000'))) return c.json({ error: { code: 'BAD_INPUT', message: 'The request contains a character that is not allowed' } }, 400)
+    // A NUL inside a JSON string (written \u0000) is rejected the same way, for every route that reads a JSON body.
+    const type = c.req.header('content-type') ?? ''
+    if (type.includes('json') && c.req.method !== 'GET' && c.req.method !== 'HEAD') {
+      const text = await c.req.text().catch(() => '')
+      if (text.includes('u0000') && jsonHasNul(text)) return c.json({ error: { code: 'BAD_INPUT', message: 'The request contains a character that is not allowed' } }, 400)
+    }
     await next()
   })
   const tokenOf = (c: { req: { header: (name: string) => string | undefined } }) => {
@@ -702,4 +714,16 @@ export function createApp(sql: Sql, options?: {
   })
 
   return { app, repo }
+}
+
+/** True when a JSON text holds a NUL in any string value or key. Text that does not parse is left for the route to refuse. */
+export function jsonHasNul(text: string): boolean {
+  let found = false
+  try {
+    JSON.parse(text, (key, value) => {
+      if (key.includes('\u0000') || (typeof value === 'string' && value.includes('\u0000'))) found = true
+      return value
+    })
+  } catch { return false }
+  return found
 }

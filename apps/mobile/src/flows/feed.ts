@@ -158,11 +158,20 @@ export const sectionsPath = (per = SECTION_ROWS) => `/api/feed/sections?per=${pe
 /** One group's slice of the All view, as the server sends it: the group's newest entries and how many it has in all. */
 export type SectionData = { group: FeedEntry['group']; total: number; items: FeedEntry[] }
 
-export type SectionsState = { sections: SectionData[]; loading: boolean; loaded: boolean; error: string | null }
+/** `flat`: the server's answer had no usable sections (an older server, or a reply without the array), so the All view shows the plain newest-first feed instead of going blank. */
+export type SectionsState = { sections: SectionData[]; loading: boolean; loaded: boolean; error: string | null; flat?: boolean }
 export const emptySections: SectionsState = { sections: [], loading: false, loaded: false, error: null }
 /** Requested: what is on screen stays (no flash) while it reloads. */
 export const sectionsRequested = (state: SectionsState): SectionsState => ({ ...state, loading: true, error: null })
-export const sectionsArrived = (page: { sections: SectionData[] }): SectionsState => ({ sections: page.sections, loading: false, loaded: true, error: null })
+export function sectionsArrived(page: { sections?: unknown } | null | undefined): SectionsState {
+  const raw = page?.sections
+  if (!Array.isArray(raw)) return { sections: [], loading: false, loaded: true, error: null, flat: true }
+  // A section without a group is unusable; one without a list of entries is shown empty rather than crashing the screen.
+  const sections = raw
+    .filter((section): section is SectionData => !!section && typeof section === 'object' && !!(section as SectionData).group && typeof (section as SectionData).group.id === 'string')
+    .map((section) => ({ ...section, items: Array.isArray(section.items) ? section.items : [], total: typeof section.total === 'number' ? section.total : Array.isArray(section.items) ? section.items.length : 0 }))
+  return { sections, loading: false, loaded: true, error: null }
+}
 export const sectionsFailed = (state: SectionsState, message: string): SectionsState => ({ ...state, loading: false, error: message })
 
 /** The All view as a FeedState, so it shares the loading, error and empty screens (and the refresh snackbar) with the other feeds. It never has a next page: every group is already there. */

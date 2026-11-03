@@ -5,7 +5,7 @@ import { useEffect, useMemo, useRef, useState, type ComponentProps, type ReactNo
 import { ActivityIndicator, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native'
 import { adjustDisplay, adjustSign, adjustTyped, sanitizeAmountText, evaluate, groupedMajor, majorString, METHOD_LABELS, METHODS, newDraft, switchMethod, toggleAdjustSign, type Draft } from './flows/split'
 import {
-  breakdown, groupByDate, historyLines, NEW_GROUP_CURRENCY, methodPhrase, monthDay, netTone, NET_WORDS, overallUsd, peopleCount, rowSubtitle,
+  breakdown, defaultPayment, groupByDate, historyLines, NEW_GROUP_CURRENCY, methodPhrase, monthDay, netTone, NET_WORDS, overallUsd, peopleCount, rowSubtitle,
   signedMoney, groupIcon, PICKER_EMOJIS, DEFAULT_EMOJI, updatedPhrase, yourPosition, type HistoryEntry,
 } from './flows/view'
 import { amountWidth } from './flows/amount'
@@ -27,7 +27,7 @@ import type { PayHandles } from '@divvy/domain'
 
 export const T = {
   bg: '#f6f7f4', card: '#ffffff', line: '#e4e8e2', teal: '#0f766e', tealD: '#0b5c56', mint: '#cfe3db', soft: '#f3faf7',
-  ink: '#14221c', body: '#3d4741', muted: '#6b7a72', hint: '#8aa099', red: '#b4323f', redS: '#fbf1f2', amber: '#a15c07', amberS: '#fdf4e3',
+  ink: '#14221c', body: '#3d4741', muted: '#5f6f67', hint: '#5f6f67', red: '#b4323f', redS: '#fbf1f2', amber: '#a15c07', amberS: '#fdf4e3',
   aqua: '#2dd4bf', ok: '#8ee0c9', bad: '#ffb3ba',
 }
 const AVATARS = [['#d9efe9', '#0f766e'], ['#fde8d4', '#a15c07'], ['#e4e1fb', '#4b3fa8'], ['#fbe1e5', '#b4323f'], ['#e1eefb', '#245a9c']] as const
@@ -328,14 +328,14 @@ function FeedMessage({ icon, tone, title, body, action, onAction, testID, action
  *  - `chips` set, `filter` a group id: only that group, by day. The chips row on top switches between them.
  * Paging is by scrolling (App watches the scroll position); the states are skeleton rows, a friendly error, and an empty state with a button.
  */
-export function ActivityScreen({ group, feed, youId, today, chips, filter = null, sections = [], onFilter, onSectionMore, onSectionLess, onBack, onOpen, onMore, onRetry, onEmptyAction }: {
+export function ActivityScreen({ group, feed, youId, today, chips, filter = null, sections = [], flat = false, onFilter, onSectionMore, onSectionLess, onBack, onOpen, onMore, onRetry, onEmptyAction }: {
   group?: { emoji: string; title: string }; feed: FeedState; youId: string | null; today: string
-  chips?: FeedChip[]; filter?: string | null; sections?: FeedSection[]; onFilter?: (id: string | null) => void; onSectionMore?: (id: string) => void; onSectionLess?: (id: string) => void
+  chips?: FeedChip[]; filter?: string | null; sections?: FeedSection[]; /** The All view as one plain feed (no sections to show). */ flat?: boolean; onFilter?: (id: string | null) => void; onSectionMore?: (id: string) => void; onSectionLess?: (id: string) => void
   onBack?: () => void; onOpen: (entry: FeedEntry) => void; onMore: () => void; onRetry: () => void; onEmptyAction: () => void
 }) {
   const view = feedView(feed)
   const showChips = !group && !!chips && chips.length > 1 && !!onFilter
-  const sectioned = !group && filter === null && !!chips
+  const sectioned = !group && filter === null && !!chips && !flat
   const filtered = !group && filter !== null
   const chipRef = useRef<ScrollView>(null)
   const chipWidth = useRef<Record<string, number>>({})
@@ -1062,7 +1062,7 @@ export function SettleScreen({ detail, busyKey, youPay, onBack, onRecord, onUndo
   const [amountText, setAmountText] = useState<string | null>(null)
   const [heroFocused, setHeroFocused] = useState(false)
   const keyOf = (p: Payment) => `${p.fromId}:${p.toId}`
-  const current = payments.find((p) => keyOf(p) === selKey) ?? payments[0] ?? null
+  const current = payments.find((p) => keyOf(p) === selKey) ?? defaultPayment(payments, detail.yourParticipantId)
   const others = payments.filter((p) => p !== current)
   const name = (id: string) => memberName(detail, id)
   let minor = current?.minor ?? 0

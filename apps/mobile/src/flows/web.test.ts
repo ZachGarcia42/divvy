@@ -1,7 +1,7 @@
 import { createHash, webcrypto } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import { parseDeepLink } from '../links'
-import { apiBase, sha256Hex, webLinkUrl } from './web'
+import { apiBase, sha256Hex, webBackPlan, webLinkUrl } from './web'
 
 const T = 'AbCdEfGhIjKlMnOpQrSt_-0123456789xyzXYZ0123'
 
@@ -24,5 +24,19 @@ describe('web helpers', () => {
   it('hashes the nonce the way the API checks it', async () => {
     const raw = 'abcdef0123456789abcdef'
     expect(await sha256Hex(raw, webcrypto.subtle as never)).toBe(createHash('sha256').update(raw).digest('hex'))
+  })
+})
+
+describe('browser Back plan', () => {
+  it('pushes one history entry when leaving Groups', () => {
+    for (const screen of ['group', 'expense', 'settle', 'activity', 'groupActivity', 'account', 'deleted']) expect(webBackPlan(screen, 0)).toBe('push')
+  })
+  it('does not stack another entry while one is there', () => {
+    expect(webBackPlan('expense', 1)).toBe('none')
+    expect(webBackPlan('activity', 1)).toBe('none')
+  })
+  it('drops the entry when the app itself returns to Groups, and leaves Groups alone otherwise', () => {
+    expect(webBackPlan('groups', 1)).toBe('unwind')
+    expect(webBackPlan('groups', 0)).toBe('none')
   })
 })

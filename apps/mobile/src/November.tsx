@@ -11,7 +11,7 @@ import { CODE_LENGTH, codeFailure, resendPresentation, sanitizeCode, shouldSubmi
 
 // Placeholder: C.muted at 40% opacity; the empty field also drops to normal weight (see codeEmpty).
 const CODE_PLACEHOLDER = 'rgba(107, 122, 114, 0.4)'
-const C = { ink: '#14221c', body: '#3d4741', muted: '#6b7a72', teal: '#0f766e', line: '#e4e8e2', bg: '#f6f7f4', soft: '#f3faf7', softLine: '#cfe3db', red: '#8d2f39', redSoft: '#fbeef0' }
+const C = { ink: '#14221c', body: '#3d4741', muted: '#5f6f67', teal: '#0f766e', line: '#e4e8e2', bg: '#f6f7f4', soft: '#f3faf7', softLine: '#cfe3db', red: '#8d2f39', redSoft: '#fbeef0' }
 
 function useNow(clock: () => number) {
   const [now, setNow] = useState(clock())

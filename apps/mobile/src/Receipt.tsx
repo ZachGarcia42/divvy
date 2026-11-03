@@ -8,7 +8,7 @@ import type { PhotoInfo } from './types'
 import { PhotoImage } from './PhotoImage'
 import { pickReceipt, type PhotoSource } from './pickPhoto'
 
-const C = { teal: '#0f766e', ink: '#14221c', muted: '#6b7a72', line: '#e4e8e2', card: '#ffffff', red: '#b4323f', bad: '#ffb3ba', aqua: '#2dd4bf' }
+const C = { teal: '#0f766e', ink: '#14221c', muted: '#5f6f67', line: '#e4e8e2', card: '#ffffff', red: '#b4323f', bad: '#ffb3ba', aqua: '#2dd4bf' }
 
 /** Take photo / Choose from library / Cancel. Picks, shrinks, and hands the JPEG back; errors come back as text. */
 export function ReceiptSourceSheet({ onPicked, onError, onClose }: { onPicked: (photo: PickedPhoto) => void; onError: (text: string) => void; onClose: () => void }) {
