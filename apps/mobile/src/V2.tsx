@@ -3,7 +3,7 @@
 import { EscapeLayer } from './useEscape'
 import { exponentOf, formatMoney, parseMajor, searchCurrencies, type SplitMethod, type SplitSpec } from '@divvy/domain'
 import { useEffect, useMemo, useRef, useState, type ComponentProps, type ReactNode } from 'react'
-import { ActivityIndicator, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native'
+import { ActivityIndicator, Modal, useWindowDimensions, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native'
 import { adjustDisplay, adjustSign, adjustTyped, sanitizeAmountText, evaluate, groupedMajor, majorString, METHOD_LABELS, METHODS, newDraft, switchMethod, toggleAdjustSign, type Draft } from './flows/split'
 import {
   breakdown, defaultPayment, groupByDate, historyLines, NEW_GROUP_CURRENCY, methodPhrase, monthDay, netTone, NET_WORDS, overallUsd, peopleCount, rowSubtitle,
@@ -797,6 +797,8 @@ export function AddSheet({ members, youId, currency, groupName, initial, fetchRa
   // A server error describes what was sent; once anything in the form changes it no longer applies.
   useEffect(() => { setError(null) }, [amountText, description, draft, payerId, date, expCurrency, manualText])
   const barBad = ev.bar.tone === 'bad'
+  // Under 360 px the success bar would wrap: smaller text and a bare check (its label still reads "Adds up").
+  const narrow = useWindowDimensions().width < 360
   const overField = barBad && !ev.amountBad ? lastEdited : null
   // Fixing a person's amount can leave the explanation below the fold, against the Save button: bring it into view.
   const bodyScroll = useRef<ScrollView | null>(null)
@@ -978,9 +980,9 @@ export function AddSheet({ members, youId, currency, groupName, initial, fetchRa
               })}
             </View>
             {draft.method === 'adjust' && <Text style={k.inkHint}>Adjustments come off the top; the rest is split equally.</Text>}
-            <View style={[k.val, bar.tone === 'ok' ? k.valOk : bar.tone === 'bad' ? k.valBad : k.valIdle]} accessibilityLiveRegion="polite" testID="validation-bar">
-              <Text style={[k.valText, bar.tone === 'ok' ? { color: T.ok } : bar.tone === 'bad' ? { color: T.bad } : { color: '#b9c9c1' }]}>{alone ? 'Invite someone to split with' : bar.left}</Text>
-              <Text style={[k.valText, k.valRight, bar.tone === 'ok' ? { color: T.ok } : bar.tone === 'bad' ? { color: T.bad } : { color: '#b9c9c1' }]}>{alone ? '' : bar.right}</Text>
+            <View style={[k.val, narrow && k.valNarrow, bar.tone === 'ok' ? k.valOk : bar.tone === 'bad' ? k.valBad : k.valIdle]} accessibilityLiveRegion="polite" testID="validation-bar">
+              <Text style={[k.valText, bar.tone === 'ok' ? { color: T.ok } : bar.tone === 'bad' ? { color: T.bad } : { color: '#b9c9c1' }, narrow && k.valTextNarrow]} numberOfLines={narrow ? 1 : undefined}>{alone ? 'Invite someone to split with' : bar.left}</Text>
+              <Text style={[k.valText, k.valRight, bar.tone === 'ok' ? { color: T.ok } : bar.tone === 'bad' ? { color: T.bad } : { color: '#b9c9c1' }, narrow && k.valTextNarrow]} numberOfLines={narrow ? 1 : undefined} accessibilityLabel={alone ? undefined : bar.right.replace(/^✓ /, '')}>{alone ? '' : narrow && bar.tone === 'ok' ? '✓' : bar.right}</Text>
             </View>
             {error && <Text style={k.inkError} testID="sheet-error">{error}</Text>}
           </ScrollView>, foot: <View key="foot" style={[k.foot, ord(1)]}>
@@ -996,6 +998,7 @@ export function AddSheet({ members, youId, currency, groupName, initial, fetchRa
           )}
           {confirmDiscard && (
             <View style={k.discardWrap} testID="discard-confirm">
+              <EscapeLayer onEscape={() => setConfirmDiscard(false)} />
               <View style={k.discard}>
                 <Text style={k.discardTitle} accessibilityRole="header">Discard expense?</Text>
                 <Text style={k.discardCopy}>{initial ? 'Your changes to this expense will be lost.' : 'What you typed will be lost.'}</Text>
@@ -1022,14 +1025,33 @@ export type ReceiptProps = {
   onPick: (photo: PickedPhoto) => void; onRemove: () => void; onError: (text: string) => void
 }
 
-export function ExpenseDetail({ detail, expense, history, canEdit, whyNoEdit, busy, receipt, onBack, onEdit, onDelete, timeText }: {
+export function ExpenseDetail({ detail, expense, history, canEdit, whyNoEdit, busy, receipt, onBack, onEdit, onDelete, timeText, backRef, onLayerChange }: {
   detail: GroupDetail; expense: Expense; history: HistoryEntry[] | null; canEdit: boolean; whyNoEdit: string | null; busy: boolean
   receipt?: ReceiptProps
+  /** Back (browser or hardware): closes the photo viewer, the photo source sheet or the delete question first. Returns false when nothing was open. */
+  backRef?: { current: (() => boolean) | null }
+  /** Tells the host when one of those layers is open, so browser history holds a step for it. */
+  onLayerChange?: (open: boolean) => void
   onBack: () => void; onEdit: () => void; onDelete: () => void; timeText: (iso: string) => string
 }) {
   const [confirm, setConfirm] = useState(false)
   const [choosingPhoto, setChoosingPhoto] = useState(false)
   const [viewingPhoto, setViewingPhoto] = useState(false)
+  if (backRef) {
+    backRef.current = () => {
+      if (viewingPhoto) setViewingPhoto(false)
+      else if (choosingPhoto) setChoosingPhoto(false)
+      else if (confirm) setConfirm(false)
+      else return false
+      return true
+    }
+  }
+  useEffect(() => () => { if (backRef) backRef.current = null }, [backRef])
+  const layerOpen = viewingPhoto || choosingPhoto || confirm
+  useEffect(() => { onLayerChange?.(layerOpen) }, [layerOpen])
+  useEffect(() => () => { onLayerChange?.(false) }, [])
+  // The on-screen arrow always leaves the expense (layers close with it).
+  const leave = () => { setViewingPhoto(false); setChoosingPhoto(false); setConfirm(false); if (backRef) backRef.current = null; onBack() }
   const you = detail.yourParticipantId
   const nameOf = (id: string) => memberName(detail, id)
   const method = expense.splitMethod ?? 'exact'
@@ -1045,7 +1067,7 @@ export function ExpenseDetail({ detail, expense, history, canEdit, whyNoEdit, bu
   return (
     <>
       <View style={k.top}>
-        <IconButton label="Back to group" glyph="‹" onPress={onBack} testID="back-to-group" />
+        <IconButton label="Back to group" glyph="‹" onPress={leave} testID="back-to-group" />
         <Text style={k.topTitle} accessibilityRole="header">Expense</Text>
         {canEdit ? <IconButton label="Edit expense" glyph="✎" onPress={onEdit} testID="edit-expense" /> : <View style={{ width: 44 }} />}
       </View>
@@ -1110,6 +1132,7 @@ export function ExpenseDetail({ detail, expense, history, canEdit, whyNoEdit, bu
         <Pressable style={k.del} onPress={() => setConfirm(true)} accessibilityRole="button" testID="delete-expense"><Text style={k.delText}>Delete expense</Text></Pressable>
       ) : (
         <View style={k.delBox} testID="delete-confirm">
+          <EscapeLayer onEscape={() => setConfirm(false)} />
           <Text style={k.t}>Delete this expense?</Text>
           <Text style={k.m}>Balances update right away. You can undo for a few seconds after.</Text>
           <View style={k.sheetButtons}>
@@ -1279,7 +1302,7 @@ const k = StyleSheet.create({
   heroK: { color: '#ffffff', fontSize: 12, fontWeight: '800', letterSpacing: 1.1, textTransform: 'uppercase' },
   heroV: { color: 'white', fontSize: 38, fontWeight: '900', letterSpacing: -1.4, marginVertical: 4 },
   heroS: { color: '#ffffff', fontSize: 14, fontWeight: '600' },
-  heroNote: { color: '#ffffffb3', fontSize: 12, fontWeight: '600', marginTop: 6 },
+  heroNote: { color: '#ffffff', fontSize: 12, fontWeight: '600', marginTop: 6 },
   eye: { fontSize: 12, fontWeight: '800', letterSpacing: 1.1, textTransform: 'uppercase', color: T.muted, marginTop: 20, marginBottom: 8, marginHorizontal: 4 },
   date: { fontSize: 12, fontWeight: '800', color: T.muted, letterSpacing: 0.7, textTransform: 'uppercase', marginTop: 16, marginBottom: 6, marginHorizontal: 4 },
   row: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12 },
@@ -1467,6 +1490,8 @@ const k = StyleSheet.create({
   valIdle: { backgroundColor: '#ffffff12' },
   valText: { fontWeight: '800', fontSize: 14, flexShrink: 1 },
   valRight: { textAlign: 'right', flexShrink: 0 },
+  valNarrow: { paddingHorizontal: 10, gap: 6 },
+  valTextNarrow: { fontSize: 13 },
   inkError: { color: T.bad, marginHorizontal: 18, marginTop: 8, fontWeight: '600' },
   foot: { paddingHorizontal: 14, paddingTop: 12, paddingBottom: 26 },
   inkBtn: { backgroundColor: T.aqua, borderRadius: 16, paddingVertical: 16, alignItems: 'center' },

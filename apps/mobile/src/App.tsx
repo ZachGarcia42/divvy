@@ -747,6 +747,9 @@ function Ledger({
   const seeAllOn = seeAll && chipFilter !== null
   // The open add-expense sheet's own Back (it closes a picker or a receipt first, then asks before discarding typed text).
   const addBack = useRef<(() => void) | null>(null)
+  // The expense detail's own Back layers (photo viewer, photo source sheet, delete question).
+  const detailBack = useRef<(() => boolean) | null>(null)
+  const [detailLayer, setDetailLayer] = useState(false)
   const chipFeed = useFeed(token, chipFilter, screen === 'activity' && chipFilter !== null)
   const groupFeed = useFeed(token, groupId, screen === 'groupActivity' && !!groupId)
   // Only when the sections reply was unusable: the All view as one plain feed.
@@ -868,6 +871,7 @@ function Ledger({
       if (editingName) { setEditingName(false); return true }
     }
     if (editingPay) { setEditingPay(false); return true }
+    if (screen === 'expense' && detailBack.current?.()) return true
     if (screen === 'activity' && seeAllOn) { setFeedFilter(null); setSeeAll(false); scrollRef.current?.scrollTo({ y: 0, animated: false }); return true }
     if (returnsToFeed(origin, screen)) {
       pendingY.current = origin.y
@@ -897,7 +901,7 @@ function Ledger({
   // page caused itself (unwinding after the app went back on its own).
   const nav = useRef({ pos: webHistory() ? entryDepth(webHistory()!.state) : 0, ignore: 0, budget: 0, snap: '', checked: false })
   const [navTick, setNavTick] = useState(0)
-  const overlayOpen = Platform.OS === 'web' && !!(adding || creating || switcher || editingName)
+  const overlayOpen = Platform.OS === 'web' && !!(adding || creating || switcher || editingName || (screen === 'expense' && detailLayer))
   const navNow: NavLite = { screen, origin: origin ? { at: origin.at, screen: origin.screen } : null, seeAll: seeAllOn, editingPay, overlay: overlayOpen }
   const wantDepth = backDepth(navNow)
   useEffect(() => {
@@ -1432,7 +1436,7 @@ function Ledger({
     body = expense ? (
       <ExpenseDetail detail={detail} expense={expense} history={history} canEdit={editBlock(expense) === null} whyNoEdit={editBlock(expense)} busy={deleting}
         receipt={{ photo, source: receiptSource, busy: photoBusy, error: photoError, onPick: (picked) => { void pickReceiptFor(expense, picked) }, onRemove: () => { void removeReceiptFor(expense) }, onError: setPhotoError }}
-        onBack={() => { stepBack() }} onEdit={() => setAdding({ edit: expense })} onDelete={() => { void deleteExpense(expense) }} timeText={timeText} />
+        onBack={() => { stepBack() }} onEdit={() => setAdding({ edit: expense })} onDelete={() => { void deleteExpense(expense) }} timeText={timeText} backRef={detailBack} onLayerChange={setDetailLayer} />
     ) : (
       <View style={styles.card}><Text style={styles.groupName}>That expense is gone</Text><Pressable onPress={() => { stepBack() }} accessibilityRole="button"><Text style={styles.signOut}>Back to the group</Text></Pressable></View>
     )

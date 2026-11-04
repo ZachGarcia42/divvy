@@ -69,3 +69,17 @@ export function monthGrid(year: number, month: number): (string | null)[] {
   while (cells.length % 7 !== 0) cells.push(null)
   return cells
 }
+
+const KEY_STEP: Record<string, number> = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -7, ArrowDown: 7 }
+
+/** Calendar keyboard: the day an arrow key (or Home / End of the week) moves to from `iso`, never past `today`. null for other keys. */
+export function dayForKey(iso: string, key: string, today: string): string | null {
+  const date = dateFromIso(iso)
+  if (!date) return null
+  let next: string
+  if (key in KEY_STEP) next = shiftIso(iso, KEY_STEP[key])
+  else if (key === 'Home') next = shiftIso(iso, -date.getDay())
+  else if (key === 'End') next = shiftIso(iso, 6 - date.getDay())
+  else return null
+  return next > today ? today : next
+}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { dateFromIso, dateLabel, dateToSave, isoFromDate, monthGrid, monthTitle, shiftIso, shiftMonth } from './date'
+import { dateFromIso, dateLabel, dateToSave, isoFromDate, monthGrid, monthTitle, shiftIso, shiftMonth, dayForKey } from './date'
 
 describe('local calendar dates', () => {
   it('names the local day, not the UTC day', () => {
@@ -82,4 +82,23 @@ describe('calendar grid', () => {
     expect(shiftMonth(2026, 11, 1)).toEqual({ year: 2027, month: 0 })
     expect(shiftMonth(2026, 5, 0)).toEqual({ year: 2026, month: 5 })
   })
+})
+
+describe('calendar keyboard', () => {
+  const today = '2026-11-04'
+  it('arrows move a day or a week, across months', () => {
+    expect(dayForKey('2026-10-15', 'ArrowLeft', today)).toBe('2026-10-14')
+    expect(dayForKey('2026-10-15', 'ArrowRight', today)).toBe('2026-10-16')
+    expect(dayForKey('2026-10-01', 'ArrowUp', today)).toBe('2026-09-24')
+    expect(dayForKey('2026-10-29', 'ArrowDown', today)).toBe('2026-11-04')
+  })
+  it('never moves past today', () => {
+    expect(dayForKey('2026-11-04', 'ArrowRight', today)).toBe(today)
+    expect(dayForKey('2026-11-01', 'ArrowDown', today)).toBe(today)
+  })
+  it('Home and End go to the ends of the Sunday-first week', () => {
+    expect(dayForKey('2026-10-15', 'Home', today)).toBe('2026-10-11')
+    expect(dayForKey('2026-10-15', 'End', today)).toBe('2026-10-17')
+  })
+  it('ignores other keys', () => { expect(dayForKey('2026-10-15', 'a', today)).toBeNull() })
 })

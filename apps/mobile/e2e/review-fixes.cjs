@@ -55,6 +55,13 @@ const check = (name, ok, extra = '') => { console.log(ok ? 'PASS' : 'FAIL', name
   await id('tab-activity').click(); await p.waitForSelector('[data-testid^="feed-"][role="button"]', { timeout: 10000 })
   await id('tab-groups').click().catch(() => {}); await p.waitForTimeout(300)
   check('the site is still here after Activity → Groups', p.url().startsWith(base), p.url())
+  // Activity → Groups by the tab bar leaves no stray entry: one browser Back leaves the site (NR-18).
+  await p.goBack().catch(() => {}); await p.waitForTimeout(500)
+  check('Activity → Groups → Back leaves the site in one Back (no stray Activity entry)', !p.url().startsWith(base), p.url())
+  await p.goForward().catch(() => {}); await p.waitForTimeout(800)
+  await p.waitForSelector('[data-testid="tab-activity"], [data-testid="back-to-groups"]', { timeout: 15000 })
+  if (await id('back-to-groups').isVisible().catch(() => false)) { await id('back-to-groups').click(); await id('tab-activity').waitFor() }
+  check('Forward brings the site back on Groups', p.url().startsWith(base) && await id('tab-activity').isVisible(), p.url())
 
   // ── muted contrast ──
   await settle()
