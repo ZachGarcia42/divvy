@@ -2,7 +2,7 @@ import { formatMoney, splitFromStored } from '@divvy/domain'
 import { editConflict } from './flows/errors'
 import { joinedFeedback } from './flows/composer'
 import { draftFromSpec, majorString } from './flows/split'
-import { emptyFeed, emptySections, buildSections, feedArrived, feedFailed, feedPath, feedRefreshed, feedRequested, feedSnack, feedTarget, canLoadMore, activeChip, feedChips, originStays, returnsToFeed, sectionsArrived, sectionsAsFeed, sectionsFailed, sectionsPath, sectionsRequested, shouldAutoLoad, type FeedEntry, type FeedOrigin, type FeedPage, type FeedState, type SectionData, type SectionsState } from './flows/feed'
+import { emptyFeed, emptySections, buildSections, feedArrived, feedFailed, feedPath, feedRefreshed, feedRequested, feedSnack, feedTarget, canLoadMore, activeChip, feedChips, originStays, returnsToFeed, sectionsArrived, sectionsAsFeed, sectionsFailed, sectionsMissing, sectionsPath, sectionsRequested, sectionsUnavailable, shouldAutoLoad, type FeedEntry, type FeedOrigin, type FeedPage, type FeedState, type SectionData, type SectionsState } from './flows/feed'
 import { isForeign, type Quote } from './flows/fx'
 import { contentTopGap, SNACK_MS, snackOwner, snackStays, startScreen, groupIcon, type HistoryEntry } from './flows/view'
 import { PayReturnSheet, PaymentNamesScreen } from './Pay'
@@ -35,7 +35,7 @@ import { StatusBar } from 'expo-status-bar'
 import { inviteFromNext, invitePath, isToken, parseDeepLink, parseInvitePreview, PENDING_INVITE_KEY, tokenFromInput, type InvitePreview } from './links'
 import { SocialSignIn } from './SocialSignIn'
 import type { Expense, GroupDetail, Home, HomeGroup, Payment, PhotoInfo, Settlement } from './types'
-import { apiBase, SIGN_IN_WIDTH, webBackPlan, webLinkUrl } from './flows/web'
+import { apiBase, backDepth, historyMove, SIGN_IN_WIDTH, webLinkUrl, type NavLite } from './flows/web'
 import { FALLBACK_PROVIDERS, parseProviders, type Providers } from './flows/providers'
 import { CheckEmail, ExpiredLink, JoinCard, NamePrompt, NameSheet, Toast } from './November'
 import { createOnce, joinFailure, joinedWasAlreadyMember, loadJoinView, type JoinView } from './flows/join'
@@ -516,6 +516,15 @@ function SignIn({ onToken, pendingInvite, onDismissInvite, linkFailure, onClearL
 }
 
 type Screen = 'groups' | 'group' | 'expense' | 'settle' | 'account' | 'activity' | 'groupActivity' | 'deleted'
+/** What a browser history entry remembers of the screen it was pushed for, so Forward can bring it back. */
+type EntrySnap = { screen: Screen; groupId: string | null; expenseId: string | null; origin: FeedOrigin | null; filter: string | null; seeAll: boolean; editingPay: boolean }
+type WebHistory = { state: unknown; pushState(state: unknown, title: string): void; replaceState(state: unknown, title: string): void; go(delta: number): void }
+const webHistory = (): WebHistory | null => (Platform.OS === 'web' ? (globalThis as unknown as { history?: WebHistory }).history ?? null : null)
+/** The depth stored in a history entry's state (0 for the entry the site was opened on). */
+const entryDepth = (state: unknown): number => {
+  const depth = (state as { divvy?: unknown } | null)?.divvy
+  return typeof depth === 'number' && depth > 0 ? Math.floor(depth) : 0
+}
 type Snackbar = { text: string; action?: string; run?: () => void; owner?: string }
 
 const deviceZone = () => {
@@ -582,7 +591,7 @@ function useSections(token: string, enabled: boolean) {
     setState(sectionsRequested)
     call<{ sections?: SectionData[] }>(token, sectionsPath())
       .then((page) => { if (latest.current === id) setState(sectionsArrived(page)) })
-      .catch((reason: Error) => { if (latest.current === id) setState((current) => sectionsFailed(current, reason.message)) })
+      .catch((reason: Error & { status?: number }) => { if (latest.current === id) setState((current) => (sectionsUnavailable(reason) ? sectionsMissing() : sectionsFailed(current, reason.message))) })
   }
   useEffect(() => { latest.current++; setState(emptySections) }, [token])
   useEffect(() => {
@@ -727,12 +736,17 @@ function Ledger({
   const sectionsFeed = useSections(token, screen === 'activity')
   // The Activity tab's group chips: which group the feed is narrowed to (null = All, split into a section per group), and the sections opened with "Show more".
   const [feedFilter, setFeedFilter] = useState<string | null>(null)
+  // The filter was set by a section's "See all" (not a chip): Back clears it and stays on Activity.
+  const [seeAll, setSeeAll] = useState(false)
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({})
   const sectionPages = useSectionPages(token, openSections, screen === 'activity' && feedFilter === null)
   const allFeed = useMemo(() => ({ state: sectionsAsFeed(sectionsFeed.state), more: () => {}, retry: sectionsFeed.retry, retrySnack: sectionsFeed.retry }), [sectionsFeed.state])
   const sections = useMemo(() => buildSections(sectionsFeed.state.sections, sectionPages.pages, openSections), [sectionsFeed.state.sections, sectionPages.pages, openSections])
   const chips = useMemo(() => feedChips(home?.groups ?? [], sectionsFeed.state.sections.map((section) => section.group)), [home?.groups, sectionsFeed.state.sections])
   const chipFilter = activeChip(chips, feedFilter)
+  const seeAllOn = seeAll && chipFilter !== null
+  // The open add-expense sheet's own Back (it closes a picker or a receipt first, then asks before discarding typed text).
+  const addBack = useRef<(() => void) | null>(null)
   const chipFeed = useFeed(token, chipFilter, screen === 'activity' && chipFilter !== null)
   const groupFeed = useFeed(token, groupId, screen === 'groupActivity' && !!groupId)
   // Only when the sections reply was unusable: the All view as one plain feed.
@@ -846,7 +860,15 @@ function Ledger({
 
   // Back from a screen a feed row opened returns to that feed (hardware back and the on-screen arrow alike); otherwise one step out.
   const stepBack = (): boolean => {
+    // On the web a sheet is a step of its own: browser Back closes it (the add sheet asks first when it holds typed text).
+    if (Platform.OS === 'web') {
+      if (adding) { if (addBack.current) addBack.current(); else setAdding(null); return true }
+      if (creating) { setCreating(null); return true }
+      if (switcher) { setSwitcher(false); return true }
+      if (editingName) { setEditingName(false); return true }
+    }
     if (editingPay) { setEditingPay(false); return true }
+    if (screen === 'activity' && seeAllOn) { setFeedFilter(null); setSeeAll(false); scrollRef.current?.scrollTo({ y: 0, animated: false }); return true }
     if (returnsToFeed(origin, screen)) {
       pendingY.current = origin.y
       setOrigin(null)
@@ -868,27 +890,72 @@ function Ledger({
     return () => sub.remove()
   }, [screen, origin, editingPay])
 
-  // Browser Back on the web: see webBackPlan. The page keeps one extra history entry while a screen other than Groups shows,
-  // and popping it steps back inside the app (stepBack) instead of leaving the site.
-  const stepBackRef = useRef(stepBack)
-  stepBackRef.current = stepBack
-  const backDepth = useRef<0 | 1>(0)
-  const ignorePops = useRef(0)
+  // Browser Back on the web (see flows/web.ts): the page keeps one history entry for each step Back would take (backDepth), so
+  // popping one steps back inside the app (stepBack) instead of leaving the site, and Forward brings the screen back from the
+  // snapshot stored with the entry. `pos` is how many entries the page holds above the one it was loaded on; `budget` is how many
+  // steps back are still owed after pops (two quick Backs owe two, each taken on a fresh render); `ignore` counts the pops the
+  // page caused itself (unwinding after the app went back on its own).
+  const nav = useRef({ pos: webHistory() ? entryDepth(webHistory()!.state) : 0, ignore: 0, budget: 0, snap: '', checked: false })
+  const [navTick, setNavTick] = useState(0)
+  const overlayOpen = Platform.OS === 'web' && !!(adding || creating || switcher || editingName)
+  const navNow: NavLite = { screen, origin: origin ? { at: origin.at, screen: origin.screen } : null, seeAll: seeAllOn, editingPay, overlay: overlayOpen }
+  const wantDepth = backDepth(navNow)
   useEffect(() => {
-    if (Platform.OS !== 'web') return
-    const hist = (globalThis as unknown as { history?: { pushState(state: unknown, title: string): void; back(): void } }).history
+    const hist = webHistory()
     if (!hist) return
-    const plan = webBackPlan(screen, backDepth.current)
-    if (plan === 'push') { hist.pushState({ divvy: 1 }, ''); backDepth.current = 1 }
-    if (plan === 'unwind') { backDepth.current = 0; ignorePops.current += 1; hist.back() }
+    const h = nav.current
+    if (!h.checked) {
+      // A reload leaves the entries of the old page behind it; they are dead ends. Step off them to the entry the site was opened on.
+      h.checked = true
+      if (h.pos > 0) { h.ignore += 1; hist.go(-h.pos); h.pos = 0; return }
+    }
+    if (h.budget > 0) {
+      h.budget -= 1
+      if (!stepBack()) h.budget = 0
+      setNavTick((n) => n + 1)
+      return
+    }
+    if (!home || h.ignore > 0) return
+    const snap = { screen, groupId, expenseId, origin, filter: feedFilter, seeAll: seeAllOn, editingPay }
+    const move = historyMove(h.pos, wantDepth)
+    if (move && 'push' in move) {
+      for (let i = 0; i < move.push; i++) { h.pos += 1; hist.pushState({ divvy: h.pos, snap }, '') }
+    } else if (move && 'back' in move) {
+      h.ignore += 1
+      h.pos = wantDepth
+      hist.go(-move.back)
+      return
+    } else if (h.pos > 0 && JSON.stringify(snap) !== h.snap) {
+      hist.replaceState({ divvy: h.pos, snap }, '')
+    }
+    h.snap = JSON.stringify(snap)
   })
   useEffect(() => {
-    if (Platform.OS !== 'web') return
-    const w = globalThis as unknown as { addEventListener?: (e: string, f: () => void) => void; removeEventListener?: (e: string, f: () => void) => void }
-    const onPop = () => {
-      if (ignorePops.current > 0) { ignorePops.current -= 1; return }
-      backDepth.current = 0
-      stepBackRef.current()
+    if (!webHistory()) return
+    const w = globalThis as unknown as { addEventListener?: (e: string, f: (ev: { state?: unknown }) => void) => void; removeEventListener?: (e: string, f: (ev: { state?: unknown }) => void) => void }
+    const onPop = (ev: { state?: unknown }) => {
+      const h = nav.current
+      if (h.ignore > 0) { h.ignore -= 1; setNavTick((n) => n + 1); return }
+      const to = entryDepth(ev.state)
+      const from = h.pos
+      h.pos = to
+      if (to < from) h.budget += from - to
+      if (to > from) {
+        const snap = (ev.state as { snap?: EntrySnap } | null)?.snap
+        if (snap) {
+          setAdding(null); setCreating(null); setSwitcher(false); setEditingName(false)
+          setEditingPay(snap.editingPay)
+          setOrigin(snap.origin)
+          setExpenseId(snap.expenseId)
+          setHistory(null)
+          setGroupId(snap.groupId)
+          setFeedFilter(snap.filter)
+          setSeeAll(snap.seeAll)
+          setScreen(snap.screen)
+          scrollRef.current?.scrollTo({ y: 0, animated: false })
+        }
+      }
+      setNavTick((n) => n + 1)
     }
     w.addEventListener?.('popstate', onPop)
     return () => w.removeEventListener?.('popstate', onPop)
@@ -959,6 +1026,7 @@ function Ledger({
 
   const goGroups = () => {
     setOrigin(null)
+    setSeeAll(false)
     groupY.current = null
     setScreen('groups')
     setExpenseId(null)
@@ -967,6 +1035,7 @@ function Ledger({
   const openGroup = (id: string) => {
     setSwitcher(false)
     setOrigin(null)
+    setSeeAll(false)
     groupY.current = null
     setExpenseId(null)
     setGroupId(id)
@@ -1303,6 +1372,7 @@ function Ledger({
   }
   const onTabPress = (next: Tab) => {
     setEditingPay(false)
+    if (next !== 'activity') setSeeAll(false)
     if (next === 'groups') { goGroups(); return }
     if (next === 'activity' && screen === 'activity') { activeFeed.retry(); scrollRef.current?.scrollTo({ y: 0, animated: true }); return }
     setScreen(next)
@@ -1331,7 +1401,8 @@ function Ledger({
     }} />
   } else if (screen === 'activity') {
     body = <ActivityScreen feed={activeFeed.state} youId={youId} today={today} chips={chips} filter={chipFilter} sections={sections} flat={flatAll}
-      onFilter={(id) => { setFeedFilter(id); scrollRef.current?.scrollTo({ y: 0, animated: false }) }}
+      onFilter={(id) => { setFeedFilter(id); setSeeAll(false); scrollRef.current?.scrollTo({ y: 0, animated: false }) }}
+      onSeeAll={(id) => { setFeedFilter(id); setSeeAll(true); scrollRef.current?.scrollTo({ y: 0, animated: false }) }}
       onSectionMore={(id) => { if (openSections[id]) sectionPages.more(id); else setOpenSections((current) => ({ ...current, [id]: true })) }}
       onSectionLess={(id) => setOpenSections((current) => ({ ...current, [id]: false }))}
       onOpen={openFeedEntry} onMore={activeFeed.more} onRetry={activeFeed.retry} onEmptyAction={() => { if (chipFilter) openGroup(chipFilter); else goGroups() }} />
@@ -1401,7 +1472,7 @@ function Ledger({
       {showTabs && <TabBar tab={tab} onTab={onTabPress} />}
       {adding && detail && (
         <AddSheet members={sheetMembers} youId={detail.yourParticipantId} currency={detail.currency} groupName={groupIcon(detail.group).title}
-          initial={sheetInitial} fetchRate={fetchRate} photo={adding.edit && adding.edit.id === expenseId ? photo ?? null : null} photoSource={adding.edit && adding.edit.id === expenseId ? receiptSource : null} onClose={() => setAdding(null)} onSave={(value) => saveExpense(value, adding.edit)} />
+          initial={sheetInitial} fetchRate={fetchRate} photo={adding.edit && adding.edit.id === expenseId ? photo ?? null : null} photoSource={adding.edit && adding.edit.id === expenseId ? receiptSource : null} onClose={() => setAdding(null)} backRef={addBack} onSave={(value) => saveExpense(value, adding.edit)} />
       )}
       {switcher && home && <SwitcherSheet groups={home.groups} currentId={groupId} onPick={openGroup} onAll={() => { setSwitcher(false); goGroups() }} onClose={() => setSwitcher(false)} />}
       {creating && <CreateGroupSheet busy={createBusy} error={createError} onCreate={createGroup} onClose={() => setCreating(null)} />}

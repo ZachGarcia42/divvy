@@ -280,7 +280,7 @@ export function evaluate(draft: Draft, memberIds: string[], amountText: string, 
     if (!(reason instanceof LedgerError)) throw reason
     const rest = total - adjusted
     if (rest < 0) return bad(`Adjustments ${money(adjusted)}`, `${money(-rest)} over total`)
-    return bad('Someone would owe less than zero', 'Lower an adjustment')
+    return bad('Would owe less than zero', 'Lower one')
   }
 }
 

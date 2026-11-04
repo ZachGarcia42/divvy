@@ -158,20 +158,34 @@ export const sectionsPath = (per = SECTION_ROWS) => `/api/feed/sections?per=${pe
 /** One group's slice of the All view, as the server sends it: the group's newest entries and how many it has in all. */
 export type SectionData = { group: FeedEntry['group']; total: number; items: FeedEntry[] }
 
-/** `flat`: the server's answer had no usable sections (an older server, or a reply without the array), so the All view shows the plain newest-first feed instead of going blank. */
+/** `flat`: the server's answer had no usable sections (an older server, a missing route, a reply that is not the sections JSON, or only junk or empty ones), so the All view shows the plain newest-first feed instead of going blank or failing. */
 export type SectionsState = { sections: SectionData[]; loading: boolean; loaded: boolean; error: string | null; flat?: boolean }
 export const emptySections: SectionsState = { sections: [], loading: false, loaded: false, error: null }
 /** Requested: what is on screen stays (no flash) while it reloads. */
 export const sectionsRequested = (state: SectionsState): SectionsState => ({ ...state, loading: true, error: null })
+const flatSections: SectionsState = { sections: [], loading: false, loaded: true, error: null, flat: true }
+/** An entry the rows can draw: an object with an id, a time and the group it belongs to. */
+const usableEntry = (entry: unknown): entry is FeedEntry => {
+  const e = entry as Partial<FeedEntry> | null
+  return !!e && typeof e === 'object' && typeof e.id === 'string' && typeof e.at === 'string' && !!e.group && typeof e.group === 'object' && typeof e.group.id === 'string' && !!e.target && typeof e.target === 'object'
+}
 export function sectionsArrived(page: { sections?: unknown } | null | undefined): SectionsState {
   const raw = page?.sections
-  if (!Array.isArray(raw)) return { sections: [], loading: false, loaded: true, error: null, flat: true }
-  // A section without a group is unusable; one without a list of entries is shown empty rather than crashing the screen.
-  const sections = raw
-    .filter((section): section is SectionData => !!section && typeof section === 'object' && !!(section as SectionData).group && typeof (section as SectionData).group.id === 'string')
-    .map((section) => ({ ...section, items: Array.isArray(section.items) ? section.items : [], total: typeof section.total === 'number' ? section.total : Array.isArray(section.items) ? section.items.length : 0 }))
+  if (!Array.isArray(raw)) return flatSections
+  // A section needs a group and at least one entry that can be drawn; anything else is dropped. With nothing left, the plain feed takes over.
+  const sections = raw.flatMap((section): SectionData[] => {
+    const s = section as Partial<SectionData> | null
+    if (!s || typeof s !== 'object' || !s.group || typeof s.group !== 'object' || typeof s.group.id !== 'string') return []
+    const items = Array.isArray(s.items) ? s.items.filter(usableEntry) : []
+    if (items.length === 0) return []
+    return [{ group: s.group, items, total: typeof s.total === 'number' && s.total >= items.length ? s.total : items.length }]
+  })
+  if (sections.length === 0) return flatSections
   return { sections, loading: false, loaded: true, error: null }
 }
+/** The route is not there (an older server answers 404, 405 or 501): the plain feed is the answer, not an error. */
+export const sectionsUnavailable = (failure: { status?: number } | null | undefined): boolean => failure?.status === 404 || failure?.status === 405 || failure?.status === 501
+export const sectionsMissing = (): SectionsState => flatSections
 export const sectionsFailed = (state: SectionsState, message: string): SectionsState => ({ ...state, loading: false, error: message })
 
 /** The All view as a FeedState, so it shares the loading, error and empty screens (and the refresh snackbar) with the other feeds. It never has a next page: every group is already there. */

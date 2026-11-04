@@ -1,7 +1,7 @@
 import { createHash, webcrypto } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import { parseDeepLink } from '../links'
-import { apiBase, sha256Hex, webBackPlan, webLinkUrl } from './web'
+import { apiBase, backDepth, historyMove, sha256Hex, stepBackLite, webLinkUrl, type NavLite } from './web'
 
 const T = 'AbCdEfGhIjKlMnOpQrSt_-0123456789xyzXYZ0123'
 
@@ -27,16 +27,40 @@ describe('web helpers', () => {
   })
 })
 
-describe('browser Back plan', () => {
-  it('pushes one history entry when leaving Groups', () => {
-    for (const screen of ['group', 'expense', 'settle', 'activity', 'groupActivity', 'account', 'deleted']) expect(webBackPlan(screen, 0)).toBe('push')
+const nav = (over: Partial<NavLite> = {}): NavLite => ({ screen: 'groups', origin: null, seeAll: false, editingPay: false, overlay: false, ...over })
+
+describe('browser Back depth', () => {
+  it('keeps no entry on the bare Groups screen, one for each screen a step out', () => {
+    expect(backDepth(nav())).toBe(0)
+    for (const screen of ['group', 'activity', 'account', 'deleted']) expect(backDepth(nav({ screen }))).toBe(1)
+    for (const screen of ['expense', 'settle', 'groupActivity']) expect(backDepth(nav({ screen }))).toBe(2)
   })
-  it('does not stack another entry while one is there', () => {
-    expect(webBackPlan('expense', 1)).toBe('none')
-    expect(webBackPlan('activity', 1)).toBe('none')
+  it('counts the Activity feed a row was opened from, and the group a feed row opened', () => {
+    expect(backDepth(nav({ screen: 'expense', origin: { at: 'expense', screen: 'activity' } }))).toBe(2)
+    expect(backDepth(nav({ screen: 'group', origin: { at: 'group', screen: 'activity' } }))).toBe(2)
+    expect(backDepth(nav({ screen: 'expense', origin: { at: 'group', screen: 'activity' } }))).toBe(3)
   })
-  it('drops the entry when the app itself returns to Groups, and leaves Groups alone otherwise', () => {
-    expect(webBackPlan('groups', 1)).toBe('unwind')
-    expect(webBackPlan('groups', 0)).toBe('none')
+  it('counts a sheet, the pay-names editor and a See all filter as a step of their own', () => {
+    expect(backDepth(nav({ screen: 'group', overlay: true }))).toBe(2)
+    expect(backDepth(nav({ overlay: true }))).toBe(1)
+    expect(backDepth(nav({ screen: 'account', editingPay: true }))).toBe(2)
+    expect(backDepth(nav({ screen: 'activity', seeAll: true }))).toBe(2)
+  })
+  it('steps the sheet first, then the filter, then out', () => {
+    const start = nav({ screen: 'activity', seeAll: true, overlay: true })
+    const one = stepBackLite(start)!
+    expect(one).toMatchObject({ overlay: false, seeAll: true, screen: 'activity' })
+    const two = stepBackLite(one)!
+    expect(two).toMatchObject({ seeAll: false, screen: 'activity' })
+    expect(stepBackLite(two)!.screen).toBe('groups')
+    expect(stepBackLite(nav())).toBeNull()
+  })
+})
+
+describe('browser history moves', () => {
+  it('pushes the missing entries, goes back over the extra ones, and leaves a matching history alone', () => {
+    expect(historyMove(0, 2)).toEqual({ push: 2 })
+    expect(historyMove(2, 0)).toEqual({ back: 2 })
+    expect(historyMove(1, 1)).toBeNull()
   })
 })

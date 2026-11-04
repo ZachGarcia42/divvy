@@ -46,3 +46,26 @@ export function dateToSave(picked: string, original: string | null, today: strin
   if (!original && picked === today) return null
   return picked
 }
+
+const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
+
+/** "October 2026". `month` is 0 to 11. */
+export function monthTitle(year: number, month: number): string {
+  return `${MONTH_NAMES[((month % 12) + 12) % 12]} ${year}`
+}
+
+/** The month `by` months from this one (negative goes back), as a year and a 0 to 11 month. */
+export function shiftMonth(year: number, month: number, by: number): { year: number; month: number } {
+  const index = year * 12 + month + by
+  return { year: Math.floor(index / 12), month: ((index % 12) + 12) % 12 }
+}
+
+/** A month as a calendar grid, Sunday first: every day as "YYYY-MM-DD", `null` for the blanks before the 1st and after the last day, in whole weeks. */
+export function monthGrid(year: number, month: number): (string | null)[] {
+  const first = new Date(year, month, 1, 12)
+  const days = new Date(year, month + 1, 0, 12).getDate()
+  const cells: (string | null)[] = Array.from({ length: first.getDay() }, () => null)
+  for (let day = 1; day <= days; day++) cells.push(isoFromDate(new Date(year, month, day, 12)))
+  while (cells.length % 7 !== 0) cells.push(null)
+  return cells
+}

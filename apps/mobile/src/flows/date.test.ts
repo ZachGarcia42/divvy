@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { dateFromIso, dateLabel, dateToSave, isoFromDate, shiftIso } from './date'
+import { dateFromIso, dateLabel, dateToSave, isoFromDate, monthGrid, monthTitle, shiftIso, shiftMonth } from './date'
 
 describe('local calendar dates', () => {
   it('names the local day, not the UTC day', () => {
@@ -59,4 +59,27 @@ describe('which date is saved', () => {
   })
   it('an edit moved to another day sends the new day', () => { expect(dateToSave('2026-10-01', '2026-10-05', today)).toBe('2026-10-01') })
   it('an edit moved to today sends today explicitly', () => { expect(dateToSave(today, '2026-10-05', today)).toBe(today) })
+})
+
+describe('calendar grid', () => {
+  it('lays a month out Sunday first in whole weeks, with blanks around it', () => {
+    const grid = monthGrid(2026, 9) // October 2026 starts on a Thursday
+    expect(grid.length % 7).toBe(0)
+    expect(grid.slice(0, 5)).toEqual([null, null, null, null, '2026-10-01'])
+    expect(grid.filter(Boolean)).toHaveLength(31)
+    expect(grid.filter(Boolean).at(-1)).toBe('2026-10-31')
+    expect(grid).toHaveLength(35)
+    expect(monthGrid(2026, 8).at(-1)).toBeNull()
+  })
+  it('a month that starts on Sunday has no leading blanks, and February follows leap years', () => {
+    expect(monthGrid(2026, 10)[0]).toBe('2026-11-01')
+    expect(monthGrid(2028, 1).filter(Boolean)).toHaveLength(29)
+    expect(monthGrid(2026, 1).filter(Boolean)).toHaveLength(28)
+  })
+  it('names and steps months across year ends', () => {
+    expect(monthTitle(2026, 9)).toBe('October 2026')
+    expect(shiftMonth(2026, 0, -1)).toEqual({ year: 2025, month: 11 })
+    expect(shiftMonth(2026, 11, 1)).toEqual({ year: 2027, month: 0 })
+    expect(shiftMonth(2026, 5, 0)).toEqual({ year: 2026, month: 5 })
+  })
 })

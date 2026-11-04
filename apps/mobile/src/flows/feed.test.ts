@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   PAGE_SIZE, LOAD_AHEAD_PX, TONE_ICON, originStays, returnsToFeed, type FeedOrigin, canLoadMore, changeSummary, clockText, datedLine, emptyFeed, feedArrived, feedFailed, feedPath, feedRefreshed, feedRequested, feedRow, feedSnack, feedTarget, feedView,
   groupFeedByDay, localDay, shouldAutoLoad,
-  SECTION_ROWS, activeChip, buildSections, dayLabel, emptySections, feedChips, sectionsArrived, sectionsAsFeed, sectionsFailed, sectionsPath, sectionsRequested,
+  SECTION_ROWS, activeChip, buildSections, dayLabel, emptySections, feedChips, sectionsArrived, sectionsAsFeed, sectionsFailed, sectionsMissing, sectionsPath, sectionsRequested, sectionsUnavailable,
   type FeedEntry,
 } from './feed'
 
@@ -352,15 +352,25 @@ describe('split by group: sections', () => {
       expect(state).toMatchObject({ flat: true, loaded: true, error: null, sections: [] })
       expect(() => sectionsAsFeed(state)).not.toThrow()
     }
-    expect(sectionsArrived({ sections: [] }).flat).toBeUndefined()
     expect(sectionsArrived({ sections: data }).flat).toBeUndefined()
   })
-  it('a section with a missing item list is shown empty, and one without a group is dropped', () => {
-    const state = sectionsArrived({ sections: [{ group: data[0]!.group, total: 3 }, { total: 1, items: [] }, null, data[1]] })
-    expect(state.sections).toHaveLength(2)
-    expect(state.sections[0]).toMatchObject({ total: 3, items: [] })
+  it('an empty or junk-only sections reply falls back to the plain feed too', () => {
+    const junk = [[], [null, 1, 'x'], [{ group: data[0]!.group, total: 3 }], [{ group: data[0]!.group, total: 2, items: [] }], [{ group: data[0]!.group, total: 2, items: [null, {}, { id: 5 }, 'x'] }], [{ total: 1, items: data[1]!.items }]]
+    for (const sections of junk) expect(sectionsArrived({ sections } as never)).toMatchObject({ flat: true, loaded: true, error: null, sections: [] })
+  })
+  it('a missing route (404, 405, 501) means the plain feed; other failures stay errors', () => {
+    for (const status of [404, 405, 501]) expect(sectionsUnavailable({ status })).toBe(true)
+    for (const status of [400, 401, 429, 500, 502, 503, undefined]) expect(sectionsUnavailable({ status })).toBe(false)
+    expect(sectionsUnavailable(null)).toBe(false)
+    expect(sectionsMissing()).toMatchObject({ flat: true, loaded: true, error: null })
+  })
+  it('a section without a group or without drawable entries is dropped, junk entries inside a good section too', () => {
+    const state = sectionsArrived({ sections: [{ group: data[0]!.group, total: 3 }, { total: 1, items: [] }, null, { group: data[1]!.group, total: 5, items: [null, data[1]!.items[0]] }, data[0]] })
+    expect(state.flat).toBeUndefined()
+    expect(state.sections.map((section) => section.group.id)).toEqual(['mission', 'tahoe'])
+    expect(state.sections[0]).toMatchObject({ total: 5 })
+    expect(state.sections[0]!.items).toHaveLength(1)
     expect(() => buildSections(state.sections)).not.toThrow()
-    expect(sectionsAsFeed(state).items).toHaveLength(data[1]!.items.length)
   })
 })
 

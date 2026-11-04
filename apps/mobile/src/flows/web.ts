@@ -23,14 +23,48 @@ export async function sha256Hex(value: string, subtle: { digest(algorithm: strin
 export const SIGN_IN_WIDTH = 320
 
 /**
- * Browser Back inside the single-page app. The app has no URL routes, so one Back would leave the site. While any screen
- * other than Groups is showing, one history entry sits on top of the page the user arrived on; popping it (Back) steps back
- * inside the app the same way the Android hardware button does. Back from Groups itself leaves the site, as expected.
- * `depth` is 1 while that extra entry exists. Returns what the host should do after a render.
+ * Browser Back inside the single-page app. The app has no URL routes, so one Back would leave the site. While anything other
+ * than a bare Groups screen is showing, the page keeps one history entry per step Back would take (`backDepth`): popping an entry
+ * steps back inside the app exactly as the Android hardware button does, and Back from the bare Groups screen leaves the site.
+ * Each entry's state carries a snapshot of the screen it was pushed for, so Forward can bring that screen back.
  */
-export type WebBackPlan = 'push' | 'unwind' | 'none'
-export function webBackPlan(screen: string, depth: 0 | 1): WebBackPlan {
-  if (screen !== 'groups' && depth === 0) return 'push'
-  if (screen === 'groups' && depth === 1) return 'unwind'
-  return 'none'
+export type NavLite = {
+  screen: string
+  /** Where a feed row was opened from (see FeedOrigin): `at` is the screen it opened, `screen` the feed Back returns to. */
+  origin: { at: string; screen: string } | null
+  /** The Activity view is narrowed to one group by "See all": Back clears the filter before it leaves Activity. */
+  seeAll: boolean
+  editingPay: boolean
+  /** A sheet is open (add expense, create group, switch group, your name). */
+  overlay: boolean
+}
+
+/** One step of Back, as a pure mirror of the app's stepBack; null when there is nothing left to step out of. */
+export function stepBackLite(n: NavLite): NavLite | null {
+  if (n.overlay) return { ...n, overlay: false }
+  if (n.editingPay) return { ...n, editingPay: false }
+  if (n.screen === 'activity' && n.seeAll) return { ...n, seeAll: false }
+  if (n.origin && n.origin.at === n.screen) return { ...n, screen: n.origin.screen, origin: null }
+  if (n.screen === 'expense' || n.screen === 'settle' || n.screen === 'groupActivity') return { ...n, screen: 'group' }
+  if (n.screen === 'group' || n.screen === 'account' || n.screen === 'activity' || n.screen === 'deleted') return { ...n, screen: 'groups', origin: null, seeAll: false }
+  return null
+}
+
+/** How many Backs it takes to get from this state to the bare Groups screen: the number of history entries to keep above the page. */
+export function backDepth(n: NavLite): number {
+  let depth = 0
+  let at: NavLite | null = n
+  while (at && depth < 12) {
+    at = stepBackLite(at)
+    if (at) depth += 1
+  }
+  return depth
+}
+
+/** What to do to the browser history so that it holds `want` entries above the page when it holds `pos` now. */
+export type HistoryMove = { push: number } | { back: number } | null
+export function historyMove(pos: number, want: number): HistoryMove {
+  if (want > pos) return { push: want - pos }
+  if (want < pos) return { back: pos - want }
+  return null
 }

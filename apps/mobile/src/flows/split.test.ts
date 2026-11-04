@@ -181,7 +181,9 @@ describe('split editor: Adjust', () => {
   it('is invalid when someone would end up below zero, even though the total matches', () => {
     const r = ev(draft({ you: '-50', maya: '', leo: '', priya: '' }), '120')
     expect(r.ok).toBe(false)
-    expect(r.bar.left).toBe('Someone would owe less than zero')
+    expect(r.bar.left).toBe('Would owe less than zero')
+    // Both halves of the bar share one line on a phone (about 36 characters at 14px bold), so the wording stays short.
+    expect(r.bar.left.length + r.bar.right.length).toBeLessThanOrEqual(36)
     const fine = ev(draft({ you: '-10', maya: '', leo: '', priya: '' }), '120')
     expect(fine.results).toEqual({ you: 2250, maya: 3250, leo: 3250, priya: 3250 })
     expect(sum(fine.results)).toBe(12000)

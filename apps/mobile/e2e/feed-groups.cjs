@@ -9,7 +9,7 @@ const check = (name, ok, extra = '') => { console.log(ok ? 'PASS' : 'FAIL', name
 ;(async () => {
   const [base, TOKEN, shot] = process.argv.slice(2)
   const { browser, p, id, api, gid: tahoe, ids, errors } = await start(base, TOKEN, { viewport: { width: 390, height: 960 }, members: 2 })
-  const day = new Date().toISOString().slice(0, 10)
+  const now = new Date(); const day = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
   const add = async (groupId, you, description, minor, other) => {
     const r = await api(`/api/groups/${groupId}/expenses`, 'POST', { description, date: day, originalMinor: minor, originalCurrency: 'USD', payers: [{ participantId: you, minor }], split: { type: 'equal', participantIds: [you, other] } })
     if (!r.id) throw new Error(`could not add ${description}: ${JSON.stringify(r)}`)

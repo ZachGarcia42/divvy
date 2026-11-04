@@ -5,7 +5,7 @@ exports.start = async function start(base, TOKEN, { viewport = { width: 420, hei
   const api = async (path, method = 'GET', body) => { const r = await fetch(base + path, { method, headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' }, body: body && JSON.stringify(body) }); return r.json() }
   const browser = await chromium.launch({ executablePath: process.env.CHROME || '/usr/bin/google-chrome', args: ['--no-sandbox'] })
   const ctx = await browser.newContext({ viewport })
-  await ctx.addInitScript((t) => { localStorage.setItem('divvy.session', t) }, TOKEN)
+  await ctx.addInitScript((t) => { try { localStorage.setItem('divvy.session', t) } catch {} }, TOKEN)
   const p = await ctx.newPage()
   const id = (x) => p.getByTestId(x)
   const errors = []

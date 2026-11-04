@@ -8,7 +8,7 @@ const check = (name, ok, extra = '') => { console.log(ok ? 'PASS' : 'FAIL', name
 ;(async () => {
   const [base, TOKEN, fake = 'http://127.0.0.1:18798', shots] = process.argv.slice(2)
   const { browser, p, id, api, gid, ids, type, errors } = await start(base, TOKEN, { viewport: { width: 390, height: 800 }, members: 4 })
-  const day = new Date().toISOString().slice(0, 10)
+  const now = new Date(); const day = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
   const add = async (payer, description, minor, among) => {
     const r = await api(`/api/groups/${gid}/expenses`, 'POST', { description, date: day, originalMinor: minor, originalCurrency: 'USD', payers: [{ participantId: payer, minor }], split: { type: 'equal', participantIds: among } })
     if (!r.id) throw new Error(`could not add ${description}: ${JSON.stringify(r)}`)
@@ -27,7 +27,7 @@ const check = (name, ok, extra = '') => { console.log(ok ? 'PASS' : 'FAIL', name
   // ── Settle up: starts on a transfer with you, and the browser Back closes it ──
   await id('settle-up').click(); await id('settle-card').waitFor()
   const card = (await id('settle-card').innerText()).replace(/\s+/g, ' ')
-  check('Settle up opens on a transfer that involves you', /You pay|pay You|paid You/.test(card) || /\bYou\b/.test(card), card)
+  check('Settle up opens on a transfer that involves you', /(^| )You pay \S|\S paid You( |$)/.test(card), card)
   await p.goBack(); await p.waitForTimeout(300)
   check('browser Back from Settle up returns to the group, still on the site', p.url() === startUrl && await id('add-expense').isVisible() && (await id('settle-card').count()) === 0, p.url())
 
@@ -52,11 +52,9 @@ const check = (name, ok, extra = '') => { console.log(ok ? 'PASS' : 'FAIL', name
   check('browser Back from a feed-opened expense returns to Activity', await p.locator('[data-testid^="feed-"][role="button"]').first().isVisible() && p.url().startsWith(base), p.url())
   await p.goBack(); await p.waitForTimeout(400)
   check('browser Back from Activity returns to Groups (not out of the site)', p.url().startsWith(base) && await id('tab-activity').isVisible(), p.url())
-  const urlHere = p.url()
   await id('tab-activity').click(); await p.waitForSelector('[data-testid^="feed-"][role="button"]', { timeout: 10000 })
   await id('tab-groups').click().catch(() => {}); await p.waitForTimeout(300)
-  await p.goBack().catch(() => {}); await p.waitForTimeout(300)
-  check('the site is still here after Activity → Groups → Back', p.url().startsWith(base) || urlHere.startsWith(base), p.url())
+  check('the site is still here after Activity → Groups', p.url().startsWith(base), p.url())
 
   // ── muted contrast ──
   await settle()
@@ -79,11 +77,12 @@ const check = (name, ok, extra = '') => { console.log(ok ? 'PASS' : 'FAIL', name
   await id('add-expense').click(); await id('add-sheet').waitFor(); await p.waitForTimeout(350)
   await type('expense-amount', '100')
   await id('currency-chip').click(); await id('currency-sheet').waitFor()
+  check('currency sheet has a Done button', /Done/.test(await id('currency-close').innerText()))
   check('currency picker pins the group currency first', (await p.locator('[data-testid^="currency-"][role="button"][data-testid$="USD"], [data-testid="currency-USD"]').first().innerText()).includes('USD'))
   await p.waitForTimeout(600); if (shots) await p.screenshot({ path: `${shots}/currency-sheet.png` })
   await id('currency-GBP').click(); await p.waitForTimeout(1200)
-  const head = (await id('fx-converted').innerText()).trim(); const btn = (await id('sheet-cta').innerText()).trim()
-  check('rate error: heading no longer claims a conversion', /No exchange rate/.test(head), head)
+  const err = (await id('fx-error').innerText()).trim(); const btn = (await id('sheet-cta').innerText()).trim()
+  check('rate error: no conversion is claimed and the message names the rate', /rate/i.test(err) && (await id('fx-converted').count()) === 0, err)
   check('rate error: the button says the rate is the problem', /rate/i.test(btn) && !/Enter an amount/.test(btn), btn)
   if (shots) await p.screenshot({ path: `${shots}/rate-error.png` })
   await fetch(`${fake}/__down?on=0`)

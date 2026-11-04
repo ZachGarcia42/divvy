@@ -8,6 +8,8 @@ import { dateFromIso, dateLabel, isoFromDate } from './flows/date'
 type Props = {
   value: string; today: string; onChange: (iso: string) => void
   style?: StyleProp<ViewStyle>; activeStyle?: StyleProp<ViewStyle>; textStyle?: StyleProp<TextStyle>; boldStyle?: StyleProp<TextStyle>; testID?: string
+  /** Web only (the in-page calendar); the system pickers on iOS and Android manage themselves. */
+  open?: boolean; onOpenChange?: (open: boolean) => void
 }
 
 export function DateChip({ value, today, onChange, style, activeStyle, textStyle, boldStyle, testID }: Props) {
