@@ -94,6 +94,21 @@ const laDay = (offset = 0) => { const d = new Date(Date.now() + offset * 8640000
   check('OK by keyboard saves the day and closes the calendar', (await id('date-picker').count()) === 0 && /Yesterday/.test(await id('date-chip').innerText()), await id('date-chip').innerText())
   const back = await p.evaluate(() => document.activeElement && document.activeElement.getAttribute('data-testid'))
   check('focus returns to the date chip', back === 'date-chip', String(back))
+  // ── next-a11y2: month change keeps a day in the Tab order; dialog named; selected day announced ──
+  await id('date-chip').click(); await id('date-picker').waitFor(); await p.waitForTimeout(300)
+  const dlg = await p.evaluate(() => { const e = document.querySelector('[data-testid="date-picker"] [role="dialog"]') || document.querySelector('[data-testid="date-picker"]'); return e ? { role: e.getAttribute('role'), modal: e.getAttribute('aria-modal'), label: e.getAttribute('aria-label') } : null })
+  check('calendar dialog has an accessible name', !!dlg && /expense date/i.test(dlg.label || ''), JSON.stringify(dlg))
+  await id('date-prev').click(); await p.waitForTimeout(250)
+  const tabbable = await p.evaluate(() => [...document.querySelectorAll('[data-testid="date-picker"] [data-testid^="date-day-"]')].filter((e) => e.getAttribute('tabindex') === '0').map((e) => e.getAttribute('data-testid')))
+  check('after ‹ one day of the shown month is the roving tab stop', tabbable.length === 1, JSON.stringify(tabbable))
+  const afterPrev = []
+  for (let i = 0; i < 6; i++) { await p.keyboard.press('Tab'); afterPrev.push(await p.evaluate(() => document.activeElement && document.activeElement.getAttribute('data-testid'))) }
+  check('after ‹, Tab reaches a day cell', afterPrev.some((t) => t && t.startsWith('date-day-')), JSON.stringify(afterPrev))
+  while (!((await focused()).tid || '').startsWith('date-day-')) await p.keyboard.press('Tab')
+  await p.keyboard.press('Enter'); await p.waitForTimeout(150)
+  const pressed = await p.evaluate(() => { const e = document.activeElement; return e ? { pressed: e.getAttribute('aria-pressed'), selected: e.getAttribute('aria-selected'), label: e.getAttribute('aria-label') } : null })
+  check('selected day exposes aria-pressed/selected (or says selected)', !!pressed && (pressed.pressed === 'true' || pressed.selected === 'true' || /selected/i.test(pressed.label || '')), JSON.stringify(pressed))
+  await p.keyboard.press('Escape'); await p.waitForTimeout(300)
   if (shots) await p.screenshot({ path: `${shots}/a11y-after-calendar.png` })
 
   // ── Escape dismisses the discard question ──
@@ -112,6 +127,11 @@ const laDay = (offset = 0) => { const d = new Date(Date.now() + offset * 8640000
   check('Adjust success bar is ok-toned and says it adds up', /\$180\.00 split 2 ways/.test(text) || /split 2 ways/.test(text), text)
   check('Adjust success bar fits on one line at 320 px, nothing cut off', lines.length >= 1 && lines.every((h) => h > 0 && h < 22) && !clipped, `${text} ${JSON.stringify(lines)} clipped=${clipped}`)
   check('the check keeps its "Adds up" label for screen readers', await p.evaluate(() => [...document.querySelectorAll('[data-testid="validation-bar"] [aria-label]')].some((e) => /Adds up/.test(e.getAttribute('aria-label')))))
+  check('under 360px the ✓ is role=img named Adds up', await p.evaluate(() => {
+    const bar = document.querySelector('[data-testid="validation-bar"]')
+    const right = [...bar.children].find((e) => (e.getAttribute('aria-label') || '').includes('Adds up'))
+    return !!right && right.getAttribute('role') === 'img' && right.textContent.trim() === '✓'
+  }))
   if (shots) await p.screenshot({ path: `${shots}/a11y-adjust-320.png` })
 
   await browser.close()

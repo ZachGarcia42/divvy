@@ -41,7 +41,9 @@ const doc = (globalThis as unknown as { document?: { getElementById(id: string):
 if (web && doc && !doc.getElementById('divvy-focus-ring')) {
   const style = doc.createElement('style')
   style.id = 'divvy-focus-ring'
-  style.textContent = `a:focus-visible, button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible, [role="button"]:focus-visible, [role="tab"]:focus-visible, [role="checkbox"]:focus-visible, [role="link"]:focus-visible, [tabindex]:not([tabindex="-1"]):focus-visible { outline: 3px solid #2f9e78 !important; outline-offset: -3px !important; }`
+  style.textContent = `a:focus-visible, button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible, [role="button"]:focus-visible, [role="tab"]:focus-visible, [role="checkbox"]:focus-visible, [role="link"]:focus-visible, [tabindex]:not([tabindex="-1"]):focus-visible { outline: 3px solid #2f9e78 !important; outline-offset: -3px !important; }` +
+    /* Groups rows: match the row's corner radius and sit 2px outside so the ring does not touch "Settled up". */
+    `[data-testid^="group-"]:focus-visible { outline: 3px solid #2f9e78 !important; outline-offset: 2px !important; border-radius: 12px !important; }`
   doc.head.appendChild(style)
 }
 const noOutline = (web ? { outlineStyle: 'none' } : {}) as object
@@ -146,7 +148,7 @@ function GroupRow({ group, index, today, first, onPress }: { group: HomeGroup; i
   const sub = [count ? peopleCount(count) : null, updatedPhrase(group.latest?.date, today)].filter(Boolean).join(' · ')
   const [bg] = AVATARS[index % AVATARS.length]!
   return (
-    <Pressable style={[k.row, !first && k.rowLine]} onPress={onPress} accessibilityRole="button" accessibilityLabel={`${title}, ${tone === 'settled' ? 'settled up' : `${NET_WORDS[tone]} ${formatMoney(Math.abs(group.yourNetMinor), group.currency)}`}`} testID={`group-${group.id}`}>
+    <Pressable style={[k.row, k.groupRow, !first && k.rowLine]} onPress={onPress} accessibilityRole="button" accessibilityLabel={`${title}, ${tone === 'settled' ? 'settled up' : `${NET_WORDS[tone]} ${formatMoney(Math.abs(group.yourNetMinor), group.currency)}`}`} testID={`group-${group.id}`}>
       <View style={[k.groupIcon, { backgroundColor: bg }]}><Text style={k.groupEmoji} accessible={false}>{emoji}</Text></View>
       <View style={k.grow}>
         <Text style={k.t} numberOfLines={1}>{title}</Text>
@@ -815,9 +817,9 @@ export function AddSheet({ members, youId, currency, groupName, initial, fetchRa
               the CSS `order` puts everything back where it looks right. Native keeps the plain top-to-bottom order. */}
           {(web ? ['body', 'foot', 'head'] : ['head', 'body', 'foot']).map((part) => ({
             head: <View key="head" style={[k.sheetHead, ord(-1)]}>
-            <Pressable onPress={tryClose} accessibilityRole="button" testID="sheet-cancel"><Text style={k.inkCancel}>Cancel</Text></Pressable>
+            <Pressable style={k.sheetHeadBtn} onPress={tryClose} accessibilityRole="button" testID="sheet-cancel"><Text style={k.inkCancel}>Cancel</Text></Pressable>
             <Text style={k.inkTitle} numberOfLines={1} accessibilityRole="header">{title}</Text>
-            <Pressable onPress={save} disabled={!canSave} accessibilityRole="button" accessibilityState={{ disabled: !canSave }} tabIndex={-1} testID="sheet-save">
+            <Pressable style={k.sheetHeadBtn} onPress={save} disabled={!canSave} accessibilityRole="button" accessibilityState={{ disabled: !canSave }} tabIndex={-1} testID="sheet-save">
               <Text style={[k.inkSave, !canSave && k.inkSaveOff]}>{saving ? 'Saving…' : 'Save'}</Text>
             </Pressable>
           </View>, body: <ScrollView key="body" ref={bodyScroll} style={ord(0)} keyboardShouldPersistTaps="handled" contentContainerStyle={{ paddingBottom: 24 }}>
@@ -982,7 +984,13 @@ export function AddSheet({ members, youId, currency, groupName, initial, fetchRa
             {draft.method === 'adjust' && <Text style={k.inkHint}>Adjustments come off the top; the rest is split equally.</Text>}
             <View style={[k.val, narrow && k.valNarrow, bar.tone === 'ok' ? k.valOk : bar.tone === 'bad' ? k.valBad : k.valIdle]} accessibilityLiveRegion="polite" testID="validation-bar">
               <Text style={[k.valText, bar.tone === 'ok' ? { color: T.ok } : bar.tone === 'bad' ? { color: T.bad } : { color: '#b9c9c1' }, narrow && k.valTextNarrow]} numberOfLines={narrow ? 1 : undefined}>{alone ? 'Invite someone to split with' : bar.left}</Text>
-              <Text style={[k.valText, k.valRight, bar.tone === 'ok' ? { color: T.ok } : bar.tone === 'bad' ? { color: T.bad } : { color: '#b9c9c1' }, narrow && k.valTextNarrow]} numberOfLines={narrow ? 1 : undefined} accessibilityLabel={alone ? undefined : bar.right.replace(/^✓ /, '')}>{alone ? '' : narrow && bar.tone === 'ok' ? '✓' : bar.right}</Text>
+              {alone ? <Text style={[k.valText, k.valRight]} /> : narrow && bar.tone === 'ok' ? (
+                // Under 360px show a bare ✓; the accessible name is the visually-hidden "Adds up" via role=img + aria-label (NA-56/57).
+                // A clipped text node was tried and broke the one-line bar layout check (scrollWidth > clientWidth).
+                <Text style={[k.valText, k.valRight, { color: T.ok }, k.valTextNarrow]} numberOfLines={1} accessibilityRole="image" accessibilityLabel="Adds up">✓</Text>
+              ) : (
+                <Text style={[k.valText, k.valRight, bar.tone === 'ok' ? { color: T.ok } : bar.tone === 'bad' ? { color: T.bad } : { color: '#b9c9c1' }, narrow && k.valTextNarrow]} numberOfLines={narrow ? 1 : undefined} accessibilityLabel={bar.right.replace(/^✓ /, '')}>{bar.right}</Text>
+              )}
             </View>
             {error && <Text style={k.inkError} testID="sheet-error">{error}</Text>}
           </ScrollView>, foot: <View key="foot" style={[k.foot, ord(1)]}>
@@ -1306,6 +1314,7 @@ const k = StyleSheet.create({
   eye: { fontSize: 12, fontWeight: '800', letterSpacing: 1.1, textTransform: 'uppercase', color: T.muted, marginTop: 20, marginBottom: 8, marginHorizontal: 4 },
   date: { fontSize: 12, fontWeight: '800', color: T.muted, letterSpacing: 0.7, textTransform: 'uppercase', marginTop: 16, marginBottom: 6, marginHorizontal: 4 },
   row: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12 },
+  groupRow: { borderRadius: 12 },
   rowLine: { borderTopWidth: 1, borderTopColor: '#eef2ee' },
   groupIcon: { width: 42, height: 42, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
   groupEmoji: { fontSize: 22 },
@@ -1406,12 +1415,13 @@ const k = StyleSheet.create({
   // ink sheet
   ink: { height: '92%', backgroundColor: T.ink, borderTopLeftRadius: 28, borderTopRightRadius: 28, overflow: 'hidden' },
   sheetHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 18, paddingVertical: 8, gap: 10 },
+  sheetHeadBtn: { minHeight: 44, minWidth: 44, justifyContent: 'center', paddingHorizontal: 4 },
   inkCancel: { color: '#b9c9c1', fontWeight: '700', fontSize: 16 },
   inkTitle: { color: 'white', fontWeight: '900', fontSize: 16, flexShrink: 1 },
   inkSave: { color: T.aqua, fontWeight: '900', fontSize: 16 },
   inkSaveOff: { color: '#ffffff40' },
   bigRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginTop: 8, paddingHorizontal: 14 },
-  ccyPill: { backgroundColor: '#ffffff1c', borderWidth: 1, borderColor: '#ffffff2e', borderRadius: 999, paddingVertical: 8, paddingHorizontal: 12, marginRight: 8, minHeight: 36, justifyContent: 'center' },
+  ccyPill: { backgroundColor: '#ffffff1c', borderWidth: 1, borderColor: '#ffffff2e', borderRadius: 999, paddingVertical: 10, paddingHorizontal: 14, marginRight: 8, minHeight: 44, justifyContent: 'center' },
   ccyPillText: { color: '#ffffff', fontSize: 15, fontWeight: '900' },
   ccyCaret: { color: T.ok, fontSize: 12 },
   bigC: { color: '#7fa597', fontSize: 34, fontWeight: '900', marginRight: 3 },
@@ -1455,7 +1465,7 @@ const k = StyleSheet.create({
   convArrow: { color: T.muted },
   pick: { flexDirection: 'row', gap: 8, paddingHorizontal: 18, paddingTop: 12, paddingBottom: 4, justifyContent: 'center', flexWrap: 'wrap' },
   payerList: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingHorizontal: 18, paddingTop: 4, justifyContent: 'center' },
-  dp: { backgroundColor: '#ffffff14', borderWidth: 1, borderColor: '#ffffff22', borderRadius: 999, paddingVertical: 8, paddingHorizontal: 12 },
+  dp: { backgroundColor: '#ffffff14', borderWidth: 1, borderColor: '#ffffff22', borderRadius: 999, paddingVertical: 10, paddingHorizontal: 14, minHeight: 44, justifyContent: 'center' },
   dpRing: { borderColor: T.ok, backgroundColor: '#2dd4bf1f' },
   dpOn: { backgroundColor: T.ok, borderColor: T.ok },
   dpText: { color: '#e6efe9', fontSize: 13, fontWeight: '800' },

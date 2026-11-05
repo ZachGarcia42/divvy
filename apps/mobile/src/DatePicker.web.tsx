@@ -45,12 +45,24 @@ function Calendar({ value, today, onPick, onClose }: { value: string; today: str
   const [chosen, setChosen] = useState(value)
   const atNow = view.year === now.getFullYear() && view.month === now.getMonth()
   useEscape(onClose)
-  const step = (by: number) => setView((v) => shiftMonth(v.year, v.month, by))
   const cells = monthGrid(view.year, view.month)
   // Keyboard: focus stays inside the panel (Tab wraps), one day cell is in the Tab order (the roving `focusDay`), arrows / Home / End
   // move it (switching month as needed, never past today) and Enter or Space picks it. Focus returns to the chip on close.
   const panel = useRef<El | null>(null)
   const [focusDay, setFocusDay] = useState(chosen <= today ? chosen : today)
+  // Month buttons must move the roving tab stop into the month they show; otherwise Tab never reaches a day (NA-50).
+  const step = (by: number) => {
+    const next = shiftMonth(view.year, view.month, by)
+    const nextCells = monthGrid(next.year, next.month).filter((iso): iso is string => !!iso)
+    setView(next)
+    setFocusDay((fd) => {
+      if (nextCells.includes(fd)) return fd
+      const dayNum = Number(fd.slice(8))
+      const same = nextCells.find((iso) => Number(iso.slice(8)) === dayNum)
+      const pick = same ?? nextCells[nextCells.length - 1]!
+      return pick > today ? today : pick
+    })
+  }
   const wantFocus = useRef(true)
   const live = useRef({ focusDay, today })
   live.current = { focusDay, today }
@@ -122,7 +134,7 @@ function Calendar({ value, today, onPick, onClose }: { value: string; today: str
     <Modal transparent animationType="fade" visible onRequestClose={onClose} statusBarTranslucent>
       <View style={s.scrim} testID="date-picker">
         <Pressable style={StyleSheet.absoluteFillObject} onPress={onClose} accessibilityRole="button" accessibilityLabel="Close the calendar" focusable={false} {...({ tabIndex: -1 } as object)} />
-        <View style={s.panel} accessibilityViewIsModal ref={(el) => { panel.current = el as unknown as El | null }} {...({ role: 'dialog', 'aria-modal': true, 'aria-label': 'Choose the expense date' } as object)}>
+        <View style={s.panel} accessibilityViewIsModal accessibilityLabel="Choose the expense date" ref={(el) => { panel.current = el as unknown as El | null }} {...({ role: 'dialog', 'aria-modal': true, 'aria-label': 'Choose the expense date' } as object)}>
           <View style={s.head}>
             <Text style={s.title} accessibilityRole="header" testID="date-month">{monthTitle(view.year, view.month)}</Text>
             <Pressable style={s.nav} onPress={() => step(-1)} accessibilityRole="button" accessibilityLabel="Previous month" testID="date-prev"><Text style={s.navText}>‹</Text></Pressable>
@@ -139,8 +151,12 @@ function Calendar({ value, today, onPick, onClose }: { value: string; today: str
               return (
                 <View key={iso} style={s.cell}>
                   <Pressable style={[s.day, iso === today && s.dayToday, on && s.dayOn]} disabled={future} onPress={() => { setChosen(iso); setFocusDay(iso) }}
-                    accessibilityRole="button" accessibilityLabel={LONG_DAY.format(dateFromIso(iso)!)} accessibilityState={{ selected: on, disabled: future }} testID={`date-day-${iso}`}>
-                    <Text style={[s.dayText, future && s.dayOff, on && s.dayTextOn]}>{Number(iso.slice(8))}</Text>
+                    accessibilityRole="button" accessibilityLabel={on ? `${LONG_DAY.format(dateFromIso(iso)!)}, selected` : LONG_DAY.format(dateFromIso(iso)!)}
+                    accessibilityState={{ selected: on, disabled: future }}
+                    // react-native-web drops accessibilityState.selected on role=button; aria-pressed is what screen readers get (NA-43b).
+                    {...({ 'aria-pressed': on, 'aria-selected': on } as object)}
+                    testID={`date-day-${iso}`}>
+                    <Text style={[s.dayText, future && s.dayOff, on && s.dayTextOn]} accessible={false}>{Number(iso.slice(8))}</Text>
                   </Pressable>
                 </View>
               )
