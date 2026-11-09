@@ -23,7 +23,7 @@
       }
     },
     "production": {
-      "autoIncrement": true,
+      "autoIncrement": false,
       "env": {
         "EXPO_PUBLIC_API_URL": "https://divvy.mooo.com",
         "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID": "597758345543-juuqoo27cqi9t58cnhupi6h2jej8hu3o.apps.googleusercontent.com",
