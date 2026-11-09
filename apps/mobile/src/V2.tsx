@@ -20,7 +20,7 @@ import { DateChip } from './DatePicker'
 import { dateToSave } from './flows/date'
 import { amountPlaceholder, conversionLines, manualRateOrNull, rowOriginalText, RATE_DOWN_MESSAGE, rateLabel, rateSourceText, sheetMoney, type Quote } from './flows/fx'
 import type { Expense, GroupDetail, Home, HomeGroup, PhotoInfo, Payment, Settlement } from './types'
-import { KEEP_PHOTO, photoDirty, removeDraft, shownPhoto, type PhotoDraft, type PickedPhoto, type ReceiptSource } from './flows/photo'
+import { KEEP_PHOTO, photoDirty, removeDraft, shownPhoto, type PhotoDraft, type PhotoUiError, type PickedPhoto, type ReceiptSource } from './flows/photo'
 import { ReceiptCard, ReceiptRow, ReceiptSourceSheet, ReceiptViewer } from './Receipt'
 import { PayNudge, PayRowsSection, paySummary } from './Pay'
 import { payRowsFor, type PayRow } from './flows/pay'
@@ -731,7 +731,7 @@ export function AddSheet({ members, youId, currency, groupName, initial, fetchRa
   const [photoDraft, setPhotoDraft] = useState<PhotoDraft>(KEEP_PHOTO)
   const [choosingPhoto, setChoosingPhoto] = useState(false)
   const [viewingPhoto, setViewingPhoto] = useState(false)
-  const [photoError, setPhotoError] = useState<string | null>(null)
+  const [photoError, setPhotoError] = useState<PhotoUiError | null>(null)
   const shown = shownPhoto(photo, photoDraft)
   const shownSource: ReceiptSource | null = shown.kind === 'new' ? { kind: 'local', uri: shown.photo.uri } : shown.kind === 'current' ? photoSource : null
   const photoChanged = photoDirty(photo, photoDraft)
@@ -767,16 +767,16 @@ export function AddSheet({ members, youId, currency, groupName, initial, fetchRa
   }, [initial, amountText, description, draft, payerId, date, today, ids, youId, expCurrency, manualText, currency, photoChanged])
   const tryClose = () => (dirty && !saving ? setConfirmDiscard(true) : onClose())
   // Back peels the sheet one layer at a time: a picker or viewer on top, then the discard question, then the sheet.
-  if (backRef) {
-    backRef.current = () => {
-      if (pickCurrency) setPickCurrency(false)
-      else if (pickDate) setPickDate(false)
-      else if (viewingPhoto) setViewingPhoto(false)
-      else if (choosingPhoto) setChoosingPhoto(false)
-      else if (confirmDiscard) setConfirmDiscard(false)
-      else tryClose()
-    }
+  // Used for web history (backRef) and Android hardware Back (BottomSheet onRequestClose). B-4: confirm first.
+  const peelBack = () => {
+    if (pickCurrency) setPickCurrency(false)
+    else if (pickDate) setPickDate(false)
+    else if (viewingPhoto) setViewingPhoto(false)
+    else if (choosingPhoto) setChoosingPhoto(false)
+    else if (confirmDiscard) setConfirmDiscard(false)
+    else tryClose()
   }
+  if (backRef) backRef.current = peelBack
   useEffect(() => () => { if (backRef) backRef.current = null }, [backRef])
   const patch = (key: 'exact' | 'percent' | 'adjust', id: string, text: string) => {
     setLastEdited(id)
@@ -811,7 +811,7 @@ export function AddSheet({ members, youId, currency, groupName, initial, fetchRa
   }, [overField, ev.bar.left, ev.bar.right])
   const title = initial ? 'Edit expense' : `New expense · ${groupName}`
   return (
-    <BottomSheet onClose={tryClose} panelStyle={[k.ink, web && k.sheetWeb]} pillColor="#ffffff40" fixedHeight testID="add-sheet">
+    <BottomSheet onClose={tryClose} onRequestClose={peelBack} panelStyle={[k.ink, web && k.sheetWeb]} pillColor="#ffffff40" fixedHeight testID="add-sheet">
       <>
           {/* On web the keyboard order follows the DOM: amount … inputs, Save, then Cancel. The header is last in the DOM and
               the CSS `order` puts everything back where it looks right. Native keeps the plain top-to-bottom order. */}
@@ -897,7 +897,11 @@ export function AddSheet({ members, youId, currency, groupName, initial, fetchRa
                 ))}
               </View>
             )}
-            <ReceiptRow source={shownSource} bytes={shown.kind === 'new' ? shown.photo.bytes : shown.kind === 'current' ? shown.info.bytes : undefined} error={photoError}
+            <ReceiptRow source={shownSource}
+              bytes={shown.kind === 'new' ? shown.photo.bytes : shown.kind === 'current' ? shown.info.bytes : undefined}
+              fileName={shown.kind === 'new' ? shown.photo.fileName : null}
+              contentType={shown.kind === 'current' ? shown.info.contentType : shown.kind === 'new' ? 'image/jpeg' : null}
+              error={photoError}
               onAdd={() => { setPhotoError(null); setChoosingPhoto(true) }} onView={() => setViewingPhoto(true)}
               onRemove={() => { setPhotoError(null); setPhotoDraft(removeDraft(photo, photoDraft)) }} />
             <View style={k.seg} accessibilityRole="tablist">
@@ -1029,8 +1033,8 @@ function parsePct(text: string | undefined) {
 
 export type ReceiptProps = {
   /** undefined while loading, null when the expense has no photo. */
-  photo: PhotoInfo | null | undefined; source: ReceiptSource | null; busy: boolean; error: string | null
-  onPick: (photo: PickedPhoto) => void; onRemove: () => void; onError: (text: string) => void
+  photo: PhotoInfo | null | undefined; source: ReceiptSource | null; busy: boolean; error: PhotoUiError | null
+  onPick: (photo: PickedPhoto) => void; onRemove: () => void; onError: (error: PhotoUiError) => void
 }
 
 export function ExpenseDetail({ detail, expense, history, canEdit, whyNoEdit, busy, receipt, onBack, onEdit, onDelete, timeText, backRef, onLayerChange }: {

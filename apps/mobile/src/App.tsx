@@ -8,7 +8,7 @@ import { contentTopGap, SNACK_MS, snackOwner, snackStays, startScreen, groupIcon
 import { PayReturnSheet, PaymentNamesScreen } from './Pay'
 import { onReturn, stillOwed, type PayRow, type PendingPay } from './flows/pay'
 import type { PayHandles, PayProvider } from '@divvy/domain'
-import { deleteReceipt, photoErrorText, photoPlan, remoteSource, savedWithPhotoProblem, uploadReceipt, type PhotoApi, type PickedPhoto } from './flows/photo'
+import { deleteReceipt, photoErrorText, photoPlan, photoUiError, remoteSource, savedWithPhotoProblem, uploadReceipt, type PhotoApi, type PhotoUiError, type PickedPhoto } from './flows/photo'
 import { AccountScreen, ActivityScreen, AddSheet, CreateGroupSheet, DeletedExpense, ExpenseDetail, Fab, GroupsHome, GroupView, InviteCard, PasteCard, SettleScreen, Snack, SwitcherSheet, TabBar, todayIso, type SheetSave, type Tab } from './V2'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import * as SecureStore from 'expo-secure-store'
@@ -671,7 +671,7 @@ function Ledger({
   // The receipt on the open expense: undefined while loading, null when there is none.
   const [photo, setPhoto] = useState<PhotoInfo | null | undefined>(undefined)
   const [photoBusy, setPhotoBusy] = useState(false)
-  const [photoError, setPhotoError] = useState<string | null>(null)
+  const [photoError, setPhotoError] = useState<PhotoUiError | null>(null)
   const [inviteUrl, setInviteUrl] = useState<string | null>(null)
   const [paste, setPaste] = useState('')
   const [showPaste, setShowPaste] = useState(false)
@@ -888,11 +888,15 @@ function Ledger({
     if (screen === 'group' || screen === 'account' || screen === 'activity' || screen === 'deleted') { goGroups(); return true }
     return false
   }
+  // Ref so the Android Back listener never keeps a stale stepBack (seeAll/feedFilter/chipFilter and friends).
+  const stepBackRef = useRef(stepBack)
+  stepBackRef.current = stepBack
   useEffect(() => {
     if (Platform.OS !== 'android') return
-    const sub = BackHandler.addEventListener('hardwareBackPress', stepBack)
+    const onBack = () => stepBackRef.current()
+    const sub = BackHandler.addEventListener('hardwareBackPress', onBack)
     return () => sub.remove()
-  }, [screen, origin, editingPay])
+  }, [])
 
   // Browser Back on the web (see flows/web.ts): the page keeps one history entry for each step Back would take (backDepth), so
   // popping one steps back inside the app (stepBack) instead of leaving the site, and Forward brings the screen back from the
@@ -1120,7 +1124,7 @@ function Ledger({
       setHistoryTick((n) => n + 1)
       showToast(replacing ? 'Receipt replaced' : 'Receipt added')
     } catch (reason) {
-      setPhotoError(photoErrorText(reason))
+      setPhotoError(photoUiError(reason))
     } finally {
       setPhotoBusy(false)
     }
@@ -1136,7 +1140,7 @@ function Ledger({
       setHistoryTick((n) => n + 1)
       showToast('Receipt removed')
     } catch (reason) {
-      setPhotoError(photoErrorText(reason, 'Couldn’t remove the photo. Try again.'))
+      setPhotoError(photoUiError(reason, 'Couldn’t remove the photo. Try again.'))
     } finally {
       setPhotoBusy(false)
     }

@@ -18,9 +18,13 @@ const stamp = (event: { nativeEvent?: { timestamp?: number; timeStamp?: number }
 }
 const noSelect = (web ? { userSelect: 'none', WebkitUserSelect: 'none', touchAction: 'none', cursor: 'grab' } : null) as object | null
 
-export function BottomSheet({ onClose, panelStyle, pillColor, resizable = false, fixedHeight = false, testID, children }: {
-  onClose: () => void; panelStyle: StyleProp<ViewStyle>; pillColor: string; resizable?: boolean; fixedHeight?: boolean; testID?: string; children: ReactNode
+export function BottomSheet({ onClose, onRequestClose, panelStyle, pillColor, resizable = false, fixedHeight = false, testID, children }: {
+  onClose: () => void
+  /** Android hardware Back. Defaults to onClose. Add-expense passes a peel that closes Discard confirm first. */
+  onRequestClose?: () => void
+  panelStyle: StyleProp<ViewStyle>; pillColor: string; resizable?: boolean; fixedHeight?: boolean; testID?: string; children: ReactNode
 }) {
+  const handleBack = onRequestClose ?? onClose
   const [snap, setSnap] = useState<SheetSnap>(fixedHeight ? 'tall' : 'compact')
   const enter = useRef(new Animated.Value(Dimensions.get('window').height)).current
   const fade = useRef(new Animated.Value(0)).current
@@ -89,7 +93,7 @@ export function BottomSheet({ onClose, panelStyle, pillColor, resizable = false,
   }), [resizable, fixedHeight, drag, native])
 
   return (
-    <Modal transparent animationType="none" visible onRequestClose={onClose} statusBarTranslucent navigationBarTranslucent>
+    <Modal transparent animationType="none" visible onRequestClose={handleBack} statusBarTranslucent navigationBarTranslucent>
       <View style={styles.root}>
         <Animated.View style={[StyleSheet.absoluteFill, styles.scrim, { opacity: fade }]} pointerEvents="none" />
         <Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityRole="button" accessibilityLabel="Close" tabIndex={-1} />

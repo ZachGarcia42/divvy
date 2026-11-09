@@ -10,7 +10,13 @@ export type PhotoSource = 'camera' | 'library'
 export async function pickReceipt(source: PhotoSource): Promise<PickedPhoto | null> {
   if (source === 'camera') {
     const allowed = await ImagePicker.requestCameraPermissionsAsync()
-    if (!allowed.granted) throw Object.assign(new Error('Allow camera access in Settings to take a photo.'), { code: 'PHOTO_PERMISSION' })
+    if (!allowed.granted) {
+      // canAskAgain:false means the OS will not show the dialog again; offer Open Settings in the UI.
+      throw Object.assign(new Error('Allow camera access in Settings to take a photo.'), {
+        code: 'PHOTO_PERMISSION',
+        openSettings: allowed.canAskAgain === false,
+      })
+    }
   }
   const options: ImagePicker.ImagePickerOptions = { mediaTypes: ['images'], quality: 1, allowsEditing: false, exif: false }
   const result = source === 'camera' ? await ImagePicker.launchCameraAsync(options) : await ImagePicker.launchImageLibraryAsync(options)
@@ -20,7 +26,14 @@ export async function pickReceipt(source: PhotoSource): Promise<PickedPhoto | nu
     const size = fitWithin(asset.width, asset.height)
     const scaled = size.width !== asset.width || size.height !== asset.height
     const out = await ImageManipulator.manipulateAsync(asset.uri, scaled ? [{ resize: size }] : [], { compress: PHOTO_JPEG_QUALITY, format: ImageManipulator.SaveFormat.JPEG })
-    return { uri: out.uri, width: out.width, height: out.height }
+    let bytes = asset.fileSize ?? undefined
+    try {
+      const blob = await (await fetch(out.uri)).blob()
+      bytes = blob.size
+    } catch { /* keep fileSize if the local fetch fails */ }
+    const rawName = asset.fileName?.trim()
+    const fileName = rawName ? rawName.replace(/\.[^.]+$/, '.jpg') : 'receipt.jpg'
+    return { uri: out.uri, width: out.width, height: out.height, bytes, fileName }
   } catch {
     throw Object.assign(new Error('That photo couldn’t be read. Try a JPEG or PNG.'), { code: 'PHOTO_UNREADABLE' })
   }

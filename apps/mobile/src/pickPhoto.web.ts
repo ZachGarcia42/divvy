@@ -32,7 +32,7 @@ export async function shrinkToJpeg(file: Blob): Promise<PickedPhoto> {
   bitmap.close?.()
   const blob: Blob | null = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', PHOTO_JPEG_QUALITY))
   if (!blob) throw unreadable()
-  return { uri: await readAsDataUrl(blob), width: size.width, height: size.height, bytes: blob.size, blob }
+  return { uri: await readAsDataUrl(blob), width: size.width, height: size.height, bytes: blob.size, blob, fileName: 'receipt.jpg' }
 }
 
 /** Must be called straight from a tap, or the browser will not open the file dialog. null when the dialog is cancelled. */
@@ -46,7 +46,11 @@ export function pickReceipt(source: PhotoSource): Promise<PickedPhoto | null> {
     input.onchange = () => {
       const file = input.files?.[0]
       if (!file) return resolve(null)
-      shrinkToJpeg(file).then(resolve, reject)
+      shrinkToJpeg(file).then((photo) => {
+        const raw = (file.name || '').trim()
+        const fileName = raw ? raw.replace(/\.[^.]+$/, '.jpg') : 'receipt.jpg'
+        resolve({ ...photo, fileName })
+      }, reject)
     }
     input.oncancel = () => resolve(null)
     input.click()

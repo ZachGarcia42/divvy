@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
-  deleteReceipt, fitWithin, KEEP_PHOTO, megabytes, photoDirty, photoErrorText, photoPlan, PHOTO_MAX_EDGE, receiptPath, remoteSource, removeDraft,
-  savedWithPhotoProblem, shownPhoto, uploadReceipt, type PickedPhoto,
+  deleteReceipt, fitWithin, KEEP_PHOTO, megabytes, photoDirty, photoErrorText, photoPlan, photoUiError, PHOTO_MAX_EDGE,
+  receiptAttachedLabel, receiptPath, remoteSource, removeDraft, savedWithPhotoProblem, shownPhoto, uploadReceipt, type PickedPhoto,
 } from './photo'
 import type { PhotoInfo } from '../types'
 
@@ -67,6 +67,19 @@ describe('error wording', () => {
     expect(savedWithPhotoProblem(true, err('PHOTO_TOO_LARGE'))).toMatch(/^Expense updated, but the photo didn’t save/)
   })
   it('sizes in MB', () => { expect(megabytes(1.2 * 1024 * 1024)).toBe('1.2 MB'); expect(megabytes(0)).toBe('0.0 MB') })
+  it('flags Open Settings when the camera was denied forever', () => {
+    expect(photoUiError(Object.assign(new Error('x'), { code: 'PHOTO_PERMISSION', openSettings: true }))).toEqual({
+      text: expect.stringMatching(/camera/i),
+      openSettings: true,
+    })
+    expect(photoUiError(Object.assign(new Error('x'), { code: 'PHOTO_PERMISSION' })).openSettings).toBe(false)
+  })
+  it('builds the attached-receipt subtitle', () => {
+    expect(receiptAttachedLabel({ fileName: 'IMG_1.HEIC', bytes: 0.8 * 1024 * 1024 })).toBe('IMG_1.jpg · 0.8 MB · tap to view')
+    expect(receiptAttachedLabel({ bytes: 1234 })).toBe('receipt.jpg · 0.0 MB · tap to view')
+    expect(receiptAttachedLabel({ contentType: 'image/png' })).toBe('receipt.png · tap to view')
+    expect(receiptAttachedLabel({})).toBe('receipt.jpg · tap to view')
+  })
 })
 
 type Call = { url: string; init?: RequestInit }

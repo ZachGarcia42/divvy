@@ -14,7 +14,7 @@ export function fitWithin(width: number, height: number, max = PHOTO_MAX_EDGE): 
 }
 
 /** A photo already shrunk to JPEG on the device. `blob` is set on web (data: URLs cannot be fetched under the page's CSP). */
-export type PickedPhoto = { uri: string; width: number; height: number; bytes?: number; blob?: Blob }
+export type PickedPhoto = { uri: string; width: number; height: number; bytes?: number; blob?: Blob; fileName?: string }
 
 /** What the Add/Edit sheet will do to the photo when Save is tapped. */
 export type PhotoDraft = { kind: 'keep' } | { kind: 'set'; photo: PickedPhoto } | { kind: 'remove' }
@@ -48,6 +48,18 @@ export function megabytes(bytes: number) {
   return `${(Math.round((bytes / (1024 * 1024)) * 10) / 10).toFixed(1)} MB`
 }
 
+/** Subtitle under "Receipt attached": "receipt.jpg · 0.8 MB · tap to view". */
+export function receiptAttachedLabel(opts: { fileName?: string | null; bytes?: number | null; contentType?: string | null } = {}) {
+  const raw = (opts.fileName ?? '').trim()
+  let name = raw
+  if (!name) name = opts.contentType === 'image/png' ? 'receipt.png' : opts.contentType === 'image/webp' ? 'receipt.webp' : 'receipt.jpg'
+  else if (!/\.(jpe?g|png|webp)$/i.test(name)) name = name.replace(/\.[^.]+$/, '') + '.jpg'
+  const parts = [name]
+  if (opts.bytes && opts.bytes > 0) parts.push(megabytes(opts.bytes))
+  parts.push('tap to view')
+  return parts.join(' · ')
+}
+
 const MESSAGES: Record<string, string> = {
   PHOTO_TOO_LARGE: 'That photo is too big (over 5 MB). Choose a smaller one.',
   PHOTO_HEIC: 'That photo format isn’t supported. Choose a JPEG or PNG.',
@@ -63,6 +75,16 @@ export function photoErrorText(reason: unknown, fallback = 'Couldn’t save the 
   if (code && MESSAGES[code]) return MESSAGES[code]
   const message = reason instanceof Error ? reason.message : ''
   return message && message !== 'Request failed' ? message : fallback
+}
+
+/** UI error for receipt flows. openSettings is set when the camera was denied forever. */
+export type PhotoUiError = { text: string; openSettings?: boolean }
+
+export function photoUiError(reason: unknown, fallback?: string): PhotoUiError {
+  return {
+    text: photoErrorText(reason, fallback),
+    openSettings: !!(reason as { openSettings?: boolean } | null)?.openSettings,
+  }
 }
 
 /** "Receipt · Oct 27" style helper for the viewer header. */
