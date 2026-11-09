@@ -7,6 +7,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { photoUiError, receiptAttachedLabel, type PhotoUiError, type PickedPhoto, type ReceiptSource } from './flows/photo'
 import type { PhotoInfo } from './types'
 import { PhotoImage } from './PhotoImage'
+import { StatusBar } from 'expo-status-bar'
 import { pickReceipt, type PhotoSource } from './pickPhoto'
 
 const C = { teal: '#0f766e', ink: '#14221c', muted: '#5f6f67', line: '#e4e8e2', card: '#ffffff', red: '#b4323f', bad: '#ffb3ba', aqua: '#2dd4bf' }
@@ -140,6 +141,8 @@ export function ReceiptViewer({ source, title, subtitle, canEdit, busy, onClose,
   const insets = useSafeAreaInsets()
   return (
     <Modal animationType="fade" onRequestClose={onClose} visible statusBarTranslucent>
+      {/* Light icons over the near-black viewer; unmount restores App's dark StatusBar. */}
+      <StatusBar style="light" />
       <View style={[v.screen, { paddingTop: insets.top + 16 }]} testID="receipt-viewer">
         <View style={v.head}>
           <Pressable style={v.close} onPress={onClose} accessibilityRole="button" accessibilityLabel="Close receipt" testID="receipt-viewer-close"><Ionicons name="close" size={22} color="#fff" /></Pressable>

@@ -75,10 +75,11 @@ describe('error wording', () => {
     expect(photoUiError(Object.assign(new Error('x'), { code: 'PHOTO_PERMISSION' })).openSettings).toBe(false)
   })
   it('builds the attached-receipt subtitle', () => {
-    expect(receiptAttachedLabel({ fileName: 'IMG_1.HEIC', bytes: 0.8 * 1024 * 1024 })).toBe('IMG_1.jpg · 0.8 MB · tap to view')
-    expect(receiptAttachedLabel({ bytes: 1234 })).toBe('receipt.jpg · 0.0 MB · tap to view')
-    expect(receiptAttachedLabel({ contentType: 'image/png' })).toBe('receipt.png · tap to view')
-    expect(receiptAttachedLabel({})).toBe('receipt.jpg · tap to view')
+    // Fixed "Receipt photo" title: picker file names used to truncate and hide "tap to view".
+    expect(receiptAttachedLabel({ fileName: 'IMG_1.HEIC', bytes: 0.8 * 1024 * 1024 })).toBe('Receipt photo · 0.8 MB · tap to view')
+    expect(receiptAttachedLabel({ bytes: 1234 })).toBe('Receipt photo · 0.0 MB · tap to view')
+    expect(receiptAttachedLabel({ contentType: 'image/png' })).toBe('Receipt photo · tap to view')
+    expect(receiptAttachedLabel({})).toBe('Receipt photo · tap to view')
   })
 })
 

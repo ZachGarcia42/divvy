@@ -48,13 +48,11 @@ export function megabytes(bytes: number) {
   return `${(Math.round((bytes / (1024 * 1024)) * 10) / 10).toFixed(1)} MB`
 }
 
-/** Subtitle under "Receipt attached": "receipt.jpg · 0.8 MB · tap to view". */
+/** Subtitle under "Receipt attached": "Receipt photo · 0.8 MB · tap to view" (fixed title so long picker names do not clip "tap to view"). */
 export function receiptAttachedLabel(opts: { fileName?: string | null; bytes?: number | null; contentType?: string | null } = {}) {
-  const raw = (opts.fileName ?? '').trim()
-  let name = raw
-  if (!name) name = opts.contentType === 'image/png' ? 'receipt.png' : opts.contentType === 'image/webp' ? 'receipt.webp' : 'receipt.jpg'
-  else if (!/\.(jpe?g|png|webp)$/i.test(name)) name = name.replace(/\.[^.]+$/, '') + '.jpg'
-  const parts = [name]
+  void opts.fileName
+  void opts.contentType
+  const parts = ['Receipt photo']
   if (opts.bytes && opts.bytes > 0) parts.push(megabytes(opts.bytes))
   parts.push('tap to view')
   return parts.join(' · ')
