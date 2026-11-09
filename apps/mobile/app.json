@@ -13,7 +13,7 @@
     "android": {
       "package": "app.divvy.ledger",
       "softwareKeyboardLayoutMode": "resize",
-      "versionCode": 6,
+      "versionCode": 12,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-foreground.png",
         "monochromeImage": "./assets/adaptive-monochrome.png",
