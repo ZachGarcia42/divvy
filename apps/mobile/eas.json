@@ -33,6 +33,10 @@
         "EXPO_PUBLIC_APPLE_WEB_SERVICES_ID": "app.divvy.ledger.web",
         "EXPO_PUBLIC_APPLE_WEB_REDIRECT_URI": "https://divvy.mooo.com/app/auth/apple"
       }
+    },
+    "production-ios": {
+      "extends": "production",
+      "credentialsSource": "local"
     }
   },
   "submit": {

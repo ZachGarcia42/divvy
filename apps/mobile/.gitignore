@@ -1,0 +1,5 @@
+
+# iOS signing (local credentials; never commit)
+credentials.json
+*.p12
+*.mobileprovision
