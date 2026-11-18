@@ -36,7 +36,8 @@
     },
     "production-ios": {
       "extends": "production",
-      "credentialsSource": "local"
+      "credentialsSource": "local",
+      "autoIncrement": true
     }
   },
   "submit": {
