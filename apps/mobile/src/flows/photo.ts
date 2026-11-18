@@ -87,6 +87,40 @@ export function webHasCamera(devices: ReadonlyArray<{ kind?: string }> | null | 
   return devices.some((device) => device.kind === 'videoinput')
 }
 
+/** Android feature that means "this device has some kind of camera" (rear, front, or external). */
+export const ANDROID_CAMERA_ANY = 'android.hardware.camera.any'
+
+/**
+ * Native "is there a camera?", from the OS feature check. Android uses hasPlatformFeature(camera.any);
+ * iOS uses expo-device isDevice (the simulator has no camera). A missing or failed check keeps Take photo,
+ * matching cameraAvailable(). knownNoCamera is the session flag set after a capture attempt proves there is none.
+ */
+export function nativeHasCamera(
+  os: string,
+  check: { cameraAny?: boolean; isDevice?: boolean } | null | undefined,
+  knownNoCamera = false,
+) {
+  if (knownNoCamera) return false
+  if (!check) return true
+  if (os === 'android') return check.cameraAny !== false
+  if (os === 'ios') return check.isDevice !== false
+  return true
+}
+
+export type ReceiptSourceOption = { source: 'camera' | 'library' | 'cancel'; label: string }
+
+/**
+ * Options on the Add receipt photo sheet, in order. Library and Cancel are always offered;
+ * Take photo only when the device has a camera.
+ */
+export function receiptSourceOptions(hasCamera: boolean): ReceiptSourceOption[] {
+  return [
+    ...(hasCamera ? [{ source: 'camera' as const, label: 'Take photo' }] : []),
+    { source: 'library', label: 'Choose from library' },
+    { source: 'cancel', label: 'Cancel' },
+  ]
+}
+
 export function photoErrorText(reason: unknown, fallback = 'Couldn’t save the photo. Try again.') {
   const code = (reason as { code?: string } | null)?.code
   if (code && MESSAGES[code]) return MESSAGES[code]

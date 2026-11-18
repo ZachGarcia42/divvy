@@ -4,7 +4,7 @@ import { Ionicons } from '@expo/vector-icons'
 import { useEffect, useRef, useState } from 'react'
 import { Animated, Linking, Modal, PanResponder, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
-import { isNoCameraError, photoUiError, receiptAttachedLabel, type PhotoUiError, type PickedPhoto, type ReceiptSource } from './flows/photo'
+import { isNoCameraError, photoUiError, receiptAttachedLabel, receiptSourceOptions, type PhotoUiError, type PickedPhoto, type ReceiptSource } from './flows/photo'
 import type { PhotoInfo } from './types'
 import { PhotoImage } from './PhotoImage'
 import { StatusBar } from 'expo-status-bar'
@@ -22,6 +22,10 @@ export function ReceiptSourceSheet({ onPicked, onError, onClose }: { onPicked: (
     cameraAvailable().then((value) => { if (live) setHasCamera(value) }).catch(() => undefined)
     return () => { live = false }
   }, [])
+  const options = receiptSourceOptions(hasCamera)
+  const take = options.find((option) => option.source === 'camera')
+  const library = options.find((option) => option.source === 'library')!
+  const cancel = options.find((option) => option.source === 'cancel')!
   const choose = async (source: PhotoSource) => {
     if (busy) return
     setBusy(true)
@@ -41,17 +45,17 @@ export function ReceiptSourceSheet({ onPicked, onError, onClose }: { onPicked: (
         <Pressable style={s.scrimFill} onPress={onClose} accessibilityLabel="Close" accessibilityRole="button" />
         <View style={s.sheet}>
           <View style={s.group}>
-            {hasCamera && (<>
+            {take && (<>
               <Pressable style={s.option} onPress={() => { void choose('camera') }} accessibilityRole="button" testID="receipt-take">
-                <Ionicons name="camera-outline" size={20} color={C.teal} /><Text style={s.optionText}>Take photo</Text>
+                <Ionicons name="camera-outline" size={20} color={C.teal} /><Text style={s.optionText}>{take.label}</Text>
               </Pressable>
               <View style={s.sep} />
             </>)}
             <Pressable style={s.option} onPress={() => { void choose('library') }} accessibilityRole="button" testID="receipt-library">
-              <Ionicons name="image-outline" size={20} color={C.teal} /><Text style={s.optionText}>Choose from library</Text>
+              <Ionicons name="image-outline" size={20} color={C.teal} /><Text style={s.optionText}>{library.label}</Text>
             </Pressable>
           </View>
-          <Pressable style={[s.group, s.option, { marginTop: 8 }]} onPress={onClose} accessibilityRole="button" testID="receipt-cancel"><Text style={[s.optionText, { color: C.ink }]}>Cancel</Text></Pressable>
+          <Pressable style={[s.group, s.option, { marginTop: 8 }]} onPress={onClose} accessibilityRole="button" testID="receipt-cancel"><Text style={[s.optionText, { color: C.ink }]}>{cancel.label}</Text></Pressable>
         </View>
       </View>
     </Modal>

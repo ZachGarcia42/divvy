@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isNoCameraError, photoErrorText, photoUiError, webHasCamera } from './photo'
+import { isNoCameraError, nativeHasCamera, photoErrorText, photoUiError, receiptSourceOptions, webHasCamera } from './photo'
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const plugin = require('../../plugins/withOptionalCamera.js') as {
   addOptionalCameraFeatures: (manifest: { manifest: Record<string, any> }) => { manifest: Record<string, any> }
@@ -52,5 +52,25 @@ describe('no camera on the device', () => {
     expect(webHasCamera([{ kind: 'audioinput' }, { kind: 'videoinput' }])).toBe(true)
     expect(webHasCamera([])).toBe(true)
     expect(webHasCamera(null)).toBe(true)
+  })
+
+  it('hides Take photo when Android reports no camera.any, leaving only library and Cancel', () => {
+    const hasCamera = nativeHasCamera('android', { cameraAny: false })
+    expect(hasCamera).toBe(false)
+    expect(receiptSourceOptions(hasCamera).map((option) => option.label)).toEqual(['Choose from library', 'Cancel'])
+  })
+
+  it('offers Take photo, library and Cancel when Android reports a camera', () => {
+    const hasCamera = nativeHasCamera('android', { cameraAny: true })
+    expect(hasCamera).toBe(true)
+    expect(receiptSourceOptions(hasCamera).map((option) => option.label)).toEqual(['Take photo', 'Choose from library', 'Cancel'])
+  })
+
+  it('hides Take photo on the iOS simulator, and keeps it when the feature check is missing', () => {
+    expect(nativeHasCamera('ios', { isDevice: false })).toBe(false)
+    expect(receiptSourceOptions(nativeHasCamera('ios', { isDevice: false })).map((option) => option.label)).toEqual(['Choose from library', 'Cancel'])
+    expect(nativeHasCamera('android', null)).toBe(true)
+    expect(nativeHasCamera('ios', { isDevice: true })).toBe(true)
+    expect(nativeHasCamera('android', { cameraAny: false }, true)).toBe(false)
   })
 })

@@ -3,7 +3,7 @@
 import * as ImageManipulator from 'expo-image-manipulator'
 import * as ImagePicker from 'expo-image-picker'
 import { Platform } from 'react-native'
-import { fitWithin, isNoCameraError, PHOTO_JPEG_QUALITY, type PickedPhoto } from './flows/photo'
+import { ANDROID_CAMERA_ANY, fitWithin, isNoCameraError, nativeHasCamera, PHOTO_JPEG_QUALITY, type PickedPhoto } from './flows/photo'
 
 export type PhotoSource = 'camera' | 'library'
 
@@ -13,14 +13,14 @@ let knownNoCamera = false
 
 /** Whether "Take photo" can work here. Android asks the OS for any camera; iOS has one on every real device. */
 export async function cameraAvailable(): Promise<boolean> {
-  if (knownNoCamera) return false
+  if (knownNoCamera) return nativeHasCamera(Platform.OS, null, true)
   try {
     // Lazy require: Expo Go and older dev clients may not have expo-device; then assume a camera, as before.
     const Device = require('expo-device') as typeof import('expo-device')
-    if (Platform.OS === 'android') return await Device.hasPlatformFeatureAsync('android.hardware.camera.any')
-    if (Platform.OS === 'ios') return Device.isDevice
+    if (Platform.OS === 'android') return nativeHasCamera('android', { cameraAny: await Device.hasPlatformFeatureAsync(ANDROID_CAMERA_ANY) })
+    if (Platform.OS === 'ios') return nativeHasCamera('ios', { isDevice: Device.isDevice })
   } catch { /* unknown: keep the option */ }
-  return true
+  return nativeHasCamera(Platform.OS, null)
 }
 
 /** null when the person cancels. Throws an Error with .code (NO_CAMERA, PHOTO_PERMISSION, PHOTO_UNREADABLE) when it cannot continue. */
