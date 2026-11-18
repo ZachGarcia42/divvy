@@ -2,18 +2,19 @@
 import { readFile, stat } from 'node:fs/promises'
 import { extname, join, normalize, resolve, sep } from 'node:path'
 
-/** The web app's CSP: its own bundle plus Google Identity Services (script, button iframe, FedCM/fetches). */
+/** The web app's CSP: its own bundle plus Google Identity Services (script, button iframe, FedCM/fetches) and Apple JS
+ * (script from appleid.cdn-apple.com; the sign-in popup/iframe and its messages on appleid.apple.com). */
 export const APP_CSP = [
   "default-src 'self'",
-  "script-src 'self' https://accounts.google.com/gsi/client",
+  "script-src 'self' https://accounts.google.com/gsi/client https://appleid.cdn-apple.com",
   "style-src 'self' 'unsafe-inline' https://accounts.google.com/gsi/style",
   "img-src 'self' data: https://lh3.googleusercontent.com",
   "font-src 'self' data:",
-  "connect-src 'self' https://accounts.google.com/gsi/",
-  "frame-src https://accounts.google.com/gsi/",
+  "connect-src 'self' https://accounts.google.com/gsi/ https://appleid.apple.com",
+  "frame-src https://accounts.google.com/gsi/ https://appleid.apple.com",
   "frame-ancestors 'none'",
   "base-uri 'self'",
-  "form-action 'self'",
+  "form-action 'self' https://appleid.apple.com",
   "object-src 'none'",
 ].join('; ')
 

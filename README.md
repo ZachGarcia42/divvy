@@ -34,8 +34,8 @@ Set these on the host:
 | `TRUST_PROXY` | Optional | `1` only behind a proxy you control; the rate limiter then uses the last `X-Forwarded-For` entry. |
 | `CORS_ORIGIN` | Optional | Comma-separated browser origins allowed to call the API with cookies, for example `https://divvy.example.com`. Defaults to `http://localhost:5173,http://localhost:8081`. The mobile app doesn't need it; set it only when a web app is served from another origin. |
 | `GOOGLE_CLIENT_IDS` | For Google sign-in | Comma-separated Google OAuth client ids accepted as the ID token `aud`: the Web client id (Android and iOS tokens from `@react-native-google-signin` carry it) plus the iOS client id. Unset or empty means `POST /api/auth/google` returns 503. |
-| `APPLE_CLIENT_IDS` | Optional | Comma-separated Apple audiences for `POST /api/auth/apple` (iOS bundle id `app.divvy.ledger`, plus any Service IDs). **No default: Apple is off (503) until this is set.** |
-| `APPLE_WEB_CLIENT_IDS` | Optional | Apple Service IDs (web/Android flow). When set, tokens from `platform: ios` must carry a non-Service aud and `web`/`android` must carry a Service ID. |
+| `APPLE_CLIENT_IDS` | Optional | Comma-separated Apple audiences for `POST /api/auth/apple`: the iOS bundle id plus the web Services ID, i.e. `APPLE_CLIENT_IDS=app.divvy.ledger,app.divvy.ledger.web`. **No default: Apple is off (503) until this is set.** |
+| `APPLE_WEB_CLIENT_IDS` | Optional | Apple Service IDs (web flow), i.e. `APPLE_WEB_CLIENT_IDS=app.divvy.ledger.web`. When set, tokens from `platform: ios` must carry a non-Service aud and `web`/`android` must carry a Service ID. |
 | `APPLE_REQUIRE_NONCE` | Optional | Default `true`. The token's `nonce` claim must equal sha256-hex of the raw `nonce` in the body. |
 | `GOOGLE_REQUIRE_NONCE` | Optional | Default `false`, because the free `@react-native-google-signin` v16 `signIn()` can't pass a nonce. A nonce that is sent (web GIS) is always checked; a token with a nonce claim always needs the raw nonce. |
 | `PORT` | Optional | Defaults to 8787. |
@@ -53,6 +53,8 @@ Client build variables (EAS env or `apps/mobile/.env`):
 | `EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID` | Google OAuth **Web** client id. Required for Google on both platforms. |
 | `EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID` | Google OAuth **iOS** client id (bundle `app.divvy.ledger`). Required for Google on iOS. |
 | `EXPO_PUBLIC_GOOGLE_IOS_URL_SCHEME` | Optional; the reversed iOS client id. Derived from the iOS client id if unset. |
+| `EXPO_PUBLIC_APPLE_WEB_SERVICES_ID` | Web build: the Apple Services ID (`app.divvy.ledger.web`). The Apple button shows on web only when this and the redirect URI are set. |
+| `EXPO_PUBLIC_APPLE_WEB_REDIRECT_URI` | Web build: the Services ID's registered return URL (`https://divvy.mooo.com/app/auth/apple`). |
 | `EXPO_PUBLIC_API_URL` | The API origin (set per profile in `eas.json`). |
 | `VITE_GOOGLE_CLIENT_ID` | Web app only: the Web client id for the Google button. |
 
@@ -62,7 +64,7 @@ Setup checklist:
 2. Credentials → create OAuth client ids: **Web** (authorized JavaScript origin = the public HTTPS web origin), **iOS** (bundle id `app.divvy.ledger`), **Android** (package `app.divvy.ledger` + the SHA-1 of the EAS signing key from `eas credentials`; add the debug SHA-1 too for dev builds).
 3. Server: `GOOGLE_CLIENT_IDS=<web id>,<ios id>`; restart.
 4. EAS: set `EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID` and `EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID`, then `eas build --profile preview -p android` (internal APK) or `--profile development`. Google and Apple sign-in need a real build; they don't run in Expo Go.
-5. Apple: in the Apple developer team, enable *Sign in with Apple* on the `app.divvy.ledger` App ID (EAS does this when it manages credentials). No server secret is needed for native iOS sign-in; set `APPLE_CLIENT_IDS=app.divvy.ledger` to turn Apple on.
+5. Apple (team Oliver Elliott, `5E845TX3E6`): *Sign in with Apple* is on for the `app.divvy.ledger` App ID and the web Services ID `app.divvy.ledger.web` (domain `divvy.mooo.com`, return URL `https://divvy.mooo.com/app/auth/apple`). Server: `APPLE_CLIENT_IDS=app.divvy.ledger,app.divvy.ledger.web` and `APPLE_WEB_CLIENT_IDS=app.divvy.ledger.web`. **No Apple private key (.p8) is needed on the server**: both native iOS and web send Apple's identity token, which the API verifies against Apple's public JWKS (`https://appleid.apple.com/auth/keys`); there is no authorization-code exchange, so no client secret. Web details: `apps/mobile/WEB.md`.
 6. Smoke test: `curl $API/api/auth/providers` shows `google: true`.
 
 ### Sign-in linking rules and known limitations

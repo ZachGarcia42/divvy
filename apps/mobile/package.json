@@ -9,7 +9,7 @@
     "ios": "expo start --ios",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "export:web": "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID=${EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID:-597758345543-juuqoo27cqi9t58cnhupi6h2jej8hu3o.apps.googleusercontent.com} expo export -p web --output-dir dist-web"
+    "export:web": "EXPO_PUBLIC_APPLE_WEB_SERVICES_ID=${EXPO_PUBLIC_APPLE_WEB_SERVICES_ID:-app.divvy.ledger.web} EXPO_PUBLIC_APPLE_WEB_REDIRECT_URI=${EXPO_PUBLIC_APPLE_WEB_REDIRECT_URI:-https://divvy.mooo.com/app/auth/apple} EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID=${EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID:-597758345543-juuqoo27cqi9t58cnhupi6h2jej8hu3o.apps.googleusercontent.com} expo export -p web --output-dir dist-web"
   },
   "dependencies": {
     "@divvy/domain": "*",
@@ -21,6 +21,7 @@
     "expo": "~54.0.10",
     "expo-apple-authentication": "~8.0.8",
     "expo-crypto": "~15.0.8",
+    "expo-device": "~8.0.10",
     "expo-image-manipulator": "~14.0.7",
     "expo-image-picker": "~17.0.8",
     "expo-secure-store": "~15.0.8",

@@ -68,6 +68,25 @@ const MESSAGES: Record<string, string> = {
   NETWORK: 'Couldn’t reach Divvy. Check your connection and try again.',
   PHOTO_PERMISSION: 'Allow camera access in Settings to take a photo.',
   PHOTO_UNREADABLE: 'That photo couldn’t be read. Try a JPEG or PNG.',
+  NO_CAMERA: 'This device has no camera. Choose a photo from your library instead.',
+}
+
+/**
+ * Errors that mean "there is no camera here": expo-image-picker on Android throws MissingActivityToHandleIntent when no app
+ * handles the capture intent (camera-less Chromebooks, cars, tablets); iOS throws on the simulator.
+ */
+export function isNoCameraError(reason: unknown) {
+  const code = (reason as { code?: string } | null)?.code
+  return code === 'NO_CAMERA' || code === 'ERR_MISSING_ACTIVITY_TO_HANDLE_INTENT' || code === 'ERR_CAMERA_UNAVAILABLE_ON_SIMULATOR'
+}
+
+/**
+ * Web: does the browser report a camera? Only a non-empty device list with no videoinput counts as "no camera"; an empty
+ * or unreadable list (some browsers hide devices before permission) keeps "Take photo" so phones never lose it.
+ */
+export function webHasCamera(devices: ReadonlyArray<{ kind?: string }> | null | undefined) {
+  if (!devices || devices.length === 0) return true
+  return devices.some((device) => device.kind === 'videoinput')
 }
 
 export function photoErrorText(reason: unknown, fallback = 'Couldn’t save the photo. Try again.') {

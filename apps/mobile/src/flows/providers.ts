@@ -20,10 +20,23 @@ export function googleIds(env: Record<string, string | undefined>, os: string): 
   return iosClientId ? { webClientId, iosClientId } : { webClientId }
 }
 
-/** Which buttons to draw: the server must accept the provider and this build must be able to run it. */
+export type AppleWebConfig = { clientId: string; redirectURI: string }
+/** Apple on web needs the Services ID (the token's aud) and its registered https return URL; both or nothing. */
+export function appleWebConfig(env: Record<string, string | undefined>): AppleWebConfig | null {
+  const clientId = env.EXPO_PUBLIC_APPLE_WEB_SERVICES_ID?.trim()
+  const redirectURI = env.EXPO_PUBLIC_APPLE_WEB_REDIRECT_URI?.trim()
+  if (!clientId || !redirectURI || !/^https:\/\//.test(redirectURI)) return null
+  return { clientId, redirectURI }
+}
+
+/**
+ * Which buttons to draw: the server must accept the provider and this build must be able to run it. Apple runs on iOS
+ * (native sheet, appleAvailable = isAvailableAsync) and on web (Apple JS, appleAvailable = Services ID configured);
+ * Android has no Apple button.
+ */
 export function visibleButtons(server: Providers, device: { os: string; appleAvailable: boolean; googleConfigured: boolean }) {
   return {
-    apple: server.apple && device.os === 'ios' && device.appleAvailable,
+    apple: server.apple && (device.os === 'ios' || device.os === 'web') && device.appleAvailable,
     google: server.google && device.googleConfigured,
     email: server.email,
   }
@@ -34,6 +47,21 @@ export function appleFullName(name: { givenName?: string | null; familyName?: st
   const givenName = name?.givenName?.trim() || undefined
   const familyName = name?.familyName?.trim() || undefined
   return givenName || familyName ? { givenName, familyName } : undefined
+}
+
+/** Apple JS gives `user.name` as { firstName, lastName }, only on the first authorization; map it to the native shape. */
+export function appleWebName(user: { name?: { firstName?: string | null; lastName?: string | null } | null } | null | undefined) {
+  return appleFullName(user?.name ? { givenName: user.name.firstName, familyName: user.name.lastName } : null)
+}
+
+/** Apple JS popup errors (`{ error }`) that mean the person closed it: map to a cancel code so no error shows. */
+export function appleWebError(reason: unknown) {
+  const error = (reason as { error?: unknown } | null)?.error
+  if (error === 'popup_closed_by_user' || error === 'user_cancelled_authorize' || error === 'user_trigger_new_signin_flow') {
+    return Object.assign(new Error('Cancelled'), { code: 'ERR_REQUEST_CANCELED' })
+  }
+  if (error === 'popup_blocked_by_browser') return Object.assign(new Error('Popup blocked'), { code: 'POPUP_BLOCKED' })
+  return reason
 }
 
 /**
@@ -69,6 +97,7 @@ export function providerErrorMessage(provider: 'google' | 'apple', reason: unkno
   if (code === 'EMAIL_UNVERIFIED') return `Your ${label} email isn’t verified yet. Verify it with ${label}, then try again.`
   if (code === 'NOT_CONFIGURED') return `Sign in with ${label} isn’t available yet.`
   if (code === 'BAD_TOKEN') return `${label} sign-in didn’t work. Try again.`
+  if (code === 'POPUP_BLOCKED') return `Allow pop-ups for this site, then try Sign in with ${label} again.`
   if (code === 'PLAY_SERVICES_NOT_AVAILABLE') return 'Update Google Play services, then try again.'
   if (isTransient(reason) || code?.startsWith('HTTP_')) return 'Couldn’t reach Divvy. Check your signal and try again.'
   return `Couldn’t sign in with ${label}. Try again.`

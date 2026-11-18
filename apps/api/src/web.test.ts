@@ -40,9 +40,24 @@ describe('web app static serving', () => {
     expect(csp).toContain("img-src 'self' data: https://lh3.googleusercontent.com;")
     expect(csp).toContain("frame-ancestors 'none'")
     expect(csp).not.toContain('unsafe-eval')
+    // Sign in with Apple on web: Apple JS from the CDN, popup/iframe and messages on appleid.apple.com.
+    expect(csp).toContain("script-src 'self' https://accounts.google.com/gsi/client https://appleid.cdn-apple.com;")
+    expect(csp).toContain('frame-src https://accounts.google.com/gsi/ https://appleid.apple.com;')
+    expect(csp).toContain("connect-src 'self' https://accounts.google.com/gsi/ https://appleid.apple.com;")
+    expect(csp).toContain("form-action 'self' https://appleid.apple.com;")
+    expect(csp).not.toMatch(/script-src[^;]*appleid\.apple\.com/)
     expect(res.headers.get('referrer-policy')).toBe('strict-origin-when-cross-origin')
     expect(res.headers.get('strict-transport-security')).toBe('max-age=31536000')
     expect(res.headers.get('x-content-type-options')).toBe('nosniff')
+  })
+
+  it('serves the Apple return URL /app/auth/apple as the app shell with the app CSP', async () => {
+    const app = await setup()
+    const res = await app.request('/app/auth/apple')
+    expect(res.status).toBe(200)
+    expect(await res.text()).toBe(SHELL)
+    expect(res.headers.get('content-security-policy')).toBe(APP_CSP)
+    expect(res.headers.get('cross-origin-opener-policy')).toBe('same-origin-allow-popups')
   })
 
   it('caches hashed assets for a year with the right type', async () => {
@@ -59,7 +74,7 @@ describe('web app static serving', () => {
 
   it('falls back to index.html for app routes, but 404s missing files and traversal', async () => {
     const app = await setup()
-    for (const path of ['/groups/123', '/app/invite/' + T, '/app/login?token=' + T, '/settings/']) {
+    for (const path of ['/groups/123', '/app/invite/' + T, '/app/login?token=' + T, '/settings/', '/app/auth/apple']) {
       const res = await app.request(path)
       expect(res.status, path).toBe(200)
       expect(await res.text()).toBe(SHELL)

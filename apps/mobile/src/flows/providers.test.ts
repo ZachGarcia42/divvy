@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { appleFullName, FALLBACK_PROVIDERS, googleIds, isCancel, parseProviders, providerBody, providerErrorMessage, visibleButtons } from './providers'
+import { appleFullName, appleWebConfig, appleWebError, appleWebName, FALLBACK_PROVIDERS, googleIds, isCancel, parseProviders, providerBody, providerErrorMessage, visibleButtons } from './providers'
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { googleIosUrlScheme } = require('../../app.config.js') as { googleIosUrlScheme: (env: Record<string, string | undefined>) => string | null }
 
@@ -25,6 +25,35 @@ describe('provider sign-in', () => {
     expect(visibleButtons(all, { os: 'android', appleAvailable: true, googleConfigured: true }).apple).toBe(false)
     expect(visibleButtons(all, { os: 'ios', appleAvailable: false, googleConfigured: false })).toEqual({ apple: false, google: false, email: true })
     expect(visibleButtons({ google: false, apple: false, email: false }, { os: 'ios', appleAvailable: true, googleConfigured: true })).toEqual({ apple: false, google: false, email: false })
+  })
+
+  it('shows Apple on web only when the Services ID is configured', () => {
+    const all = { google: true, apple: true, email: true }
+    expect(visibleButtons(all, { os: 'web', appleAvailable: true, googleConfigured: true })).toEqual({ apple: true, google: true, email: true })
+    expect(visibleButtons(all, { os: 'web', appleAvailable: false, googleConfigured: true }).apple).toBe(false)
+    expect(visibleButtons({ ...all, apple: false }, { os: 'web', appleAvailable: true, googleConfigured: true }).apple).toBe(false)
+    expect(appleWebConfig({})).toBeNull()
+    expect(appleWebConfig({ EXPO_PUBLIC_APPLE_WEB_SERVICES_ID: 'app.divvy.ledger.web' })).toBeNull()
+    expect(appleWebConfig({ EXPO_PUBLIC_APPLE_WEB_SERVICES_ID: 'x', EXPO_PUBLIC_APPLE_WEB_REDIRECT_URI: 'http://insecure/app/auth/apple' })).toBeNull()
+    expect(appleWebConfig({ EXPO_PUBLIC_APPLE_WEB_SERVICES_ID: ' app.divvy.ledger.web ', EXPO_PUBLIC_APPLE_WEB_REDIRECT_URI: 'https://divvy.mooo.com/app/auth/apple' }))
+      .toEqual({ clientId: 'app.divvy.ledger.web', redirectURI: 'https://divvy.mooo.com/app/auth/apple' })
+  })
+
+  it('maps the Apple JS name and popup errors', () => {
+    expect(appleWebName({ name: { firstName: 'Jo', lastName: 'Lee' } })).toEqual({ givenName: 'Jo', familyName: 'Lee' })
+    expect(appleWebName({})).toBeUndefined()
+    expect(appleWebName(undefined)).toBeUndefined()
+    expect(isCancel(appleWebError({ error: 'popup_closed_by_user' }))).toBe(true)
+    expect(isCancel(appleWebError({ error: 'user_cancelled_authorize' }))).toBe(true)
+    expect(providerErrorMessage('apple', appleWebError({ error: 'popup_closed_by_user' }))).toBeNull()
+    expect(providerErrorMessage('apple', appleWebError({ error: 'popup_blocked_by_browser' }))).toMatch(/Allow pop-ups/)
+    const other = new Error('boom')
+    expect(appleWebError(other)).toBe(other)
+  })
+
+  it('sends the web Apple body in the same shape as native', () => {
+    expect(providerBody('apple', 'tok', '/invite/abc', appleWebName({ name: { firstName: 'Jo' } }), { nonce: 'raw', platform: 'web' }))
+      .toEqual({ identityToken: 'tok', nonce: 'raw', platform: 'web', next: '/invite/abc', fullName: { givenName: 'Jo', familyName: undefined } })
   })
 
   it('builds request bodies with the invite next and Apple first-time name', () => {

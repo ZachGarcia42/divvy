@@ -2,13 +2,31 @@
 // JPEG and drops the location tags in the photo's metadata. The web version lives in pickPhoto.web.ts.
 import * as ImageManipulator from 'expo-image-manipulator'
 import * as ImagePicker from 'expo-image-picker'
-import { fitWithin, PHOTO_JPEG_QUALITY, type PickedPhoto } from './flows/photo'
+import { Platform } from 'react-native'
+import { fitWithin, isNoCameraError, PHOTO_JPEG_QUALITY, type PickedPhoto } from './flows/photo'
 
 export type PhotoSource = 'camera' | 'library'
 
-/** null when the person cancels. Throws an Error with .code (PHOTO_PERMISSION, PHOTO_UNREADABLE) when it cannot continue. */
+const noCamera = () => Object.assign(new Error('This device has no camera.'), { code: 'NO_CAMERA' })
+// Set once a capture attempt proves there is no camera, so the sheet stops offering it for the rest of the session.
+let knownNoCamera = false
+
+/** Whether "Take photo" can work here. Android asks the OS for any camera; iOS has one on every real device. */
+export async function cameraAvailable(): Promise<boolean> {
+  if (knownNoCamera) return false
+  try {
+    // Lazy require: Expo Go and older dev clients may not have expo-device; then assume a camera, as before.
+    const Device = require('expo-device') as typeof import('expo-device')
+    if (Platform.OS === 'android') return await Device.hasPlatformFeatureAsync('android.hardware.camera.any')
+    if (Platform.OS === 'ios') return Device.isDevice
+  } catch { /* unknown: keep the option */ }
+  return true
+}
+
+/** null when the person cancels. Throws an Error with .code (NO_CAMERA, PHOTO_PERMISSION, PHOTO_UNREADABLE) when it cannot continue. */
 export async function pickReceipt(source: PhotoSource): Promise<PickedPhoto | null> {
   if (source === 'camera') {
+    if (!(await cameraAvailable())) throw noCamera()
     const allowed = await ImagePicker.requestCameraPermissionsAsync()
     if (!allowed.granted) {
       // canAskAgain:false means the OS will not show the dialog again; offer Open Settings in the UI.
@@ -19,7 +37,13 @@ export async function pickReceipt(source: PhotoSource): Promise<PickedPhoto | nu
     }
   }
   const options: ImagePicker.ImagePickerOptions = { mediaTypes: ['images'], quality: 1, allowsEditing: false, exif: false }
-  const result = source === 'camera' ? await ImagePicker.launchCameraAsync(options) : await ImagePicker.launchImageLibraryAsync(options)
+  let result: ImagePicker.ImagePickerResult
+  try {
+    result = source === 'camera' ? await ImagePicker.launchCameraAsync(options) : await ImagePicker.launchImageLibraryAsync(options)
+  } catch (reason) {
+    if (source === 'camera' && isNoCameraError(reason)) { knownNoCamera = true; throw noCamera() }
+    throw reason
+  }
   if (result.canceled || !result.assets[0]) return null
   const asset = result.assets[0]
   try {

@@ -1,8 +1,15 @@
 // Web receipt picker: a file input (the camera on phones when asked), then the same shrink-to-JPEG step on a canvas.
 // The result is a data: URL for display (the page's CSP allows data: images, not blob:) plus the Blob to upload.
-import { fitWithin, PHOTO_JPEG_QUALITY, type PickedPhoto } from './flows/photo'
+import { fitWithin, PHOTO_JPEG_QUALITY, webHasCamera, type PickedPhoto } from './flows/photo'
 
 export type PhotoSource = 'camera' | 'library'
+
+/** Hides "Take photo" only when the browser lists devices and none is a camera (e.g. a desktop with no webcam). */
+export async function cameraAvailable(): Promise<boolean> {
+  const media = (globalThis as any).navigator?.mediaDevices
+  if (!media?.enumerateDevices) return true
+  try { return webHasCamera(await media.enumerateDevices()) } catch { return true }
+}
 
 const unreadable = () => Object.assign(new Error('That photo couldn’t be read here. Try a JPEG or PNG.'), { code: 'PHOTO_UNREADABLE' })
 

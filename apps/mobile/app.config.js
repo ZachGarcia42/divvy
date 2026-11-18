@@ -16,6 +16,8 @@ module.exports = ({ config }) => {
     plugins: [
       ...(config.plugins ?? []),
       'expo-apple-authentication',
+      // Camera features required="false" so Play keeps camera-less devices (Chromebooks, cars, tablets).
+      './plugins/withOptionalCamera',
       // Without an iOS scheme the plugin still configures Android; iOS Google sign-in stays hidden.
       scheme ? ['@react-native-google-signin/google-signin', { iosUrlScheme: scheme }] : '@react-native-google-signin/google-signin',
     ],

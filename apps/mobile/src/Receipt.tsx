@@ -1,19 +1,26 @@
 // Receipt photo UI: the "Add receipt" row in the Add/Edit sheet, the Receipt card on the expense detail, the take/choose
 // sheet and the full-screen viewer (designs 08-11). One photo per expense. Plain colours here so V2.tsx can import this file.
 import { Ionicons } from '@expo/vector-icons'
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Animated, Linking, Modal, PanResponder, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
-import { photoUiError, receiptAttachedLabel, type PhotoUiError, type PickedPhoto, type ReceiptSource } from './flows/photo'
+import { isNoCameraError, photoUiError, receiptAttachedLabel, type PhotoUiError, type PickedPhoto, type ReceiptSource } from './flows/photo'
 import type { PhotoInfo } from './types'
 import { PhotoImage } from './PhotoImage'
-import { pickReceipt, type PhotoSource } from './pickPhoto'
+import { cameraAvailable, pickReceipt, type PhotoSource } from './pickPhoto'
 
 const C = { teal: '#0f766e', ink: '#14221c', muted: '#5f6f67', line: '#e4e8e2', card: '#ffffff', red: '#b4323f', bad: '#ffb3ba', aqua: '#2dd4bf' }
 
 /** Take photo / Choose from library / Cancel. Picks, shrinks, and hands the JPEG back; errors come back as text. */
 export function ReceiptSourceSheet({ onPicked, onError, onClose }: { onPicked: (photo: PickedPhoto) => void; onError: (error: PhotoUiError) => void; onClose: () => void }) {
   const [busy, setBusy] = useState(false)
+  // Offer the camera until we learn there is none (camera-less Chromebooks, tablets, cars); the library always works.
+  const [hasCamera, setHasCamera] = useState(true)
+  useEffect(() => {
+    let live = true
+    cameraAvailable().then((value) => { if (live) setHasCamera(value) }).catch(() => undefined)
+    return () => { live = false }
+  }, [])
   const choose = async (source: PhotoSource) => {
     if (busy) return
     setBusy(true)
@@ -22,6 +29,7 @@ export function ReceiptSourceSheet({ onPicked, onError, onClose }: { onPicked: (
       onClose()
       if (photo) onPicked(photo)
     } catch (reason) {
+      if (isNoCameraError(reason)) setHasCamera(false)
       onClose()
       onError(photoUiError(reason, 'That photo couldn’t be added.'))
     }
@@ -32,10 +40,12 @@ export function ReceiptSourceSheet({ onPicked, onError, onClose }: { onPicked: (
         <Pressable style={s.scrimFill} onPress={onClose} accessibilityLabel="Close" accessibilityRole="button" />
         <View style={s.sheet}>
           <View style={s.group}>
-            <Pressable style={s.option} onPress={() => { void choose('camera') }} accessibilityRole="button" testID="receipt-take">
-              <Ionicons name="camera-outline" size={20} color={C.teal} /><Text style={s.optionText}>Take photo</Text>
-            </Pressable>
-            <View style={s.sep} />
+            {hasCamera && (<>
+              <Pressable style={s.option} onPress={() => { void choose('camera') }} accessibilityRole="button" testID="receipt-take">
+                <Ionicons name="camera-outline" size={20} color={C.teal} /><Text style={s.optionText}>Take photo</Text>
+              </Pressable>
+              <View style={s.sep} />
+            </>)}
             <Pressable style={s.option} onPress={() => { void choose('library') }} accessibilityRole="button" testID="receipt-library">
               <Ionicons name="image-outline" size={20} color={C.teal} /><Text style={s.optionText}>Choose from library</Text>
             </Pressable>
