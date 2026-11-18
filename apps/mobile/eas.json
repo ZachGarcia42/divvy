@@ -32,6 +32,9 @@
         "EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID": "597758345543-p0up3ub89kntintmefi4mjjr25kfc3bi.apps.googleusercontent.com",
         "EXPO_PUBLIC_APPLE_WEB_SERVICES_ID": "app.divvy.ledger.web",
         "EXPO_PUBLIC_APPLE_WEB_REDIRECT_URI": "https://divvy.mooo.com/app/auth/apple"
+      },
+      "android": {
+        "autoIncrement": true
       }
     },
     "production-ios": {
