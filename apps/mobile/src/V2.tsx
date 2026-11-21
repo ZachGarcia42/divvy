@@ -10,6 +10,7 @@ import {
   signedMoney, groupIcon, PICKER_EMOJIS, DEFAULT_EMOJI, updatedPhrase, yourPosition, type HistoryEntry,
 } from './flows/view'
 import { amountWidth } from './flows/amount'
+import { symbolOf } from './flows/symbol'
 import { canLoadMore, feedRow, feedView, groupFeedByDay, TONE_ICON, type FeedChip, type FeedEntry, type FeedSection, type FeedState, type FeedTone } from './flows/feed'
 import { middleEllipsis } from './flows/composer'
 import { Ionicons } from '@expo/vector-icons'
@@ -60,9 +61,6 @@ export function Avatar({ name, index = 0, size = 34 }: { name: string; index?: n
 export const todayIso = () => {
   const d = new Date()
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-}
-const symbolOf = (currency: string) => {
-  try { return new Intl.NumberFormat('en', { style: 'currency', currency }).formatToParts(0).find((part) => part.type === 'currency')?.value ?? currency } catch { return currency }
 }
 
 /** Header icons: Ionicons vector glyphs (clean outlines, designed on a centred em box), sized to the button with no line-height or font padding so they sit in the middle of the circle. */
