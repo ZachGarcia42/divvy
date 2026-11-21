@@ -9,6 +9,7 @@ import { PayReturnSheet, PaymentNamesScreen } from './Pay'
 import { onReturn, stillOwed, type PayRow, type PendingPay } from './flows/pay'
 import type { PayHandles, PayProvider } from '@divvy/domain'
 import { deleteReceipt, photoErrorText, photoPlan, photoUiError, remoteSource, savedWithPhotoProblem, uploadReceipt, type PhotoApi, type PhotoUiError, type PickedPhoto } from './flows/photo'
+import { ErrorBoundary } from './ErrorBoundary'
 import { AccountScreen, ActivityScreen, AddSheet, CreateGroupSheet, DeletedExpense, ExpenseDetail, Fab, GroupsHome, GroupView, InviteCard, PasteCard, SettleScreen, Snack, SwitcherSheet, TabBar, todayIso, type SheetSave, type Tab } from './V2'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import * as SecureStore from 'expo-secure-store'
@@ -231,14 +232,20 @@ function AppScreens() {
     )
   }
   return (
-    <SignedIn
+    <ErrorBoundary
       key={token}
-      token={token}
-      inviteToken={inviteToken}
-      onInviteHandled={forgetInvite}
-      onSignedOut={() => { forgetInvite(); setToken(null) }}
-      onSessionExpired={() => setToken(null)}
-    />
+      // A screen that throws must not reopen at the next launch (that turned one bad render into a crash loop).
+      onError={() => { AsyncStorage.removeItem(LAST_GROUP_KEY).catch(() => undefined) }}
+      onSignOut={() => { forgetInvite(); setToken(null) }}
+    >
+      <SignedIn
+        token={token}
+        inviteToken={inviteToken}
+        onInviteHandled={forgetInvite}
+        onSignedOut={() => { forgetInvite(); setToken(null) }}
+        onSessionExpired={() => setToken(null)}
+      />
+    </ErrorBoundary>
   )
 }
 

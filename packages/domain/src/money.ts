@@ -77,10 +77,19 @@ export function parseMajor(input: string, currency: string, options?: { cap?: bo
   return minor
 }
 
-const symbolOf = (code: string, display: 'narrowSymbol' | 'symbol') =>
-  new Intl.NumberFormat('en-US', { style: 'currency', currency: code, currencyDisplay: display })
-    .formatToParts(0)
-    .find((part) => part.type === 'currency')?.value ?? code
+// Hermes on iOS/macOS has no Intl.NumberFormat.prototype.formatToParts (it is compiled out under __APPLE__), so calling
+// it threw "formatToParts is not a function" and crashed the release app on the first screen that printed money.
+// Without it, the symbol is what format(0) prints minus the digits, separators and spaces. Any Intl failure falls
+// back to the code, so formatting money can never take a screen down.
+const symbolOf = (code: string, display: 'narrowSymbol' | 'symbol'): string => {
+  try {
+    const nf = new Intl.NumberFormat('en-US', { style: 'currency', currency: code, currencyDisplay: display })
+    if (typeof nf.formatToParts === 'function') return nf.formatToParts(0).find((part) => part.type === 'currency')?.value ?? code
+    return nf.format(0).replace(/[0-9.,\s\u00a0\u202f\u200e\u200f-]/g, '') || code
+  } catch {
+    return code
+  }
+}
 
 // The narrow symbol is only unambiguous for the currency that owns the bare sign: "$" is USD, "¥" is JPY.
 // Every other dollar, yuan or krona currency would print the same sign, so it gets its own form (CA$, A$, CN¥, "SEK 12.00").
