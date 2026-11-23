@@ -174,29 +174,60 @@ describe('Sign in with Google / Apple', () => {
     expect((await strict.post('/api/auth/google', { idToken: await google('g-n', 'gn@gmail.com') })).status).toBe(401)
   })
 
-  it('accepts an iOS Google token carrying the SDK’s own (AppAuth) nonce, and only that case', async () => {
+  it('accepts the SDK’s own (AppAuth) nonce only for tokens whose azp is a configured iOS client', async () => {
     const lines: string[] = []
-    const { post } = await setup({ authLog: (line) => lines.push(line) })
+    const IOS = 'ios.apps.googleusercontent.com'
+    const WEB = 'web.apps.googleusercontent.com'
+    const { post } = await setup({ googleIosClientIds: IOS, authLog: (line) => lines.push(line) })
     // GoogleSignIn-iOS 9 always adds a random nonce the app never sees; the app sends no raw nonce.
-    const appAuth = () => google('g-ios', 'ios@gmail.com', { nonce: 'appauth-generated-0123456789' })
-    const ios = await post('/api/auth/google', { idToken: await appAuth(), platform: 'ios' })
-    expect(ios.status).toBe(200)
-    expect(await ios.json()).toMatchObject({ user: { email: 'ios@gmail.com' } })
-    // Same token shape from web or Android (whose SDKs never add a nonce) is still refused.
-    expect((await post('/api/auth/google', { idToken: await appAuth(), platform: 'web' })).status).toBe(401)
-    expect((await post('/api/auth/google', { idToken: await appAuth(), platform: 'android' })).status).toBe(401)
-    // A raw nonce that is sent is always checked, iOS included.
-    expect((await post('/api/auth/google', { idToken: await appAuth(), platform: 'ios', nonce: 'other-nonce-0123456789' })).status).toBe(401)
-    // One use per token still holds.
-    const once = await appAuth()
-    expect((await post('/api/auth/google', { idToken: once, platform: 'ios' })).status).toBe(200)
+    const token = (azp: string, sub = 'g-ios') => google(sub, `${sub}@gmail.com`, { azp, nonce: 'appauth-generated-0123456789' })
+
+    // QA's attack: an unused web token, raw nonce stripped, relabeled platform ios -> still 401.
+    expect((await post('/api/auth/google', { idToken: await token(WEB), platform: 'ios' })).status).toBe(401)
+    expect(lines.at(-1)).toMatch(/auth google refused: nonce missing \(platform=ios\)$/)
+    // A token with no azp at all doesn't qualify either.
+    expect((await post('/api/auth/google', { idToken: await google('g-noazp', 'n@gmail.com', { nonce: 'appauth-generated-0123456789' }), platform: 'ios' })).status).toBe(401)
+
+    // A real iOS-client token with no raw nonce -> 200; the platform field doesn't matter for the decision.
+    const once = await token(IOS)
+    const ok = await post('/api/auth/google', { idToken: once, platform: 'ios' })
+    expect(ok.status).toBe(200)
+    expect(await ok.json()).toMatchObject({ user: { email: 'g-ios@gmail.com' } })
+    expect((await post('/api/auth/google', { idToken: await token(IOS, 'g-ios2'), platform: 'android' })).status).toBe(200)
+
+    // Replay of the same token -> 401, with its own log line.
     expect((await post('/api/auth/google', { idToken: once, platform: 'ios' })).status).toBe(401)
+    expect(lines.at(-1)).toMatch(/auth google refused: token already used \(replay\) \(platform=ios\)$/)
+
+    // A raw nonce that is sent is always checked.
+    expect((await post('/api/auth/google', { idToken: await token(IOS, 'g-ios3'), platform: 'ios', nonce: 'other-nonce-0123456789' })).status).toBe(401)
+
     // GOOGLE_REQUIRE_NONCE=true turns the exception off.
-    const strict = await setup({ requireNonce: { google: true } })
-    expect((await strict.post('/api/auth/google', { idToken: await appAuth(), platform: 'ios' })).status).toBe(401)
-    // Refusals leave a reason in the log, never the email or token.
-    expect(lines.some((line) => /auth google refused: nonce missing \(platform=web\)/.test(line))).toBe(true)
+    const strict = await setup({ googleIosClientIds: IOS, requireNonce: { google: true } })
+    expect((await strict.post('/api/auth/google', { idToken: await token(IOS, 'g-ios4'), platform: 'ios' })).status).toBe(401)
+    // No iOS client ids configured -> no exception (fails closed).
+    const unset = await setup({ googleIosClientIds: null })
+    expect((await unset.post('/api/auth/google', { idToken: await token(IOS, 'g-ios5'), platform: 'ios' })).status).toBe(401)
+
     expect(lines.join('\n')).not.toContain('@')
+    expect(lines.join('\n')).not.toContain('appauth-generated')
+  })
+
+  it('reads GOOGLE_IOS_CLIENT_IDS (comma-separated) from the environment', async () => {
+    const saved = process.env.GOOGLE_IOS_CLIENT_IDS
+    try {
+      process.env.GOOGLE_IOS_CLIENT_IDS = ' other.apps.googleusercontent.com , ios.apps.googleusercontent.com '
+      const { post } = await setup()
+      const token = await google('g-env', 'env@gmail.com', { azp: 'ios.apps.googleusercontent.com', nonce: 'appauth-generated-0123456789' })
+      expect((await post('/api/auth/google', { idToken: token, platform: 'ios' })).status).toBe(200)
+      delete process.env.GOOGLE_IOS_CLIENT_IDS
+      const off = await setup()
+      const again = await google('g-env2', 'env2@gmail.com', { azp: 'ios.apps.googleusercontent.com', nonce: 'appauth-generated-0123456789' })
+      expect((await off.post('/api/auth/google', { idToken: again, platform: 'ios' })).status).toBe(401)
+    } finally {
+      if (saved === undefined) delete process.env.GOOGLE_IOS_CLIENT_IDS
+      else process.env.GOOGLE_IOS_CLIENT_IDS = saved
+    }
   })
 
   it('logs why a Google token failed verification', async () => {

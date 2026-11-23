@@ -1079,14 +1079,18 @@ describe('ledger API', () => {
         app.request('/api/auth/magic-link', { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify({ email }) })
       const refused = await ask('jo.tester@gmail.com')
       expect(refused.status).toBe(403)
-      expect(await refused.json()).toEqual({ error: { code: 'EMAIL_UNAVAILABLE', message: 'Email sign-in isn’t available yet. Use Sign in with Google or Apple.' } })
+      // Android and the web have no Apple button, so they only point at Google; iOS mentions both.
+      expect(await refused.json()).toEqual({ error: { code: 'EMAIL_UNAVAILABLE', message: 'Email sign-in isn’t available yet. Use Sign in with Google.' } })
+      expect(await (await ask('jo.tester@gmail.com', { 'x-divvy-platform': 'ios' })).json()).toMatchObject({ error: { message: 'Email sign-in isn’t available yet. Use Sign in with Google or Apple.' } })
+      expect(await (await ask('jo.tester@gmail.com', { 'x-divvy-platform': 'web' })).json()).toMatchObject({ error: { message: 'Email sign-in isn’t available yet. Use Sign in with Google.' } })
+      expect(await (await ask('jo.tester@gmail.com', {})).json()).toMatchObject({ error: { message: 'Email sign-in isn’t available yet. Use Sign in with Google.' } })
       // A browser never gets the tester shortcut, so it is refused even for an allowlisted address.
       expect((await ask('tester@example.com', { origin: 'https://divvy.mooo.com' })).status).toBe(403)
       expect((await ask('tester@example.com')).status).toBe(200)
       const rows = await sql.query(`select email from magic_links`) as { email: string }[]
       expect(rows.map((row) => row.email)).toEqual(['tester@example.com'])
       expect((await sql.query(`select to_email from outbound_emails`)).length).toBe(1)
-      expect(lines.length).toBe(2)
+      expect(lines.length).toBe(5)
       expect(lines.join('\n')).not.toContain('@')
       expect(lines[0]).toMatch(/auth email refused: no email delivery \(platform=android\)/)
     })

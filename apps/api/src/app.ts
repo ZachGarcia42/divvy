@@ -148,6 +148,8 @@ export function createApp(sql: Sql, options?: {
   build?: string
   /** Allowed Google OAuth client ids (aud). Defaults to GOOGLE_CLIENT_IDS; empty means /api/auth/google is 503. */
   googleClientIds?: string[] | string | null
+  /** Google iOS OAuth client ids (azp) whose tokens may carry the SDK's own nonce. Defaults to GOOGLE_IOS_CLIENT_IDS; empty means none. */
+  googleIosClientIds?: string[] | string | null
   /** Allowed Apple client ids (aud). Defaults to APPLE_CLIENT_IDS; unset/empty means Apple is off (503). */
   appleClientIds?: string[] | string | null
   /** Test hook: replace JWKS-backed verification (e.g. a locally signed key). */
@@ -181,6 +183,10 @@ export function createApp(sql: Sql, options?: {
   const devRoutes = dev && !restricted
   // Where a sign-in email can actually be read: a real mail provider (none yet) or the dev outbox (open dev only).
   const emailReadable = options?.emailDelivery === true || devRoutes
+  // Only the iOS app has an Apple button; Android and the web (browser, or no/unknown platform) offer Google alone.
+  const emailUnavailableMessage = (platform: string | undefined) => platform?.trim().toLowerCase() === 'ios'
+    ? 'Email sign-in isn’t available yet. Use Sign in with Google or Apple.'
+    : 'Email sign-in isn’t available yet. Use Sign in with Google.'
   const authLog = options?.authLog ?? ((line: string) => console.warn(`${new Date().toISOString()} ${line}`))
   // Dev tester sign-in is for the native tester builds only, never a browser (the hosted web app is public).
   // Native builds send x-divvy-platform: ios|android on every call and never send Origin/Sec-Fetch-* headers.
@@ -397,7 +403,7 @@ export function createApp(sql: Sql, options?: {
     // "Check your email" for a code that never arrives. Say so instead, and store nothing.
     if (!emailReadable && !(!fromBrowser(c) && devTokenFor(body.email))) {
       authLog(`auth email refused: no email delivery (platform=${c.req.header('x-divvy-platform') ?? 'none'})`)
-      throw new LedgerError('EMAIL_UNAVAILABLE', 'Email sign-in isn’t available yet. Use Sign in with Google or Apple.')
+      throw new LedgerError('EMAIL_UNAVAILABLE', emailUnavailableMessage(c.req.header('x-divvy-platform')))
     }
     const issued = await repo.requestMagicLink(body.email, 'login', undefined, body.next)
     const dev = !fromBrowser(c) && devTokenFor(body.email) && !(await repo.isSuspendedEmail(body.email))
@@ -429,6 +435,9 @@ export function createApp(sql: Sql, options?: {
   const clientIdsFor = (option: string[] | string | null | undefined, env: string | undefined, fallback?: string) =>
     parseClientIds(option !== undefined ? option : env !== undefined ? env : fallback)
   const googleIds = clientIdsFor(options?.googleClientIds, process.env.GOOGLE_CLIENT_IDS)
+  // The iOS OAuth client ids (GOOGLE_IOS_CLIENT_IDS). Only tokens whose azp is one of these get the AppAuth-nonce
+  // exception below; unset means no exception (fail closed). Never decided from the client's platform field.
+  const googleIosIds = clientIdsFor(options?.googleIosClientIds, process.env.GOOGLE_IOS_CLIENT_IDS)
   const appleIds = clientIdsFor(options?.appleClientIds, process.env.APPLE_CLIENT_IDS)
   // Apple Service IDs (web/Android flow). When set, an Apple token's aud must match the caller's platform.
   const appleWebIds = clientIdsFor(options?.appleWebClientIds, process.env.APPLE_WEB_CLIENT_IDS)
@@ -468,8 +477,10 @@ export function createApp(sql: Sql, options?: {
     if (body?.nonce !== undefined && raw === null) throw badToken('malformed nonce')
     // Google Sign-In on iOS (AppAuth) puts its own random nonce in every ID token and never tells the app, so an
     // iOS Google token always has a nonce claim with no raw value to match. Accept that one case unless
-    // GOOGLE_REQUIRE_NONCE is on; aud, signature, expiry and one-use (consumeIdToken) still apply.
-    const iosAppAuthNonce = provider === 'google' && platform === 'ios' && raw === null && !!identity.nonce && !requireNonce.google
+    // GOOGLE_REQUIRE_NONCE is on. "iOS" means the signed token's azp is a configured iOS client id, not what the
+    // client claims in `platform` (a web token relabeled ios stays refused). aud, signature, expiry and one-use still apply.
+    const iosAppAuthNonce = provider === 'google' && raw === null && !!identity.nonce && !requireNonce.google
+      && !!identity.azp && googleIosIds.includes(identity.azp)
     if (!iosAppAuthNonce && (raw !== null || identity.nonce || requireNonce[provider])) {
       if (raw === null || !identity.nonce || identity.nonce !== hashNonce(raw)) throw badToken(raw === null ? 'nonce missing' : !identity.nonce ? 'token has no nonce' : 'nonce mismatch')
     }
@@ -492,7 +503,12 @@ export function createApp(sql: Sql, options?: {
     // Apple never links to an existing account by email (an Apple ID can sit on any outside address).
     const mayLink = provider === 'google' ? googleMayLink(identity) : false
     // One use per token: remember it (jti, else the token's hash) until it expires.
-    await repo.consumeIdToken(provider, identity.jti ? `jti:${identity.jti}` : `tok:${hashNonce(token)}`, identity.exp ?? null)
+    try {
+      await repo.consumeIdToken(provider, identity.jti ? `jti:${identity.jti}` : `tok:${hashNonce(token)}`, identity.exp ?? null)
+    } catch (error) {
+      if (error instanceof LedgerError && error.code === 'BAD_TOKEN') throw badToken('token already used (replay)')
+      throw error
+    }
     const result = await repo.signInWithIdentity({ ...identity, mayLink }, next)
     setCookie(c, COOKIE, result.token, { httpOnly: true, sameSite: 'Lax', path: '/', maxAge: 60 * 60 * 24 * 30 })
     return c.json(result)
