@@ -42,7 +42,7 @@ import { CheckEmail, ExpiredLink, JoinCard, NamePrompt, NameSheet, Toast } from 
 import { createOnce, joinFailure, joinedWasAlreadyMember, loadJoinView, type JoinView } from './flows/join'
 import { checkStoredSession, createSessionExpiry, loadSession, saveSession, type KeyStore } from './flows/session'
 import { nameAskedKey, shouldAskName } from './flows/names'
-import { createCooldowns, emailError, LAST_EMAIL_KEY, monotonicNow, normalizeEmail, sendErrorMessage, verifyFailure } from './flows/signin'
+import { createCooldowns, emailError, LAST_EMAIL_KEY, monotonicNow, normalizeEmail, sendErrorMessage, verifyFailure, signInBack, signInStage } from './flows/signin'
 
 // expo-secure-store has no web implementation; the web build keeps the session in localStorage.
 const webStorage = (globalThis as unknown as { localStorage?: { getItem(k: string): string | null; setItem(k: string, v: string): void; removeItem(k: string): void } }).localStorage
@@ -406,6 +406,20 @@ function SignIn({ onToken, pendingInvite, onDismissInvite, linkFailure, onClearL
     setError(null)
     onClearLinkFailure()
   }
+
+  // Android Back: Check your email / expired link go back to email entry instead of closing the app.
+  const stage = signInStage({ verifying, sentTo, linkExpired: linkFailure?.kind === 'expired' })
+  const backRef = useRef<() => boolean>(() => false)
+  backRef.current = () => {
+    const action = signInBack(stage)
+    if (action === 'to-entry') backToEntry()
+    return action !== 'os'
+  }
+  useEffect(() => {
+    if (Platform.OS !== 'android') return
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => backRef.current())
+    return () => sub.remove()
+  }, [])
 
   if (verifying) {
     return (

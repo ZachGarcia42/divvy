@@ -1,7 +1,7 @@
 // November screens: check your email, expired link, name sheet / first-run prompt, join card, toast.
 // All decisions live in ./flows so they can be unit-tested; these components only render them.
 import { useEffect, useRef, useState } from 'react'
-import { AccessibilityInfo, ActivityIndicator, Modal, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native'
+import { AccessibilityInfo, ActivityIndicator, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native'
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useBottomInset, useKeyboardLift } from './insets'
 import { DEAD_TITLE, deadCopy, type JoinView } from './flows/join'
@@ -133,6 +133,20 @@ function CodeField({ onCode, resetKey, onPointToResend }: { onCode: (code: strin
   )
 }
 
+/**
+ * Always-visible Back at the top of the sign-in sub-screens. The code field autofocuses a number pad, which on iOS has
+ * no dismiss key and covers the "Use a different email" link at the bottom; this one can't be covered.
+ */
+function BackBar({ onBack, testID, label }: { onBack: () => void; testID: string; label: string }) {
+  return (
+    <View style={s.topBar}>
+      <Pressable testID={testID} onPress={onBack} hitSlop={12} style={s.back} accessibilityRole="button" accessibilityLabel={label}>
+        <Text style={s.backText}><Glyph text="‹ " />Back</Text>
+      </Pressable>
+    </View>
+  )
+}
+
 export function CheckEmail({ email, pendingInvite, lastSentAt, now: clock, onResend, onCode, onBack }: {
   email: string
   pendingInvite: boolean
@@ -162,7 +176,8 @@ export function CheckEmail({ email, pendingInvite, lastSentAt, now: clock, onRes
   }, [left])
   return (
     <SafeAreaView style={s.screen} edges={['top', 'left', 'right', 'bottom']}>
-      <View style={s.center} testID="check-email">
+      <BackBar onBack={onBack} testID="check-email-back" label="Back to email entry" />
+      <ScrollView contentContainerStyle={s.center} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag" testID="check-email">
         <View style={s.badge}><Glyph text="✉" style={s.badgeText} /></View>
         <Text style={s.title} accessibilityRole="header">Check your email</Text>
         <Text style={s.body}>We sent a code and a sign-in link to <Text style={s.strong}>{email}</Text>.</Text>
@@ -189,7 +204,7 @@ export function CheckEmail({ email, pendingInvite, lastSentAt, now: clock, onRes
         {/* Screen readers hear the cooldown once at its start and once at its end, not every tick. */}
         <Text style={s.srOnly} accessibilityLiveRegion="polite">{cooldownMessage ?? ''}</Text>
         <Button kind="link" testID="different-email" label="Use a different email" onPress={onBack} />
-      </View>
+      </ScrollView>
     </SafeAreaView>
   )
 }
@@ -199,6 +214,7 @@ export function ExpiredLink({ hasEmail, onSendNew, onBack }: { hasEmail: boolean
   const [error, setError] = useState<string | null>(null)
   return (
     <SafeAreaView style={s.screen} edges={['top', 'left', 'right', 'bottom']}>
+      <BackBar onBack={onBack} testID="expired-link-back" label="Back to email entry" />
       <View style={s.center} testID="expired-link">
         <View style={[s.badge, s.badgeRed]}><Glyph text="!" style={[s.badgeText, { color: C.red }]} /></View>
         <Text style={s.title} accessibilityRole="header">That link has expired</Text>
@@ -366,7 +382,10 @@ function ToastBody({ text }: { text: string }) {
 
 const s = StyleSheet.create({
   screen: { flex: 1, backgroundColor: C.bg },
-  center: { flex: 1, padding: 24, justifyContent: 'center', gap: 12 },
+  center: { flexGrow: 1, padding: 24, justifyContent: 'center', gap: 12 },
+  topBar: { paddingHorizontal: 12, paddingTop: 4, alignItems: 'flex-start' },
+  back: { minHeight: 44, paddingHorizontal: 8, justifyContent: 'center' },
+  backText: { color: C.teal, fontWeight: '700', fontSize: 16 },
   top: { flex: 1, padding: 24, paddingTop: 24, gap: 12 },
   wordmark: { fontSize: 22, fontWeight: '800', color: C.ink, marginBottom: 24 },
   title: { fontSize: 28, fontWeight: '800', color: C.ink },

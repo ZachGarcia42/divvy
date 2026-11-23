@@ -16,12 +16,35 @@ export function emailError(text: string) {
 }
 
 const OFFLINE = 'Couldn’t send the link. Check your signal and try again.'
+/** The server has no way to email this address (403 EMAIL_UNAVAILABLE): point at the buttons that do work. */
+export const EMAIL_UNAVAILABLE = 'Email sign-in isn’t available yet. Use Sign in with Google or Apple above.'
+
+/** Which sign-in screen is showing; mirrors the order SignIn checks its state in. */
+export type SignInStage = 'signing-in' | 'check-email' | 'expired' | 'entry'
+export function signInStage(state: { verifying: boolean; sentTo: string | null; linkExpired: boolean }): SignInStage {
+  if (state.verifying) return 'signing-in'
+  if (state.sentTo) return 'check-email'
+  if (state.linkExpired) return 'expired'
+  return 'entry'
+}
+
+/**
+ * Android Back (and the on-screen Back) on the sign-in screens: Check your email and the expired-link screen go
+ * back to email entry ('to-entry'); while a link is being verified Back is swallowed ('ignore') so it can't drop
+ * the half-finished sign-in; on email entry the OS handles it ('os', leaves the app as before).
+ */
+export function signInBack(stage: SignInStage): 'to-entry' | 'ignore' | 'os' {
+  if (stage === 'check-email' || stage === 'expired') return 'to-entry'
+  if (stage === 'signing-in') return 'ignore'
+  return 'os'
+}
 
 /** Copy for a failed Send link / Resend. Never pretends the link went out, never shows a name error. */
 export function sendErrorMessage(reason: unknown) {
   const code = codeOf(reason)
   if (code === 'RATE_LIMITED') return 'That’s a lot of links. Wait a few minutes, then try again.'
   if (code === 'BAD_EMAIL') return 'Enter a valid email'
+  if (code === 'EMAIL_UNAVAILABLE') return EMAIL_UNAVAILABLE
   const message = reason instanceof Error && reason.message && reason.message !== 'Request failed' ? reason.message : null
   // A 4xx with a real server message (BAD_NAME included) shows that message, not the signal copy.
   const status = (reason as { status?: number } | null)?.status

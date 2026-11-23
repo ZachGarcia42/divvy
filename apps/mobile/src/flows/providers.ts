@@ -99,6 +99,9 @@ export function providerErrorMessage(provider: 'google' | 'apple', reason: unkno
   if (code === 'BAD_TOKEN') return `${label} sign-in didn’t work. Try again.`
   if (code === 'POPUP_BLOCKED') return `Allow pop-ups for this site, then try Sign in with ${label} again.`
   if (code === 'PLAY_SERVICES_NOT_AVAILABLE') return 'Update Google Play services, then try again.'
+  // Android DEVELOPER_ERROR (CommonStatusCodes 10): this install's signing certificate isn't registered with Google
+  // (typically a Play-installed build whose Play app-signing SHA-1 has no Android OAuth client). Retrying won't help.
+  if (provider === 'google' && (code === '10' || code === 'DEVELOPER_ERROR')) return 'Sign in with Google isn’t working in this version of Divvy yet. We’re fixing it; please try again after the next update.'
   if (isTransient(reason) || code?.startsWith('HTTP_')) return 'Couldn’t reach Divvy. Check your signal and try again.'
   return `Couldn’t sign in with ${label}. Try again.`
 }
