@@ -156,6 +156,10 @@ export function createApp(sql: Sql, options?: {
   appleWebClientIds?: string[] | string | null
   /** Per-provider nonce requirement. Defaults: apple true (APPLE_REQUIRE_NONCE), google false (GOOGLE_REQUIRE_NONCE). */
   requireNonce?: { google?: boolean; apple?: boolean }
+  /** Whether sign-in emails are really delivered. No mail provider exists yet, so default false (the outbox is dev-only). */
+  emailDelivery?: boolean
+  /** One-line, PII-free notes about refused sign-ins (default console.warn, so they land in api.log). */
+  authLog?: (line: string) => void
 }) {
   const build = options?.build ?? resolveBuild()
   const dev = options?.dev ?? process.env.NODE_ENV !== 'production'
@@ -175,6 +179,9 @@ export function createApp(sql: Sql, options?: {
     return typeof email === 'string' && allowList.includes(email.trim().toLowerCase())
   }
   const devRoutes = dev && !restricted
+  // Where a sign-in email can actually be read: a real mail provider (none yet) or the dev outbox (open dev only).
+  const emailReadable = options?.emailDelivery === true || devRoutes
+  const authLog = options?.authLog ?? ((line: string) => console.warn(`${new Date().toISOString()} ${line}`))
   // Dev tester sign-in is for the native tester builds only, never a browser (the hosted web app is public).
   // Native builds send x-divvy-platform: ios|android on every call and never send Origin/Sec-Fetch-* headers.
   // A missing or unknown platform header, or any browser header, means no devToken.
@@ -280,7 +287,7 @@ export function createApp(sql: Sql, options?: {
     if (error instanceof LedgerError) {
       const status = error.code === 'UNAUTHENTICATED' || error.code === 'BAD_TOKEN' ? 401
         : error.code === 'NOT_CONFIGURED' || error.code === 'RATE_UNAVAILABLE' ? 503
-        : error.code === 'FORBIDDEN' || error.code === 'EMAIL_UNVERIFIED' || error.code === 'SUSPENDED' || error.code === 'BLOCKED' ? 403
+        : error.code === 'FORBIDDEN' || error.code === 'EMAIL_UNAVAILABLE' || error.code === 'EMAIL_UNVERIFIED' || error.code === 'SUSPENDED' || error.code === 'BLOCKED' ? 403
         : error.code === 'NOT_FOUND' ? 404
         : error.code === 'STALE' || error.code === 'EMAIL_IN_USE' ? 409
         : error.code === 'RATE_LIMITED' ? 429
@@ -386,6 +393,12 @@ export function createApp(sql: Sql, options?: {
     const raw = await readBody(c)
     const body = { email: emailFromBody(raw), next: nextFromBody(raw) }
     throttle(c, body.email, clientIp(c))
+    // Without a mail provider only allowlisted native testers (devToken) can finish; anyone else would wait on
+    // "Check your email" for a code that never arrives. Say so instead, and store nothing.
+    if (!emailReadable && !(!fromBrowser(c) && devTokenFor(body.email))) {
+      authLog(`auth email refused: no email delivery (platform=${c.req.header('x-divvy-platform') ?? 'none'})`)
+      throw new LedgerError('EMAIL_UNAVAILABLE', 'Email sign-in isn’t available yet. Use Sign in with Google or Apple.')
+    }
     const issued = await repo.requestMagicLink(body.email, 'login', undefined, body.next)
     const dev = !fromBrowser(c) && devTokenFor(body.email) && !(await repo.isSuspendedEmail(body.email))
     return c.json({ ok: true, devToken: dev ? rememberDev(issued.token) : undefined, devCode: dev && issued.code ? issued.code : undefined })
@@ -439,21 +452,34 @@ export function createApp(sql: Sql, options?: {
     if (typeof token !== 'string' || !token || token.length > 8192) throw new LedgerError('BAD_TOKEN', 'That sign-in didn’t work. Try again.')
     const next = nextFromBody(body)
     throttle(c, null, clientIp(c), 'oauth')
-    const identity = await verify(token)
-    const badToken = () => new LedgerError('BAD_TOKEN', 'That sign-in didn’t work. Try again.')
-    const raw = typeof body?.nonce === 'string' && body.nonce.length >= 16 && body.nonce.length <= 256 ? body.nonce : null
-    if (body?.nonce !== undefined && raw === null) throw badToken()
-    if (raw !== null || identity.nonce || requireNonce[provider]) {
-      if (raw === null || !identity.nonce || identity.nonce !== hashNonce(raw)) throw badToken()
-    }
     const platform = body?.platform === 'web' || body?.platform === 'ios' || body?.platform === 'android' ? body.platform : null
+    const badToken = (why: string) => {
+      authLog(`auth ${provider} refused: ${why} (platform=${platform ?? 'none'})`)
+      return new LedgerError('BAD_TOKEN', 'That sign-in didn’t work. Try again.')
+    }
+    let identity
+    try {
+      identity = await verify(token)
+    } catch (error) {
+      if (error instanceof LedgerError && error.code === 'BAD_TOKEN') throw badToken('signature, issuer, audience or expiry')
+      throw error
+    }
+    const raw = typeof body?.nonce === 'string' && body.nonce.length >= 16 && body.nonce.length <= 256 ? body.nonce : null
+    if (body?.nonce !== undefined && raw === null) throw badToken('malformed nonce')
+    // Google Sign-In on iOS (AppAuth) puts its own random nonce in every ID token and never tells the app, so an
+    // iOS Google token always has a nonce claim with no raw value to match. Accept that one case unless
+    // GOOGLE_REQUIRE_NONCE is on; aud, signature, expiry and one-use (consumeIdToken) still apply.
+    const iosAppAuthNonce = provider === 'google' && platform === 'ios' && raw === null && !!identity.nonce && !requireNonce.google
+    if (!iosAppAuthNonce && (raw !== null || identity.nonce || requireNonce[provider])) {
+      if (raw === null || !identity.nonce || identity.nonce !== hashNonce(raw)) throw badToken(raw === null ? 'nonce missing' : !identity.nonce ? 'token has no nonce' : 'nonce mismatch')
+    }
     if (!platform) throw new LedgerError('BAD_PLATFORM', 'Send platform: ios, android or web')
     if (provider === 'apple' && appleWebIds.length && platform && identity.aud) {
       // Native iOS tokens carry the bundle id; the web/Android flow carries a Service ID.
       const isService = appleWebIds.includes(identity.aud)
-      if ((platform === 'ios') === isService) throw badToken()
+      if ((platform === 'ios') === isService) throw badToken('apple aud does not match platform')
     }
-    if (provider === 'google' && platform === 'web' && identity.azp && identity.azp !== identity.aud) throw badToken()
+    if (provider === 'google' && platform === 'web' && identity.azp && identity.azp !== identity.aud) throw badToken('web azp is another client')
     if (provider === 'apple') {
       // Apple sends the name only on the very first authorization, from the device, not in the token.
       const cap = (part: unknown) => typeof part === 'string' ? part.slice(0, 100) : undefined

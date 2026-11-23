@@ -623,8 +623,9 @@ describe('ledger API', () => {
     const allowed = await ask('alex@example.com')
     expect(allowed.devToken).toBeTruthy()
     expect((await sessionFor(app, 'SAM@example.com')).token).toBeTruthy()
-    const stranger = await ask('zach@example.com')
-    expect(stranger).toEqual({ ok: true })
+    // No mail provider: a stranger is told email sign-in isn't available instead of waiting for a code that never comes.
+    const stranger = await ask('zach@example.com') as { ok?: boolean; devToken?: string }
+    expect(stranger).toEqual({ error: { code: 'EMAIL_UNAVAILABLE', message: 'Email sign-in isn’t available yet. Use Sign in with Google or Apple.' } })
     const verify = await app.request('/api/auth/verify', {
       method: 'POST', headers: { 'content-type': 'application/json', 'x-divvy-platform': 'ios' }, body: JSON.stringify({ token: stranger.devToken }),
     })
@@ -656,7 +657,7 @@ describe('ledger API', () => {
       for (const value of ['', '   ', ' , ']) {
         process.env.DEV_SIGNIN_EMAILS = value
         const { app } = createApp(sql, { dev: true, rateFor: async () => '1' })
-        expect(await ask(app)).toEqual({ ok: true })
+        expect(await ask(app)).toEqual({ error: { code: 'EMAIL_UNAVAILABLE', message: 'Email sign-in isn’t available yet. Use Sign in with Google or Apple.' } })
         expect((await app.request('/api/dev/outbox')).status).toBe(404)
         expect((await app.request('/api/dev/seed', { method: 'POST' })).status).toBe(404)
       }
@@ -665,7 +666,7 @@ describe('ledger API', () => {
       else process.env.DEV_SIGNIN_EMAILS = saved
     }
     const locked = createApp(sql, { dev: true, rateFor: async () => '1', devSigninEmails: [] }).app
-    expect(await ask(locked)).toEqual({ ok: true })
+    expect(await ask(locked)).toEqual({ error: { code: 'EMAIL_UNAVAILABLE', message: 'Email sign-in isn’t available yet. Use Sign in with Google or Apple.' } })
     expect((await locked.request('/api/dev/outbox')).status).toBe(404)
   })
 
@@ -1062,9 +1063,32 @@ describe('ledger API', () => {
     it('returns devCode only when devToken is returned', async () => {
       const t = await make({ devSigninEmails: 'tester@example.com' })
       expect(await t.request('tester@example.com')).toMatchObject({ devToken: expect.any(String), devCode: expect.stringMatching(/^\d{6}$/) })
-      expect(await t.request('stranger@example.com')).toEqual({ ok: true })
+      expect(await t.request('stranger@example.com')).toEqual({ error: { code: 'EMAIL_UNAVAILABLE', message: 'Email sign-in isn’t available yet. Use Sign in with Google or Apple.' } })
       const prod = await make({ dev: false })
-      expect(await prod.request('tester@example.com')).toEqual({ ok: true })
+      expect(await prod.request('tester@example.com')).toEqual({ error: { code: 'EMAIL_UNAVAILABLE', message: 'Email sign-in isn’t available yet. Use Sign in with Google or Apple.' } })
+      // Once a real mail provider exists the old uniform answer comes back (no devToken, no devCode).
+      const mailed = await make({ devSigninEmails: 'tester@example.com', emailDelivery: true })
+      expect(await mailed.request('stranger@example.com')).toEqual({ ok: true })
+    })
+
+    it('refuses email sign-in without delivery: 403, no stored link or code, a PII-free log line', async () => {
+      const lines: string[] = []
+      const sql = await createMemorySql()
+      const { app } = createApp(sql, { dev: true, rateFor: async () => '1', devSigninEmails: 'tester@example.com', authLog: (line) => lines.push(line) })
+      const ask = (email: string, headers: Record<string, string> = { 'x-divvy-platform': 'android' }) =>
+        app.request('/api/auth/magic-link', { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify({ email }) })
+      const refused = await ask('jo.tester@gmail.com')
+      expect(refused.status).toBe(403)
+      expect(await refused.json()).toEqual({ error: { code: 'EMAIL_UNAVAILABLE', message: 'Email sign-in isn’t available yet. Use Sign in with Google or Apple.' } })
+      // A browser never gets the tester shortcut, so it is refused even for an allowlisted address.
+      expect((await ask('tester@example.com', { origin: 'https://divvy.mooo.com' })).status).toBe(403)
+      expect((await ask('tester@example.com')).status).toBe(200)
+      const rows = await sql.query(`select email from magic_links`) as { email: string }[]
+      expect(rows.map((row) => row.email)).toEqual(['tester@example.com'])
+      expect((await sql.query(`select to_email from outbound_emails`)).length).toBe(1)
+      expect(lines.length).toBe(2)
+      expect(lines.join('\n')).not.toContain('@')
+      expect(lines[0]).toMatch(/auth email refused: no email delivery \(platform=android\)/)
     })
   })
 

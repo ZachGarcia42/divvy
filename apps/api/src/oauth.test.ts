@@ -174,6 +174,38 @@ describe('Sign in with Google / Apple', () => {
     expect((await strict.post('/api/auth/google', { idToken: await google('g-n', 'gn@gmail.com') })).status).toBe(401)
   })
 
+  it('accepts an iOS Google token carrying the SDK’s own (AppAuth) nonce, and only that case', async () => {
+    const lines: string[] = []
+    const { post } = await setup({ authLog: (line) => lines.push(line) })
+    // GoogleSignIn-iOS 9 always adds a random nonce the app never sees; the app sends no raw nonce.
+    const appAuth = () => google('g-ios', 'ios@gmail.com', { nonce: 'appauth-generated-0123456789' })
+    const ios = await post('/api/auth/google', { idToken: await appAuth(), platform: 'ios' })
+    expect(ios.status).toBe(200)
+    expect(await ios.json()).toMatchObject({ user: { email: 'ios@gmail.com' } })
+    // Same token shape from web or Android (whose SDKs never add a nonce) is still refused.
+    expect((await post('/api/auth/google', { idToken: await appAuth(), platform: 'web' })).status).toBe(401)
+    expect((await post('/api/auth/google', { idToken: await appAuth(), platform: 'android' })).status).toBe(401)
+    // A raw nonce that is sent is always checked, iOS included.
+    expect((await post('/api/auth/google', { idToken: await appAuth(), platform: 'ios', nonce: 'other-nonce-0123456789' })).status).toBe(401)
+    // One use per token still holds.
+    const once = await appAuth()
+    expect((await post('/api/auth/google', { idToken: once, platform: 'ios' })).status).toBe(200)
+    expect((await post('/api/auth/google', { idToken: once, platform: 'ios' })).status).toBe(401)
+    // GOOGLE_REQUIRE_NONCE=true turns the exception off.
+    const strict = await setup({ requireNonce: { google: true } })
+    expect((await strict.post('/api/auth/google', { idToken: await appAuth(), platform: 'ios' })).status).toBe(401)
+    // Refusals leave a reason in the log, never the email or token.
+    expect(lines.some((line) => /auth google refused: nonce missing \(platform=web\)/.test(line))).toBe(true)
+    expect(lines.join('\n')).not.toContain('@')
+  })
+
+  it('logs why a Google token failed verification', async () => {
+    const lines: string[] = []
+    const { post } = await setup({ authLog: (line) => lines.push(line) })
+    expect((await post('/api/auth/google', { idToken: 'not-a-jwt', platform: 'android' })).status).toBe(401)
+    expect(lines).toEqual([expect.stringMatching(/auth google refused: signature, issuer, audience or expiry \(platform=android\)$/)])
+  })
+
   it('checks Apple aud per platform when Service IDs are configured', async () => {
     const now = () => NOW
     const { post } = await setup({
