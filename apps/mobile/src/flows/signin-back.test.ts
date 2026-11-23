@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { EMAIL_UNAVAILABLE, sendErrorMessage, signInBack, signInStage } from './signin'
+import { emailUnavailable, sendErrorMessage, signInBack, signInStage } from './signin'
 import { providerErrorMessage } from './providers'
 
 const err = (code: string, status?: number, message = 'x') => Object.assign(new Error(message), { code, status })
@@ -49,9 +49,24 @@ describe('going back from the code entry screen', () => {
 })
 
 describe('email that can’t be delivered and misconfigured Google', () => {
-  it('shows the server’s EMAIL_UNAVAILABLE as a pointer to Google/Apple, not as a signal problem', () => {
-    expect(sendErrorMessage(err('EMAIL_UNAVAILABLE', 403, 'Email sign-in isn’t available yet. Use Sign in with Google or Apple.'))).toBe(EMAIL_UNAVAILABLE)
-    expect(sendErrorMessage(err('EMAIL_UNAVAILABLE', 403))).toBe(EMAIL_UNAVAILABLE)
+  it('shows the server’s EMAIL_UNAVAILABLE as a pointer to the buttons this platform has, not as a signal problem', () => {
+    const google = 'Email sign-in isn’t available yet. Use Sign in with Google above.'
+    const both = 'Email sign-in isn’t available yet. Use Sign in with Google or Apple above.'
+    expect(emailUnavailable('ios')).toBe(both)
+    expect(emailUnavailable('android')).toBe(google)
+    expect(emailUnavailable('web')).toBe(google)
+    expect(emailUnavailable(undefined)).toBe(google)
+    expect(sendErrorMessage(err('EMAIL_UNAVAILABLE', 403, 'Email sign-in isn’t available yet. Use Sign in with Google or Apple.'), 'android')).toBe(google)
+    expect(sendErrorMessage(err('EMAIL_UNAVAILABLE', 403), 'ios')).toBe(both)
+    expect(sendErrorMessage(err('EMAIL_UNAVAILABLE', 403))).toBe(google)
+  })
+
+  it('every sign-in caller passes Platform.OS so the copy matches the buttons', () => {
+    for (const file of ['App.tsx', 'November.tsx']) {
+      const calls = source(file).match(/sendErrorMessage\([^)]*\)/g) ?? []
+      expect(calls.length, file).toBeGreaterThan(0)
+      for (const call of calls) expect(call, file).toBe('sendErrorMessage(reason, Platform.OS)')
+    }
   })
 
   it('names an Android DEVELOPER_ERROR (code 10) instead of a generic Try again', () => {

@@ -196,7 +196,7 @@ export function CheckEmail({ email, pendingInvite, lastSentAt, now: clock, onRes
             setResentAt(clock())
             announce('Sent again')
           } catch (reason) {
-            setError(sendErrorMessage(reason))
+            setError(sendErrorMessage(reason, Platform.OS))
           } finally {
             setSending(false)
           }
@@ -224,7 +224,7 @@ export function ExpiredLink({ hasEmail, onSendNew, onBack }: { hasEmail: boolean
           if (!hasEmail) return onBack()
           setBusy(true)
           setError(null)
-          try { await onSendNew() } catch (reason) { setError(sendErrorMessage(reason)) } finally { setBusy(false) }
+          try { await onSendNew() } catch (reason) { setError(sendErrorMessage(reason, Platform.OS)) } finally { setBusy(false) }
         }} />
         <Button kind="link" label="Use a different email" onPress={onBack} />
       </View>

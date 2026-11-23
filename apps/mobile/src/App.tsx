@@ -394,7 +394,7 @@ function SignIn({ onToken, pendingInvite, onDismissInvite, linkFailure, onClearL
     try {
       if (await request(address)) setSentTo(address)
     } catch (reason) {
-      setError(sendErrorMessage(reason))
+      setError(sendErrorMessage(reason, Platform.OS))
     } finally {
       setSending(false)
     }
@@ -525,7 +525,7 @@ function SignIn({ onToken, pendingInvite, onDismissInvite, linkFailure, onClearL
               onToken(session.token)
             } catch (reason) {
               if ((reason as { status?: number }).status === 404) setSampleAvailable(false)
-              else setError(sendErrorMessage(reason))
+              else setError(sendErrorMessage(reason, Platform.OS))
             }
           }}>
             <Text style={styles.secondaryText}>Open the sample apartment</Text>
