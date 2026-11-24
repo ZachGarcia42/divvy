@@ -1,15 +1,40 @@
 import { describe, expect, it } from 'vitest'
-import { appleFullName, appleWebConfig, appleWebError, appleWebName, FALLBACK_PROVIDERS, googleIds, isCancel, parseProviders, providerBody, providerErrorMessage, visibleButtons } from './providers'
+import { appleFullName, appleWebConfig, appleWebError, appleWebName, EMAIL_SIGNIN_ENABLED, FALLBACK_PROVIDERS, fallbackProviders, googleIds, isCancel, parseProviders, providerBody, providerErrorMessage, visibleButtons } from './providers'
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { googleIosUrlScheme } = require('../../app.config.js') as { googleIosUrlScheme: (env: Record<string, string | undefined>) => string | null }
 
 const err = (code: string, status?: number) => Object.assign(new Error('x'), { code, status })
 
 describe('provider sign-in', () => {
-  it('parses /api/auth/providers and falls back to the email path', () => {
-    expect(parseProviders({ google: true, apple: false, email: false })).toEqual({ google: true, apple: false, email: false })
-    expect(parseProviders({ devSeed: true })).toEqual({ google: false, apple: false, email: true })
+  it('parses /api/auth/providers and, with email enabled, falls back to the email path', () => {
+    expect(parseProviders({ google: true, apple: false, email: false }, true)).toEqual({ google: true, apple: false, email: false })
+    expect(parseProviders({ devSeed: true }, true)).toEqual({ google: false, apple: false, email: true })
+    expect(parseProviders(null, true)).toEqual({ google: false, apple: false, email: true })
+  })
+
+  it('hides email sign-in for now on every platform, even when the server offers it', () => {
+    expect(EMAIL_SIGNIN_ENABLED).toBe(false)
+    // The live server still answers email: true to native builds (tester allowlist); the app ignores it.
+    expect(parseProviders({ google: true, apple: true, email: true })).toEqual({ google: true, apple: true, email: false })
+    expect(parseProviders({ devSeed: true })).toEqual({ google: false, apple: false, email: false })
+    // Offline / unreadable: offer the provider buttons instead of an email form.
     expect(parseProviders(null)).toEqual(FALLBACK_PROVIDERS)
+    expect(FALLBACK_PROVIDERS).toEqual({ google: true, apple: true, email: false })
+    expect(fallbackProviders(true)).toEqual({ google: false, apple: false, email: true })
+    for (const os of ['ios', 'android', 'web']) {
+      expect(visibleButtons(parseProviders({ google: true, apple: true, email: true }), { os, appleAvailable: true, googleConfigured: true })).toEqual({
+        google: true, apple: os !== 'android', email: false,
+      })
+    }
+  })
+
+  it('SignIn only renders the email form behind providers.email and reads providers through parseProviders/FALLBACK_PROVIDERS', () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const app = (require('node:fs') as typeof import('node:fs')).readFileSync(require('node:path').join(__dirname, '..', 'App.tsx'), 'utf8')
+    const signIn = app.split('function SignIn(')[1]!.split('\nfunction ')[0]!
+    expect(signIn).toContain("setProviders(parseProviders(body))).catch(() => setProviders(FALLBACK_PROVIDERS))")
+    expect(signIn).toContain('{loadedProviders && providers.email && <>')
+    expect(signIn.indexOf('testID="sign-in-email"')).toBeGreaterThan(signIn.indexOf('{loadedProviders && providers.email && <>'))
   })
 
   it('needs the web client id, plus the iOS id on iOS', () => {

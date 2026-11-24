@@ -1,13 +1,27 @@
 import { codeOf, isTransient } from './errors'
 
 export type Providers = { google: boolean; apple: boolean; email: boolean }
-/** If /api/auth/providers can't be read (older API, offline), keep the email path so testers aren't stuck. */
-export const FALLBACK_PROVIDERS: Providers = { google: false, apple: false, email: true }
 
-export function parseProviders(body: unknown): Providers {
-  if (!body || typeof body !== 'object') return FALLBACK_PROVIDERS
+/**
+ * Email sign-in is hidden for now (Zach, Nov 23): there is no mail provider, so only Google, and Apple on iOS, show,
+ * whatever /api/auth/providers says. The server path (magic-link / verify-code, devToken testers) is untouched;
+ * flip this to bring the email form back once mail delivery exists.
+ */
+export const EMAIL_SIGNIN_ENABLED = false
+
+/**
+ * If /api/auth/providers can't be read (older API, offline). With email on, keep the email path so testers aren't
+ * stuck; with email hidden, offer the provider buttons (the server answers NOT_CONFIGURED if one is really off).
+ */
+export function fallbackProviders(emailEnabled = EMAIL_SIGNIN_ENABLED): Providers {
+  return emailEnabled ? { google: false, apple: false, email: true } : { google: true, apple: true, email: false }
+}
+export const FALLBACK_PROVIDERS: Providers = fallbackProviders()
+
+export function parseProviders(body: unknown, emailEnabled = EMAIL_SIGNIN_ENABLED): Providers {
+  if (!body || typeof body !== 'object') return fallbackProviders(emailEnabled)
   const value = body as Record<string, unknown>
-  return { google: value.google === true, apple: value.apple === true, email: value.email !== false }
+  return { google: value.google === true, apple: value.apple === true, email: emailEnabled && value.email !== false }
 }
 
 export type GoogleIds = { webClientId: string; iosClientId?: string }
