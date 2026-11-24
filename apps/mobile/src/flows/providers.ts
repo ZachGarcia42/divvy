@@ -119,3 +119,45 @@ export function providerErrorMessage(provider: 'google' | 'apple', reason: unkno
   if (isTransient(reason) || code?.startsWith('HTTP_')) return 'Couldn’t reach Divvy. Check your signal and try again.'
   return `Couldn’t sign in with ${label}. Try again.`
 }
+
+/** The slice of @react-native-google-signin/google-signin that freshGoogleIdToken uses (injectable for tests). */
+export type GoogleClient = {
+  GoogleSignin: {
+    hasPlayServices: (options: { showPlayServicesUpdateDialog: boolean }) => Promise<unknown>
+    signOut: () => Promise<unknown>
+    signIn: () => Promise<unknown>
+  }
+  isSuccessResponse: (response: any) => boolean
+}
+
+/**
+ * A fresh Google ID token for every attempt. The server accepts each ID token once (replay protection), but Google
+ * Sign-In on Android keeps the last account signed in and hands back the same cached ID token (valid ~1 h) on the next
+ * signIn(), so signing out of Divvy and back in, or trying again after a failure, re-sent a used token and got
+ * "Google sign-in didn't work". Signing out of the Google SDK first (best-effort) forces a new token and also lets
+ * the person pick a different account. Returns null when they cancel.
+ */
+export async function freshGoogleIdToken(google: GoogleClient, os: string): Promise<string | null> {
+  const { GoogleSignin, isSuccessResponse } = google
+  if (os === 'android') await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true })
+  await GoogleSignin.signOut().catch(() => undefined)
+  const response = await GoogleSignin.signIn() as { data?: { idToken?: string | null } }
+  if (!isSuccessResponse(response)) return null // cancelled
+  const idToken = response.data?.idToken
+  if (!idToken) throw Object.assign(new Error('No token'), { code: 'BAD_TOKEN' })
+  return idToken
+}
+
+/**
+ * One sign-in at a time: a second tap while one is running is ignored (React's disabled state lands a render later,
+ * so a fast double tap could otherwise start two). Returns false when the call was dropped.
+ */
+export function createSubmitGuard() {
+  let running = false
+  return async (fn: () => Promise<void>) => {
+    if (running) return false
+    running = true
+    try { await fn() } finally { running = false }
+    return true
+  }
+}

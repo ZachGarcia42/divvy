@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Platform, Pressable, StyleSheet, Text, View } from 'react-native'
 import * as Crypto from 'expo-crypto'
-import { appleFullName, googleIds, nonceFromBytes, providerBody, providerErrorMessage, visibleButtons, type Providers } from './flows/providers'
+import { appleFullName, createSubmitGuard, freshGoogleIdToken, googleIds, nonceFromBytes, providerBody, providerErrorMessage, visibleButtons, type GoogleClient, type Providers } from './flows/providers'
 
 // Native modules are loaded lazily: Expo Go has neither, and a top-level import would crash the login screen there.
 type AppleModule = typeof import('expo-apple-authentication')
@@ -43,7 +43,8 @@ export function SocialSignIn({ providers, next, onSignIn, onError }: {
   }, [])
   const shown = visibleButtons(providers, { os: Platform.OS, appleAvailable, googleConfigured: !!google })
 
-  const run = async (provider: 'google' | 'apple', getBody: () => Promise<Record<string, unknown> | null>) => {
+  const guard = useRef(createSubmitGuard()).current
+  const run = (provider: 'google' | 'apple', getBody: () => Promise<Record<string, unknown> | null>) => guard(async () => {
     setBusy(provider)
     onError(null)
     try {
@@ -54,7 +55,7 @@ export function SocialSignIn({ providers, next, onSignIn, onError }: {
     } finally {
       setBusy(null)
     }
-  }
+  })
 
   const signInWithApple = () => run('apple', async () => {
     const apple = loadApple()!
@@ -69,13 +70,11 @@ export function SocialSignIn({ providers, next, onSignIn, onError }: {
   })
 
   const signInWithGoogle = () => run('google', async () => {
-    const { GoogleSignin, isSuccessResponse } = google!
-    if (Platform.OS === 'android') await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true })
-    const response = await GoogleSignin.signIn()
-    if (!isSuccessResponse(response)) return null // cancelled
-    if (!response.data.idToken) throw Object.assign(new Error('No token'), { code: 'BAD_TOKEN' })
+    // Fresh token per attempt (the server takes each once; Android would hand back its cached one). See providers.ts.
+    const idToken = await freshGoogleIdToken(google as unknown as GoogleClient, Platform.OS)
+    if (!idToken) return null // cancelled
     // google-signin v16 has no nonce option; see providers.ts.
-    return providerBody('google', response.data.idToken, next, undefined, { platform: Platform.OS })
+    return providerBody('google', idToken, next, undefined, { platform: Platform.OS })
   })
 
   if (!shown.apple && !shown.google) return null
